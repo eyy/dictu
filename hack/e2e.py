@@ -46,9 +46,9 @@ SAMPLE_WORDS = ["aardvark", "byte", "dictionary", "gnome", "rust", "zeitgeist"]
 # sample/links/links.csv adds entries whose definitions carry real <a> links, plus
 # a deliberately long "byte" — a headword the dictd fixture also has, so that one
 # dictionary's answer pushes the other's below the fold.
-LINK_WORDS = ["cf", "qv", "ext", "only", "byte"]
-# 6 + 5 headwords across the two fixture dictionaries.
-IDLE_STATUS = "11 words · 2 dictionaries"
+LINK_WORDS = ["cf", "qv", "ext", "only", "byte", "λόγος"]
+# 6 + 6 headwords across the two fixture dictionaries.
+IDLE_STATUS = "12 words · 2 dictionaries"
 
 APP_NAME = "dictu"
 # the status line always starts with a count, which is how we pick it out of the
@@ -317,16 +317,29 @@ class Widgets:
         self.definition = views[0]
 
     def row_words(self):
+        """the words in the wordlist. a row is a box holding the word and a dim
+        language tag, so read the row's accessible name (the app sets it to the word)
+        rather than sweeping up every label inside it."""
         return [
-            (r.get_name() or text_of(r)).strip()
-            for r in descendants(self.results)
-            if r.get_role_name() in ("list item", "label") and r != self.results
+            (row.get_name() or "").strip()
+            for row in by_role(self.results, "list item")
+            if (row.get_name() or "").strip()
         ]
 
     def status_text(self):
         """every non-empty label in the window."""
         texts = [(node.get_name() or "").strip() for node in by_role(self.app, "label")]
         return [t for t in texts if t]
+
+    def row_tags(self):
+        """the dim tag at the end of each wordlist row — the language, or the
+        dictionary's name when the language can't be named."""
+        tags = []
+        for row in by_role(self.results, "list item"):
+            labels = [(node.get_name() or "").strip() for node in by_role(row, "label")]
+            if labels:
+                tags.append(labels[-1])
+        return tags
 
     def fold_line(self):
         """the strip under the definition naming what is below the fold, or "" when
@@ -525,6 +538,24 @@ def main():
             )
         else:
             r.check("selecting a row renders its definition", False, "could not activate a row")
+
+        # roadmap #15: each row says which language it is. a greek headword is
+        # tagged from its script; a latin-script word in a fixture dictionary whose
+        # name says nothing falls back to that dictionary's name.
+        app_proc.forward("--search", "λόγος")
+        greek = wait_for(lambda: widgets.row_tags() or None, 10, "the greek row's tag")
+        r.check(
+            "a headword's script tags its language",
+            greek == ["GRC"],
+            f"expected ['GRC'], got {greek}",
+        )
+        app_proc.forward("--search", "zeit")
+        fallback = wait_for(lambda: widgets.row_tags() or None, 10, "the fallback tag")
+        r.check(
+            "an unnameable language falls back to the dictionary's name",
+            fallback == ["sample"],
+            f"expected ['sample'], got {fallback}",
+        )
 
         # roadmap #22: when several dictionaries define a word and they don't all
         # fit, a strip under the definition says how many are left and which.

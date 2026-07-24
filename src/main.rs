@@ -15,6 +15,7 @@ use gtk::{gdk, gio, glib};
 
 mod config;
 mod dict;
+mod language;
 mod library;
 use library::Library;
 
@@ -184,6 +185,9 @@ struct Ui {
     /// label, and a mark at the line it starts on. marks (not line numbers) because
     /// they survive the buffer being rewritten under them.
     sections: Rc<RefCell<Vec<(String, gtk::TextMark)>>>,
+    /// the words in the wordlist, in row order — a row is now a box of two labels,
+    /// so its word is looked up by index rather than read back out of a widget.
+    words: Rc<RefCell<Vec<String>>>,
     library: SharedLibrary,
 }
 
@@ -209,21 +213,20 @@ impl Ui {
         // `&[]` scopes to every dict; the scope panel (roadmap #14) passes a real mask.
         let hits = library.prefix_search(query, SEARCH_LIMIT, &[]);
         let mut seen = HashSet::new();
+        self.words.borrow_mut().clear();
         for hit in &hits {
             if !seen.insert(hit.word.to_lowercase()) {
                 continue;
             }
-            let row = gtk::Label::builder()
-                .label(&hit.word)
-                .xalign(0.0)
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .tooltip_text(&hit.word)
-                .margin_top(6)
-                .margin_bottom(6)
-                .margin_start(12)
-                .margin_end(12)
-                .build();
-            self.results.append(&row);
+            let dict_name = library.dict_label(hit.dict).unwrap_or("");
+            self.words.borrow_mut().push(hit.word.clone());
+            self.results.append(&word_row(&hit.word, dict_name));
+            // name the row after its word: the row is a box of two labels now, so
+            // without this a screen reader (and the e2e harness) would read the
+            // language tag as part of the entry.
+            if let Some(row) = self.results.last_child().and_downcast::<gtk::ListBoxRow>() {
+                row.update_property(&[gtk::accessible::Property::Label(&hit.word)]);
+            }
         }
 
         if query.is_empty() {
@@ -673,6 +676,7 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         status,
         fold: fold.clone(),
         sections: Rc::new(RefCell::new(Vec::new())),
+        words: Rc::new(RefCell::new(Vec::new())),
         library: Rc::new(RefCell::new(None)),
     };
 
@@ -689,10 +693,12 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     let ui_select = ui.clone();
     results.connect_row_selected(move |_list, row| {
         let Some(row) = row else { return };
-        let Some(label) = row.child().and_downcast::<gtk::Label>() else {
-            return;
-        };
-        ui_select.show_word(&label.label());
+        let word = usize::try_from(row.index())
+            .ok()
+            .and_then(|index| ui_select.words.borrow().get(index).cloned());
+        if let Some(word) = word {
+            ui_select.show_word(&word);
+        }
     });
 
     // clicking a link in a definition looks that word up (roadmap #20).
@@ -791,6 +797,37 @@ fn toolbar_with(header: &adw::HeaderBar, content: &impl IsA<gtk::Widget>) -> adw
     toolbar.add_top_bar(header);
     toolbar.set_content(Some(content));
     toolbar
+}
+
+/// one wordlist row: the word, and a dim tag saying which language it is — or which
+/// dictionary, when the language can't be named (see `language::tag`).
+fn word_row(word: &str, dict_name: &str) -> gtk::Box {
+    let label = gtk::Label::builder()
+        .label(word)
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .tooltip_text(word)
+        .hexpand(true)
+        .build();
+
+    let tag = gtk::Label::builder()
+        .label(language::tag(word, dict_name).unwrap_or(dict_name))
+        .xalign(1.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .tooltip_text(dict_name)
+        .max_width_chars(12)
+        .build();
+    tag.add_css_class("dim-label");
+    tag.add_css_class("caption");
+
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    row.set_margin_top(6);
+    row.set_margin_bottom(6);
+    row.set_margin_start(12);
+    row.set_margin_end(12);
+    row.append(&label);
+    row.append(&tag);
+    row
 }
 
 /// `n` with thousands separators: 4009914 -> "4,009,914". `rchunks` groups from

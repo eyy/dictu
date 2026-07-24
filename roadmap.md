@@ -36,23 +36,22 @@ lost, the substance is not.
 
 ## next — 2026-07-24 feedback
 
-- **[ ] #15 wordlist: lemma vs inflection, and a language/dictionary tag.**
-  *re-raised by feedback, now clearly two requirements.* the noise is easy to see:
-  `dictu search dacrima` returns dacrima, dacrimae, dacrimam, dacrimarum, dacrimas… all
-  inflections of one lemma, each tripled across the overlapping Latin dictionaries (#19).
-  - **lemmas vs inflections:** differentiate them visually in the row, and add a config
-    option to hide inflections / search lemmas only. **the `.syn` hypothesis is dead for
-    the dictionary we kept** — measured while doing #19: the Whitaker copies stored 34,443
-    lemmas in `.idx` and ~1.19M inflections in a 22 MB `.syn`, which would have been a
-    clean signal, but `latin infl+lewis` has no `.syn` at all and puts all 1,223,585 forms
-    directly in `.idx`. the signal that does survive: an inflected form's `.idx` entry
-    points at the *same byte range* as its lemma, and the entry text opens with the lemma
-    (`dacrimarum` → an entry beginning "dacrima, dacrimae"). so a headword that differs
-    from the lemma its definition opens with is an inflection. cheap to compute at index
-    time, no format-specific hack.
-  - **language tag:** a small all-caps `LAT` / `HEB` / `FR` after each word, falling back
-    to the dictionary's name when the language is ambiguous. check `.ifo` for a lang field;
-    otherwise carry it on `DictEntry` from config.
+- **[ ] #33 wordlist: tell lemmas from inflections** (the other half of #15).
+  the noise is easy to see: `dictu search rex` returns 27 results, 26 of them inflections of
+  one lemma. differentiate them in the row, and add a config option to hide inflections /
+  search lemmas only.
+  **the `.syn` hypothesis is dead for the dictionary we kept** — measured while doing #19:
+  the Whitaker copies stored 34,443 lemmas in `.idx` and ~1.19M inflections in a 22 MB
+  `.syn`, which would have been a clean signal, but `latin infl+lewis` has no `.syn` at all
+  and puts all 1,223,585 forms directly in `.idx`. two signals survive, both worth a spike
+  before any ui work:
+  1. **shared byte ranges** — an inflection's `.idx` entry points at the *same* range as its
+     lemma, so headwords can be grouped by range and the shortest of each group taken as the
+     lemma (`amo` over `amare`/`amavi`; `dacrima` over `dacrimae`). costs a pass over ~1.2M
+     entries at index time, which #7 (already slow) has to absorb — measure it.
+  2. **the entry's opening words** — an inflection's definition opens with its lemma
+     (`dacrimarum` → an entry beginning "dacrima, dacrimae"). exact, but reading a definition
+     per row is too slow to do for 500 rows per keystroke unless only a prefix is read.
 
 ## later
 
@@ -75,9 +74,11 @@ lost, the substance is not.
   cycle that keeps widgets alive after close. switch to `glib::clone!(#[weak] …)`.
 
 - **[ ] #12 unified search ui (results across dictionaries).**
-  largely delivered by #11. what's left is presentation: showing *which* dictionaries a
-  result came from in the row, and deduping the same headword across dictionaries more
-  intelligently than the current lowercase `HashSet`.
+  largely delivered by #11. what's left is presentation: a row shows the tag of the *first*
+  dictionary that had the word, so `rex` reads `FR` even though the Latin dictionary defines
+  it too and the definition pane shows both — the row should say when several dictionaries
+  answer. and deduping the same headword across dictionaries more intelligently than the
+  current lowercase `HashSet`.
 
 ## done
 
@@ -110,6 +111,14 @@ lost, the substance is not.
   updated to `&[]` ("all dicts") until #14 lands, and the mask itself is now covered by a
   unit test.
 - **[x] #26 `hack/` holds the feedback loop** (was empty).
+- **[x] #15 (language tag) every wordlist row says which language it is.** there is no
+  language field in a StarDict `.ifo`, so the tag comes from what's actually there: the
+  script the headword is written in, which settles hebrew and greek outright whatever the
+  dictionary is called, and failing that the language named in the dictionary's own title
+  (`Dictionary latininfl -> english` → `LAT`, `French - English.csv (fr-en)` → `FR`,
+  `Ref_LSJ` → `GRC`). when neither answers, the row shows the dictionary's name, which is
+  the honest fallback the feedback asked for. `src/language.rs`, unit-tested, plus two e2e
+  checks. the lemma-vs-inflection half is now #33.
 - **[x] #22 a strip says what's below the fold.** under the definition, when a word is
   defined by dictionaries that don't all fit: `1 more definition below: sample` — the count
   and the names. it tracks scrolling and hides itself when everything is in view, so a
