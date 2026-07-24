@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
-# screenshot the running app, without asking a human to do it.
+# screenshot the app, without asking a human to do it.
 #
-#   hack/shot.sh                          shot of the real collection, ready state
+#   hack/shot.sh                          the real collection, ready state
 #   hack/shot.sh -o /tmp/x.png dacrima    search for a word first, then shoot
-#   hack/shot.sh --sample zeit            use the sample/ fixture — seconds, not ~30s
+#   hack/shot.sh --sample --select cf     the sample/ fixture, first row selected
 #
-# how it works, and why it works now when earlier attempts didn't: gnome denies
-# the org.gnome.Shell.Screenshot d-bus api to third-party callers, and grim needs
-# wlr-screencopy, which mutter doesn't implement. so instead we run the app on
-# XWayland (GDK_BACKEND=x11) on the REAL session, where gtk4 still gets hardware
-# gl — then xdotool can find the window and ImageMagick's `import` can grab it.
-# (the earlier dead end was Xvfb, which has no gl, so every frame came out black.)
+# how, and why it took a few tries: gnome denies the org.gnome.Shell.Screenshot
+# d-bus api to third parties, and grim needs wlr-screencopy, which mutter doesn't
+# implement — so there is no way to grab the app on the user's own screen. instead
+# the app runs on a private Xvfb display, where it is the only window, and
+# ImageMagick's `import` grabs it. that also means this never touches the desktop
+# you are working on.
 #
-# caveat: XWayland draws server-side decorations, so this cannot show wayland
-# client-side-decoration bugs. it shows window CONTENT faithfully, which is what
+# two settings are load-bearing:
+#   GSK_RENDERER=cairo   with gtk4's gl renderer, `import` returns a STALE x
+#                        pixmap — the window as it first painted, whatever it
+#                        shows now. cairo draws into the x drawable instead.
+#   GDK_BACKEND=x11      Xvfb is an x server; also the only backend whose windows
+#                        can be handed focus, which --select needs.
+#
+# caveat: no compositor here, so this cannot reproduce a wayland client-side-
+# decoration or gl-renderer bug. window content is faithful, which is what
 # layout, typography and markup work needs.
 
 set -uo pipefail
@@ -23,34 +30,46 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
 OUT="${TMPDIR:-/tmp}/dictu-shot.png"
+SIZE="900x700x24"
 SAMPLE=0
-KEEP=0
 SELECT=0
 QUERY=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         -o) OUT="$2"; shift 2 ;;
-        --sample) SAMPLE=1; shift ;;
-        --select) SELECT=1; shift ;;  # select the first result, so a definition shows
-        --keep) KEEP=1; shift ;;   # leave the app running afterwards
+        --sample) SAMPLE=1; shift ;;      # fixture dictionaries: seconds, not ~20s
+        --select) SELECT=1; shift ;;      # select the first result, so a definition shows
+        --size) SIZE="$2"; shift 2 ;;     # e.g. --size 1400x900x24
         -*) echo "unknown flag: $1" >&2; exit 2 ;;
         *) QUERY="$1"; shift ;;
     esac
 done
 
-for tool in xdotool import; do
+for tool in Xvfb xdotool import; do
     command -v "$tool" >/dev/null || { echo "shot: need $tool" >&2; exit 2; }
 done
 
 cargo build 2>&1 | tail -2 || exit 1
 
 # one instance at a time: a second launch forwards its argv to the first and
-# exits, so a stale process would leave us shooting the old build. kill by exact
-# process NAME — `pkill -f target/debug/dictu` also matches the shell running
-# this script and kills it (that's an exit 144 out of nowhere).
+# exits, so a leftover process would answer instead of the one we just started.
+# kill by exact process NAME — `pkill -f target/debug/dictu` also matches the
+# shell running this script and kills it (an exit 144 out of nowhere).
 pgrep -x dictu | xargs -r kill
 sleep 2   # d-bus name release; relaunching instantly fails with NoReply.
+
+# a display of our own, on the first free number.
+DISPLAY_NUM=""
+for n in $(seq 96 119); do
+    [ -e "/tmp/.X${n}-lock" ] && continue
+    DISPLAY_NUM="$n"
+    break
+done
+[ -n "$DISPLAY_NUM" ] || { echo "shot: no free display number" >&2; exit 1; }
+Xvfb ":$DISPLAY_NUM" -screen 0 "$SIZE" >/dev/null 2>&1 &
+XVFB_PID=$!
+export DISPLAY=":$DISPLAY_NUM"
 
 CONFIG_ENV=()
 TMPCFG=""
@@ -62,16 +81,17 @@ if [ "$SAMPLE" = 1 ]; then
 fi
 
 cleanup() {
-    [ "$KEEP" = 1 ] || pgrep -x dictu | xargs -r kill
+    pgrep -x dictu | xargs -r kill
+    kill "$XVFB_PID" 2>/dev/null
     [ -n "$TMPCFG" ] && rm -rf "$TMPCFG"
 }
 trap cleanup EXIT
 
-# GSK_RENDERER=cairo matters: with gtk4's default gl renderer, `import` reads a
-# stale x pixmap — you get the window as it looked when it first painted, no
-# matter what is on screen now. the cairo renderer draws into the x drawable, so
-# a capture is always current. (this, not the absence of gl, is why the earlier
-# xvfb attempts came out blank.)
+for _ in $(seq 20); do
+    [ -e "/tmp/.X11-unix/X$DISPLAY_NUM" ] && break
+    sleep 0.2
+done
+
 env "${CONFIG_ENV[@]}" GDK_BACKEND=x11 GSK_RENDERER=cairo nohup ./target/debug/dictu \
     > "${TMPDIR:-/tmp}/dictu-shot.log" 2>&1 &
 
@@ -85,8 +105,7 @@ STATUS=$(env "${CONFIG_ENV[@]}" timeout 180 python3 hack/e2e.py --wait-ready) ||
 echo "ready: $STATUS"
 
 if [ -n "$QUERY" ]; then
-    # --search goes through the single-instance path, so no synthetic keystrokes
-    # and no stealing the user's focus.
+    # --search goes through the single-instance path: no synthetic keystrokes.
     env "${CONFIG_ENV[@]}" ./target/debug/dictu --search "$QUERY"
     sleep 1
 fi

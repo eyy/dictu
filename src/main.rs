@@ -338,7 +338,11 @@ impl Ui {
         buffer.insert_with_tags(&mut iter, &format!("{word}\n"), &[&head_tag(&buffer)]);
         for (dict_index, html) in &defs {
             let label = library.dict_label(*dict_index).unwrap_or("");
-            buffer.insert_with_tags(&mut iter, &format!("\n{label}\n"), &[&source_tag(&buffer)]);
+            // no blank line: the heading's own space-above is what separates
+            // sections, and a literal newline on top of it just leaves a hole.
+            buffer.insert_with_tags(&mut iter, &format!("{label}\n"), &[&source_tag(&buffer)]);
+
+            let body_start = iter.line();
             for run in dict::markup::to_runs(html) {
                 let style = style_tag(&buffer, run.style);
                 // a followable link gets a second, invisible tag carrying its
@@ -352,6 +356,7 @@ impl Ui {
                 }
             }
             buffer.insert(&mut iter, "\n");
+            structure_body(&buffer, body_start, iter.line());
         }
     }
 }
@@ -385,13 +390,16 @@ fn head_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
             .name("head")
             .weight(700)
             .scale(HEAD_SCALE)
+            .pixels_below_lines(4)
             .build();
         buffer.tag_table().add(&tag);
         tag
     })
 }
 
-/// the dim, small label marking which dictionary a definition came from.
+/// the dim, small label marking which dictionary a definition came from. the
+/// generous space above it is what separates one dictionary's answer from the
+/// next; the letter spacing makes it read as a heading rather than as text.
 fn source_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
     buffer.tag_table().lookup("source").unwrap_or_else(|| {
         let tag = gtk::TextTag::builder()
@@ -399,6 +407,80 @@ fn source_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
             .weight(700)
             .scale(0.85)
             .foreground("#808080")
+            .letter_spacing(600)
+            .pixels_above_lines(22)
+            .pixels_below_lines(10)
+            .build();
+        buffer.tag_table().add(&tag);
+        tag
+    })
+}
+
+/// give one dictionary's definition its shape: the whole body sits indented under
+/// its heading, and each sense inside it gets a hanging indent plus air above, so
+/// senses read as a list instead of one paragraph. `from`/`to` are line indices.
+fn structure_body(buffer: &gtk::TextBuffer, from: i32, to: i32) {
+    let (Some(start), Some(end)) = (buffer.iter_at_line(from), buffer.iter_at_line(to)) else {
+        return;
+    };
+    // create the body tag before the sense tag: gtk resolves conflicting tags by
+    // insertion order, so the sense indent has to be the later of the two.
+    let body = body_tag(buffer);
+    let sense = sense_tag(buffer);
+    buffer.apply_tag(&body, &start, &end);
+
+    for line in from..to {
+        let Some(line_start) = buffer.iter_at_line(line) else {
+            continue;
+        };
+        let mut line_end = line_start;
+        if !line_end.ends_line() {
+            line_end.forward_to_line_end();
+        }
+        let text = buffer.text(&line_start, &line_end, false);
+        if starts_a_sense(&text) {
+            buffer.apply_tag(&sense, &line_start, &line_end);
+        }
+    }
+}
+
+/// whether a line opens a new sense — a dash marker (Lewis & Short) or a numbered
+/// or roman-numbered one (Liddell, and most glossaries).
+fn starts_a_sense(line: &str) -> bool {
+    let line = line.trim_start();
+    if let Some(rest) = line.strip_prefix('-') {
+        return rest.starts_with(' ');
+    }
+    let marker: String = line
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || matches!(c, 'I' | 'V' | 'X' | 'i' | 'v' | 'x'))
+        .collect();
+    if marker.is_empty() {
+        return false;
+    }
+    matches!(line[marker.len()..].chars().next(), Some('.') | Some(')'))
+}
+
+/// the whole of one dictionary's definition, indented under its heading. note a
+/// tag's `left_margin` REPLACES the view's (18), it doesn't add to it — so this has
+/// to exceed 18 to read as an indent at all.
+fn body_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
+    buffer.tag_table().lookup("body").unwrap_or_else(|| {
+        let tag = gtk::TextTag::builder().name("body").left_margin(28).build();
+        buffer.tag_table().add(&tag);
+        tag
+    })
+}
+
+/// one sense: hanging indent, so its marker sits out in the margin and the wrapped
+/// lines line up under the text rather than under the marker.
+fn sense_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
+    buffer.tag_table().lookup("sense").unwrap_or_else(|| {
+        let tag = gtk::TextTag::builder()
+            .name("sense")
+            .left_margin(46)
+            .indent(-16)
+            .pixels_above_lines(10)
             .build();
         buffer.tag_table().add(&tag);
         tag
@@ -538,6 +620,9 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     // clicking a link in a definition looks that word up (roadmap #20).
     let ui_link = ui.clone();
     let click = gtk::GestureClick::new();
+    // capture phase: the textview's own drag-select gesture claims the sequence
+    // otherwise, and this handler never hears about the release.
+    click.set_propagation_phase(gtk::PropagationPhase::Capture);
     click.connect_released(move |gesture, _clicks, x, y| {
         let Some(target) = ui_link.link_at(x, y) else {
             return; // an ordinary click: let the textview place the cursor.
@@ -550,6 +635,7 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     // and the pointer says so before you click.
     let ui_hover = ui.clone();
     let motion = gtk::EventControllerMotion::new();
+    motion.set_propagation_phase(gtk::PropagationPhase::Capture);
     motion.connect_motion(move |_, x, y| {
         let cursor = if ui_hover.link_at(x, y).is_some() {
             "pointer"

@@ -37,9 +37,16 @@ change gets an e2e check.
 ## ui e2e over at-spi
 
 gtk4 exports every widget on the accessibility bus, so the ui is scriptable — no ocr, no
-synthetic clicks into whatever holds focus. `hack/e2e.py` launches dictu against a
+guessing from pixels. `hack/e2e.py` launches dictu **on its own Xvfb display** with a
 throwaway config pointing at `sample/`, so assertions never depend on which dictionaries
-are installed.
+are installed and the tests never touch the desktop you're working on.
+
+the private display is not just tidiness. on the real gnome session dictu runs under
+xwayland, where it is the only *x* client: `xdotool` reports the pointer as being over it
+while the click actually lands in whatever wayland window is drawn on top — clicks silently
+go nowhere (and could go somewhere unwanted). on a private display it is the only window,
+there are no compositor shadow margins, so at-spi's window coordinates can be used
+directly, and repaints are never skipped for being occluded.
 
 ```bash
 hack/e2e.py            # run the checks, exit code is the verdict
@@ -59,15 +66,15 @@ what you need to know to add a check:
   hands the index over. wait for that text to change, never a fixed sleep.
 - drive the search box through `dictu --search WORD` (the single-instance path the global
   hotkey uses) instead of typing — deterministic, and it doesn't steal the user's focus.
-- keyboard behaviour is tested by injecting real keys, which needs two things
-  (`AppUnderTest.focus_window` / `.press` / `.type_text` handle both): the app under test
-  runs on XWayland, because only there can we hand it keyboard focus — mutter refuses
-  `xdotool windowactivate` (no `_NET_ACTIVE_WINDOW` for xwayland clients) but plain
-  `xdotool windowfocus` works — and keys go out as `xdotool key --window <id>`, which
-  targets that window, so a stray key can never land in one of the user's own windows.
-  gtk drops injected keys while a window is unfocused, so the checks skip themselves if
-  focus can't be obtained rather than typing somewhere unexpected. set
-  `DICTU_E2E_BACKEND=wayland` to run the rest natively; the keyboard checks then skip.
+- keyboard and pointer behaviour is tested by injecting real events
+  (`AppUnderTest.focus_window` / `.press` / `.type_text` / `.click_at`). gtk drops
+  injected keys for an unfocused window, so focus comes first via `xdotool windowfocus`
+  (`windowactivate` needs `_NET_ACTIVE_WINDOW`, which nothing sets on a bare display).
+- aiming a click needs care: gtk4 exposes text attributes over at-spi but **no character
+  geometry** (`get_character_extents` fails), so a click can't be aimed at a word
+  directly. the link click test aims at a fixture entry whose definition is one wide,
+  **gap-free** link — a space between two words belongs to neither link, so a click there
+  follows nothing — and searches down a column for it.
 - `python3-pyatspi` is **not** installed and isn't needed — `gi.repository.Atspi` works.
 - the `dbind-WARNING … /org/a11y/atspi/cache` line on startup is noise; ignore it.
 
@@ -79,10 +86,9 @@ hack/shot.sh --sample zeit -o /tmp/x.png      # fixture + a search; seconds, not
 hack/shot.sh --sample --select cf             # also select the first row, so a definition shows
 ```
 
-this works and needs no human. the route: run the app on **XWayland**
-(`GDK_BACKEND=x11`) on the *real* session, then `xdotool` finds the window and
-ImageMagick's `import -window` grabs it. the script waits for the ui's own ready signal
-first, so it never captures `Indexing…`.
+this works and needs no human. the app runs on a **private Xvfb display** where it is the
+only window, and ImageMagick's `import -window` grabs it; the script waits for the ui's own
+ready signal first, so it never captures `Indexing…`, and nothing appears on your screen.
 
 two things are load-bearing, both learned the hard way:
 
@@ -91,13 +97,13 @@ two things are load-bearing, both learned the hard way:
   has changed since. it looks like the app is broken when it isn't. the cairo renderer
   draws into the x drawable, so captures are current.
 - **capture the window, not the screen.** `import -window root` fails outright under
-  xwayland (`Resource temporarily unavailable`), so there is no full-screen path here.
+  xwayland (`Resource temporarily unavailable`), so there is no full-screen path there.
 
-caveat: the capture is of one window on xwayland with the cairo renderer, so it will not
-reproduce a gl-renderer or compositor-level bug, and gtk4's invisible shadow margins mean
-the x window is larger than the logical one (a 900×600 window is a 1022×722 drawable —
-which also matters when aiming a click; see `link_click_column` in `hack/e2e.py`). window
-*content* is faithful, which is what layout, typography and markup work needs.
+caveat: one window, no compositor, cairo renderer — so this cannot reproduce a
+gl-renderer or wayland client-side-decoration bug. window *content* is faithful, which is
+what layout, typography and markup work needs. (on the real session, note gtk4's invisible
+shadow margins make the x window larger than the logical one — a 900×600 window is a
+1022×722 drawable — which is one more reason the harness doesn't run there.)
 
 routes that do **not** work here (don't re-derive them):
 
@@ -105,10 +111,12 @@ routes that do **not** work here (don't re-derive them):
    allowed`. gnome 46 gates that api to its own components; third parties are expected to
    go through the xdg desktop portal, which prompts the user, so it's useless unattended.
 2. `grim` — needs wlr-screencopy, which mutter doesn't implement.
-3. `Xvfb` + `import` — needs `GSK_RENDERER=cairo` for the same reason as above, and
-   nothing is focusable there. superseded by the live XWayland route.
+3. grabbing the app **on the live session** — it runs under xwayland there, so a wayland
+   window drawn on top is invisible to x: clicks aim at dictu and land elsewhere, and an
+   occluded window may not repaint at all, so a capture shows a frame from minutes ago.
+   this is what the private display replaces.
 4. headless `cage` + `grim` — captured black, and cage crashed on exit, popping apport
-   dialogs onto the user's desktop.
+   dialogs onto the user's desktop. Xvfb needs none of that.
 
 the manual fallback: the user saves gnome screenshots to `~/Pictures/Screenshots/` as
 `Screenshot from YYYY-MM-DD HH-MM-SS.png`. pick the newest by the timestamp **in the

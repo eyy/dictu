@@ -10,6 +10,13 @@ the app under test gets a throwaway XDG_CONFIG_HOME pointing at the repo's
 `sample/` fixture dictionary, so the assertions don't depend on which
 dictionaries the developer happens to have installed.
 
+it also gets its own Xvfb display, which matters for more than tidiness: on the
+real gnome session the app runs under xwayland, so it is the only *x* client
+around — `xdotool` cheerfully reports the pointer as being over it while the
+click actually lands in whatever wayland window is drawn on top. on a private
+display the app is the only window there, coordinates are exact (no compositor
+shadow margins), and the tests never steal the user's focus or pointer.
+
 run it: hack/e2e.py [-v]        -v echoes what the harness sees while it waits
         hack/e2e.py --tree      dump the live widget tree (roles + names) instead
                                 of asserting — how you find the selector to use
@@ -138,6 +145,48 @@ def wait_for(predicate, timeout, what):
 # -- the app under test ----------------------------------------------------
 
 
+class PrivateDisplay:
+    """an Xvfb server of our own, exported as DISPLAY for everything we spawn.
+    at-spi is unaffected — it lives on the session bus, not on the display."""
+
+    def __init__(self, size="1200x800x24"):
+        self.size = size
+        self.proc = None
+        self.name = None
+
+    def __enter__(self):
+        for number in range(99, 120):
+            if os.path.exists(f"/tmp/.X{number}-lock"):
+                continue
+            self.name = f":{number}"
+            self.proc = subprocess.Popen(
+                ["Xvfb", self.name, "-screen", "0", self.size],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            break
+        if self.name is None:
+            raise RuntimeError("no free display number between :99 and :119")
+
+        os.environ["DISPLAY"] = self.name
+        wait_for(
+            lambda: os.path.exists(f"/tmp/.X11-unix/X{self.name[1:]}") or None,
+            10,
+            f"Xvfb on {self.name}",
+        )
+        log(f"private display {self.name}")
+        return self
+
+    def __exit__(self, *_exc):
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        return False
+
+
 class AppUnderTest:
     """a dictu instance with a throwaway config pointing at sample/."""
 
@@ -157,12 +206,12 @@ class AppUnderTest:
         # be switched on explicitly for the bridge to be registered promptly.
         env["GTK_A11Y"] = "atspi"
         env["NO_AT_BRIDGE"] = "0"
-        # XWayland by default: synthetic keypresses go to whichever window has
-        # focus, and only on x11 can we give focus to the window under test
-        # (wayland won't let a client take it). key handling itself is
-        # backend-independent. set DICTU_E2E_BACKEND=wayland to test natively —
-        # the keyboard checks then skip.
-        env["GDK_BACKEND"] = os.environ.get("DICTU_E2E_BACKEND", "x11")
+        # x11 on our private display; key handling is backend-independent, and
+        # only on x11 can focus be handed to the window under test at all.
+        env["GDK_BACKEND"] = "x11"
+        # the cairo renderer keeps the x drawable up to date, so `import` captures
+        # the current frame rather than the one the window first painted.
+        env["GSK_RENDERER"] = "cairo"
 
         log(f"launching {BINARY} with XDG_CONFIG_HOME={self.tmp}")
         self.proc = subprocess.Popen(
@@ -198,10 +247,10 @@ class AppUnderTest:
         return None
 
     def focus_window(self):
-        """give the window under test keyboard focus. `windowactivate` can't be
-        used — mutter doesn't expose _NET_ACTIVE_WINDOW to xwayland clients — but
-        plain XSetInputFocus works. this does take focus off whatever the user was
-        doing, for as long as the keyboard checks run."""
+        """give the window under test keyboard focus — gtk drops injected keys for
+        an unfocused window. there is no window manager on the private display, so
+        plain XSetInputFocus is both available and enough (`windowactivate` needs
+        _NET_ACTIVE_WINDOW, which nothing sets there)."""
         wid = self.window_id()
         if wid is None:
             return False
@@ -223,9 +272,8 @@ class AppUnderTest:
         time.sleep(0.4)
 
     def click_at(self, x, y):
-        """click at coordinates relative to the window under test — window-relative
-        so no screen-position arithmetic is involved. this moves the real pointer,
-        which is why it only happens inside the pointer checks."""
+        """click at coordinates relative to the window under test. the pointer being
+        moved is the private display's, not the user's."""
         subprocess.run(
             ["xdotool", "mousemove", "--window", self.window_id(), str(x), str(y)],
             check=False,
@@ -324,7 +372,7 @@ def print_tree(node, depth=0):
 def dump_tree():
     """launch the app against the fixture and print its widget tree."""
     Atspi.init()
-    with AppUnderTest() as app_proc:
+    with PrivateDisplay(), AppUnderTest() as app_proc:
         node = wait_for(find_app, READY_TIMEOUT, "dictu on the a11y bus")
         wait_for(lambda: safe(Widgets, node), READY_TIMEOUT, "the widget tree")
         app_proc.forward("--search", "aardvark")
@@ -370,7 +418,7 @@ def main():
     r = Results()
     print("e2e: driving the ui over at-spi")
 
-    with AppUnderTest() as app_proc:
+    with PrivateDisplay(), AppUnderTest() as app_proc:
         node = wait_for(find_app, READY_TIMEOUT, "dictu on the a11y bus")
         r.check("app appears on the accessibility bus", node is not None)
 
@@ -558,25 +606,15 @@ def link_click_column(app_proc, widgets):
     at-spi, the window's position from xdotool, and the fixture entry's definition
     is a link and nothing else, so the link starts at the left margin. returns the
     followed definition, or None if no click hit it."""
-    # at-spi's WINDOW coords are relative to the *logical* window, but gtk4 on x11
-    # wraps that in a larger x window to hold its client-side shadows, so the two
-    # origins differ. the horizontal shadow is half the difference in width; the
-    # vertical offset is left to the y search below rather than assumed.
+    # on the private display there is no compositor, so the x window and the
+    # logical window are the same size and at-spi's WINDOW coords can be used
+    # directly. x is well inside the fixture's one wide link — which is a single
+    # gap-free token on purpose, since the space between two words belongs to
+    # neither link and a click there follows nothing.
     pane = Atspi.Component.get_extents(widgets.definition, Atspi.CoordType.WINDOW)
-    frame = by_role(widgets.app, "frame")[0]
-    logical = Atspi.Component.get_extents(frame, Atspi.CoordType.WINDOW)
-    geometry = subprocess.run(
-        ["xdotool", "getwindowgeometry", app_proc.window_id()], capture_output=True, text=True
-    ).stdout
-    size = re.search(r"Geometry: (\d+)x(\d+)", geometry)
-    if not size:
-        return None
-    shadow = (int(size.group(1)) - logical.width) // 2
-    # a few px past the pane's 18px left text margin — the fixture's definition is
-    # a link and nothing else, so the link starts there.
-    x = pane.x + 26 + shadow
-    log(f"clicking down x={x} (pane at {pane.x}, shadow {shadow})")
-    for y in range(pane.y + 60, pane.y + 300, 8):
+    x = pane.x + 70
+    log(f"clicking down x={x} (pane at {pane.x},{pane.y})")
+    for y in range(pane.y + 30, pane.y + 260, 8):
         app_proc.click_at(x, y)
         text = widgets.definition_text()
         if "unit of digital information" in text.lower() and text_of(widgets.search) == "byte":

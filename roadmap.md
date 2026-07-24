@@ -54,12 +54,6 @@ lost, the substance is not.
     to the dictionary's name when the language is ambiguous. check `.ifo` for a lang field;
     otherwise carry it on `DictEntry` from config.
 
-- **[ ] #21 clearer visual separation between the parts of a definition.**
-  a definition renders as one continuous flow — headword, then each dictionary's html under
-  a dim label (`Ui::show_word`, `src/main.rs`). give the parts real structure: spacing and a
-  rule between per-dictionary sections, and visible separation of senses/numbered
-  subentries within one definition. the largest visual-quality item on the list.
-
 - **[ ] #22 indicate what's below the fold in the definition panel.**
   when several dictionaries define a word, everything past the first is invisible until you
   scroll. show a footer or sticky strip naming how many further definitions there are and
@@ -115,6 +109,20 @@ lost, the substance is not.
   updated to `&[]` ("all dicts") until #14 lands, and the mask itself is now covered by a
   unit test.
 - **[x] #26 `hack/` holds the feedback loop** (was empty).
+- **[x] #21 definitions have visible structure.** senses were the real problem: Lewis &
+  Short runs them together separated by a bare `-`, so a long entry read as a wall of text.
+  each sense — `- `, `1.`, `II.` — now gets a hanging indent and space above, so the marker
+  sits in the margin and the wrapped lines align under the text; each dictionary's body sits
+  indented under its own heading, and the heading carries the space that separates one
+  dictionary's answer from the next. worth knowing: a `TextTag`'s `left_margin` *replaces*
+  the view's rather than adding to it, so an "indent" below the view's own 18px reads as an
+  outdent.
+- **[x] #31 the test harness runs on its own display.** it was silently unreliable on the
+  live session: under xwayland dictu is the only x client, so `xdotool` reports the pointer
+  over it while the click lands in the wayland window drawn on top, and an occluded window
+  may not repaint, so screenshots showed frames from minutes earlier. both `hack/e2e.py` and
+  `hack/shot.sh` now run the app on a private Xvfb display — exact coordinates, no shadow
+  margins, current captures, and nothing touches the desktop you're working on.
 - **[x] #20 links in definitions work.** the parser was throwing the `href` away, so link
   text was styled blue and underlined but dead. runs now carry their target (a hebrew-hebrew dictionary
   alone has 29,812 of them, shaped `<A href="bword://word">`, where the target is often
