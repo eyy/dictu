@@ -47,8 +47,9 @@ SAMPLE_WORDS = ["aardvark", "byte", "dictionary", "gnome", "rust", "zeitgeist"]
 # a deliberately long "byte" — a headword the dictd fixture also has, so that one
 # dictionary's answer pushes the other's below the fold.
 LINK_WORDS = ["cf", "qv", "ext", "only", "byte", "λόγος"]
-# 6 + 6 headwords across the two fixture dictionaries.
-IDLE_STATUS = "12 words · 2 dictionaries"
+# 7 + 6 headwords across the two fixture dictionaries — the dictd fixture files
+# "byte" twice, which is what the entry-numbering check needs.
+IDLE_STATUS = "13 words · 2 dictionaries"
 
 APP_NAME = "dictu"
 # the status line always starts with a count, which is how we pick it out of the
@@ -555,6 +556,23 @@ def main():
             "an unnameable language falls back to the dictionary's name",
             fallback == ["sample"],
             f"expected ['sample'], got {fallback}",
+        )
+
+        # roadmap #35: a headword filed under several entries in ONE dictionary gets
+        # them numbered, instead of run together as a single answer. the dictd
+        # fixture files "byte" twice for exactly this.
+        app_proc.forward("--search", "byte")
+        wait_for(lambda: "byte" in widgets.row_words() or None, 10, "the byte row")
+        select_first_row(widgets.results)
+        numbered = wait_for(
+            lambda: widgets.definition_text() if "1 of 2" in widgets.definition_text() else None,
+            10,
+            "the entry numbering",
+        )
+        r.check(
+            "several entries under one headword are numbered",
+            "1 of 2" in numbered and "2 of 2" in numbered,
+            f"definition was {numbered[:120]!r}",
         )
 
         # roadmap #22: when several dictionaries define a word and they don't all

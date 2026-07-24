@@ -126,10 +126,19 @@ fn dump(path: Option<&str>) -> glib::ExitCode {
             let headwords = dict.headwords();
             println!("headwords: {}", headwords.len());
             for word in headwords.iter().take(5) {
-                let def = dict.lookup(word).unwrap_or_default();
-                let text = dict::html_to_text(&def);
+                let entries = dict.lookup(word);
+                let text = entries
+                    .first()
+                    .map(|e| dict::html_to_text(e))
+                    .unwrap_or_default();
                 let preview: String = text.chars().take(100).collect();
-                println!("  {word:?} -> {preview:?}");
+                // say when a headword has more than one entry; that is easy to miss
+                // and it is exactly what made `sam` look broken.
+                let more = match entries.len() {
+                    0 | 1 => String::new(),
+                    n => format!("  [{n} entries]"),
+                };
+                println!("  {word:?} -> {preview:?}{more}");
             }
             glib::ExitCode::SUCCESS
         }
@@ -154,19 +163,29 @@ fn lookup(path: Option<&str>, word: Option<&str>, html: bool) -> glib::ExitCode 
             return glib::ExitCode::FAILURE;
         }
     };
-    let Some(definition) = dict.lookup(word) else {
+    let entries = dict.lookup(word);
+    if entries.is_empty() {
         println!("{}: no entry for {word:?}", dict.name());
         return glib::ExitCode::FAILURE;
-    };
-    println!("{} — {word}\n", dict.name());
+    }
     println!(
-        "{}",
-        if html {
-            definition.clone()
-        } else {
-            dict::html_to_text(&definition)
-        }
+        "{} — {word} ({})\n",
+        dict.name(),
+        quantity(entries.len(), "entry", "entries")
     );
+    for (position, entry) in entries.iter().enumerate() {
+        if entries.len() > 1 {
+            println!("--- {} of {} ---", position + 1, entries.len());
+        }
+        println!(
+            "{}",
+            if html {
+                entry.clone()
+            } else {
+                dict::html_to_text(entry)
+            }
+        );
+    }
     glib::ExitCode::SUCCESS
 }
 
@@ -347,7 +366,7 @@ impl Ui {
 
         let mut iter = buffer.start_iter();
         buffer.insert_with_tags(&mut iter, &format!("{word}\n"), &[&head_tag(&buffer)]);
-        for (dict_index, html) in &defs {
+        for (dict_index, entries) in &defs {
             let label = library.dict_label(*dict_index).unwrap_or("");
             // remember where this dictionary's answer starts, so the strip below the
             // pane can say which ones are still out of sight.
@@ -357,21 +376,31 @@ impl Ui {
             // sections, and a literal newline on top of it just leaves a hole.
             buffer.insert_with_tags(&mut iter, &format!("{label}\n"), &[&source_tag(&buffer)]);
 
-            let body_start = iter.line();
-            for run in dict::markup::to_runs(html) {
-                let style = style_tag(&buffer, run.style);
-                // a followable link gets a second, invisible tag carrying its
-                // target, which is how a click maps back to a headword.
-                match run.href.as_deref().and_then(dict::markup::link_target) {
-                    Some(target) => {
-                        let link = link_tag(&buffer, &target);
-                        buffer.insert_with_tags(&mut iter, &run.text, &[&style, &link]);
-                    }
-                    None => buffer.insert_with_tags(&mut iter, &run.text, &[&style]),
+            for (position, html) in entries.iter().enumerate() {
+                // a word can be filed under dozens of entries in one dictionary
+                // (`esse` under 100 of them). number them, so a wall of answers
+                // reads as a list and you can see how deep it goes.
+                if entries.len() > 1 {
+                    let counter = format!("{} of {}\n", position + 1, entries.len());
+                    buffer.insert_with_tags(&mut iter, &counter, &[&entry_tag(&buffer)]);
                 }
+
+                let body_start = iter.line();
+                for run in dict::markup::to_runs(html) {
+                    let style = style_tag(&buffer, run.style);
+                    // a followable link gets a second, invisible tag carrying its
+                    // target, which is how a click maps back to a headword.
+                    match run.href.as_deref().and_then(dict::markup::link_target) {
+                        Some(target) => {
+                            let link = link_tag(&buffer, &target);
+                            buffer.insert_with_tags(&mut iter, &run.text, &[&style, &link]);
+                        }
+                        None => buffer.insert_with_tags(&mut iter, &run.text, &[&style]),
+                    }
+                }
+                buffer.insert(&mut iter, "\n");
+                structure_body(&buffer, body_start, iter.line());
             }
-            buffer.insert(&mut iter, "\n");
-            structure_body(&buffer, body_start, iter.line());
         }
         // gtk needs to lay the buffer out before any of it has a position, so ask
         // once the layout has settled rather than measuring nothing here.
@@ -465,6 +494,24 @@ fn source_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
             .letter_spacing(600)
             .pixels_above_lines(22)
             .pixels_below_lines(10)
+            .build();
+        buffer.tag_table().add(&tag);
+        tag
+    })
+}
+
+/// the "3 of 71" counter above an entry, when a headword has more than one in the
+/// same dictionary. quieter than the dictionary heading — it separates answers
+/// within a section, it doesn't start a new one.
+fn entry_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
+    buffer.tag_table().lookup("entry").unwrap_or_else(|| {
+        let tag = gtk::TextTag::builder()
+            .name("entry")
+            .scale(0.8)
+            .foreground("#808080")
+            .left_margin(28)
+            .pixels_above_lines(16)
+            .pixels_below_lines(2)
             .build();
         buffer.tag_table().add(&tag);
         tag

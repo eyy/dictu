@@ -121,14 +121,14 @@ impl Dictionary for StarDict {
         &self.headwords
     }
 
-    fn lookup(&self, headword: &str) -> Option<String> {
-        let ranges = self.index.get(headword)?;
-        let joined = ranges
-            .iter()
+    fn lookup(&self, headword: &str) -> Vec<String> {
+        self.index
+            .get(headword)
+            .into_iter()
+            .flatten()
             .filter_map(|&(offset, size)| self.entry_text(offset, size))
-            .collect::<Vec<_>>()
-            .join("\n<hr/>\n");
-        (!joined.is_empty()).then_some(joined)
+            .filter(|entry| !entry.is_empty())
+            .collect()
     }
 }
 
@@ -342,9 +342,9 @@ mod tests {
         };
 
         assert_eq!(dict.headwords(), &["alpha".to_string(), "beta".to_string()]);
-        assert_eq!(dict.lookup("alpha").unwrap(), "<b>alpha</b>");
-        assert_eq!(dict.lookup("beta").unwrap(), "<i>beta</i>");
-        assert!(dict.lookup("gamma").is_none());
+        assert_eq!(dict.lookup("alpha"), ["<b>alpha</b>"]);
+        assert_eq!(dict.lookup("beta"), ["<i>beta</i>"]);
+        assert!(dict.lookup("gamma").is_empty());
     }
 
     #[test]
@@ -379,7 +379,7 @@ mod tests {
             index,
             data: DictBytes::Owned(data),
         };
-        assert_eq!(dict.lookup("colour").unwrap(), "<b>color</b>");
+        assert_eq!(dict.lookup("colour"), ["<b>color</b>"]);
         assert!(dict.headwords().contains(&"colour".to_string())); // synonym listed.
     }
 

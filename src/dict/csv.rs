@@ -71,8 +71,9 @@ impl Dictionary for CsvDictionary {
         &self.headwords
     }
 
-    fn lookup(&self, headword: &str) -> Option<String> {
-        self.index.get(headword).cloned()
+    fn lookup(&self, headword: &str) -> Vec<String> {
+        // this table keys one description per abbreviation, so never more than one.
+        self.index.get(headword).cloned().into_iter().collect()
     }
 }
 
@@ -91,8 +92,8 @@ mod tests {
             dict.headwords(),
             &["Apoll. V".to_string(), "Alex. M".to_string()]
         );
-        assert_eq!(dict.lookup("Apoll. V").unwrap(), "<b>Apollonius</b> Vita");
-        assert!(dict.lookup("missing").is_none());
+        assert_eq!(dict.lookup("Apoll. V"), ["<b>Apollonius</b> Vita"]);
+        assert!(dict.lookup("missing").is_empty());
     }
 
     #[test]

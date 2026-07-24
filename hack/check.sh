@@ -65,7 +65,7 @@ smoke_dump() {
     local out
     out=$(./target/debug/dictu dump sample/sample.index) || return 1
     echo "$out" | head -3
-    grep -q 'headwords: 6' <<<"$out" || { echo "expected 6 headwords" >&2; return 1; }
+    grep -q 'headwords: 7' <<<"$out" || { echo "expected 7 headwords" >&2; return 1; }
     grep -q 'nocturnal burrowing mammal' <<<"$out" || { echo "definition text missing" >&2; return 1; }
 }
 

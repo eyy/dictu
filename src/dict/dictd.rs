@@ -114,15 +114,15 @@ impl Dictionary for DictdDictionary {
         &self.headwords
     }
 
-    fn lookup(&self, headword: &str) -> Option<String> {
-        let ranges = self.index.get(headword)?;
-        // one headword may map to several definitions; join them.
-        let joined = ranges
-            .iter()
+    fn lookup(&self, headword: &str) -> Vec<String> {
+        // one headword may map to several definitions; each comes back separately.
+        self.index
+            .get(headword)
+            .into_iter()
+            .flatten()
             .filter_map(|&(offset, length)| slice_text(self.data.as_slice(), offset, length))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        (!joined.is_empty()).then_some(joined)
+            .filter(|entry| !entry.is_empty())
+            .collect()
     }
 }
 
@@ -185,9 +185,9 @@ mod tests {
             dict.headwords(),
             &["apple".to_string(), "banana".to_string()]
         );
-        assert!(dict.lookup("apple").unwrap().contains("A fruit."));
-        assert!(dict.lookup("banana").unwrap().contains("yellow fruit."));
-        assert!(dict.lookup("missing").is_none());
+        assert!(dict.lookup("apple")[0].contains("A fruit."));
+        assert!(dict.lookup("banana")[0].contains("yellow fruit."));
+        assert!(dict.lookup("missing").is_empty());
     }
 
     #[test]
@@ -211,7 +211,7 @@ mod tests {
 
         let dict = DictdDictionary::open(&dir.join(format!("{stem}.index"))).unwrap();
         assert_eq!(dict.headwords(), &["pear".to_string()]);
-        assert!(dict.lookup("pear").unwrap().contains("sweet fruit."));
+        assert!(dict.lookup("pear")[0].contains("sweet fruit."));
 
         fs::remove_dir_all(&dir).ok();
     }

@@ -101,11 +101,17 @@ pub trait Dictionary: Send {
     /// every headword, in stored order — used to populate the word list.
     fn headwords(&self) -> &[String];
 
-    /// the definition for an exact headword, if present. by contract this is an
-    /// **html fragment** — formats that store plain text should escape it, and
-    /// formats with their own markup (dsl) convert to html. this lets one
-    /// renderer handle every format.
-    fn lookup(&self, headword: &str) -> Option<String>;
+    /// every entry filed under an exact headword, in stored order; empty when the
+    /// headword isn't in this dictionary. by contract each is an **html fragment**
+    /// — formats that store plain text should escape it, and formats with their own
+    /// markup (dsl) convert to html — so one renderer handles every format.
+    ///
+    /// a headword can have many entries, and not just a handful: the inflected latin
+    /// dictionary files `esse` under 100 of them, having inflected the auxiliary
+    /// along with every verb that takes one. they come back separately rather than
+    /// pre-joined so the ui can number them and set them apart, instead of showing a
+    /// hundred entries as one run-together answer.
+    fn lookup(&self, headword: &str) -> Vec<String>;
 }
 
 /// the dictionary file formats dictu knows about.

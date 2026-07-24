@@ -106,12 +106,15 @@ impl Library {
         hits
     }
 
-    /// every (dict index, definition html) for an exact headword.
-    pub fn lookup_all(&self, word: &str) -> Vec<(usize, String)> {
+    /// every dictionary that defines an exact headword, with all of its entries for
+    /// that word — a headword can be filed under many (see `Dictionary::lookup`).
+    /// dictionaries with nothing to say are left out.
+    pub fn lookup_all(&self, word: &str) -> Vec<(usize, Vec<String>)> {
         self.dicts
             .iter()
             .enumerate()
-            .filter_map(|(index, loaded)| loaded.dict.lookup(word).map(|def| (index, def)))
+            .map(|(index, loaded)| (index, loaded.dict.lookup(word)))
+            .filter(|(_, entries)| !entries.is_empty())
             .collect()
     }
 
@@ -142,11 +145,12 @@ mod tests {
         fn headwords(&self) -> &[String] {
             &self.words
         }
-        fn lookup(&self, headword: &str) -> Option<String> {
+        fn lookup(&self, headword: &str) -> Vec<String> {
             self.words
                 .iter()
-                .any(|w| w == headword)
-                .then(|| format!("<b>{headword}</b> def"))
+                .filter(|w| *w == headword)
+                .map(|w| format!("<b>{w}</b> def"))
+                .collect()
         }
     }
 
