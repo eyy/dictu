@@ -1,0 +1,45 @@
+[package]
+name = "dictu"
+version = "0.1.0"
+edition = "2024"
+
+# the `package = "..."` bits rename the crate: on crates.io it's `gtk4`, but
+# everyone imports it as `gtk` (and `libadwaita` as `adw`). this is the standard
+# gtk-rs convention, so our code will match the docs and examples you read.
+[dependencies]
+gtk = { package = "gtk4", version = "0.9", features = ["v4_10"] }
+adw = { package = "libadwaita", version = "0.7", features = ["v1_4"] }
+# anyhow: ergonomic application-level error handling. gives us a single Result
+# type and the `?` operator with human-readable context, instead of hand-rolling
+# an error enum. (fine for an app; a library would define its own error type.)
+anyhow = "1"
+# flate2: gzip (de)compression. dictzip .dz files are gzip under the hood, so a
+# plain gzip decoder reads them transparently. we'll reuse it for bgl too.
+flate2 = "1"
+# serde + toml: (de)serialize the config.toml. `derive` gives us #[derive(
+# Serialize, Deserialize)] on the Config struct.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+# scraper: html5ever-based DOM parsing (no rendering engine — lighter than a
+# browser). we walk the parsed tree and map a controlled tag subset to our own
+# TextView styling, so every dictionary renders in one consistent look and each
+# dict's inline css/colors are ignored.
+scraper = "0.21"
+# ego-tree is scraper's DOM tree type; we depend on it directly (same 0.9 as
+# scraper) to name NodeRef when walking the parsed document.
+ego-tree = "0.9"
+# memmap2: memory-map the (large, uncompressed) .dict files so definitions are
+# paged in lazily by the OS instead of read wholesale into RAM.
+memmap2 = "0.9"
+# async-channel: hand the built index from the worker thread back to the gtk
+# main thread (paired with glib::spawn_future_local), so indexing doesn't block
+# the ui.
+async-channel = "2"
+
+# lints. we deny unsafe everywhere except one documented mmap call (memmap2
+# requires it), and warn on all of clippy's default groups.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
