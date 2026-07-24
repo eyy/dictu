@@ -5,7 +5,7 @@
 // thread, with an "Indexing…" state). the search box queries every dictionary
 // at once; a result shows its definition from each dict that has it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::Path;
 use std::rc::Rc;
@@ -77,8 +77,11 @@ fn main() -> glib::ExitCode {
             .get_or_insert_with(|| build_ui(app, &entries))
             .clone();
 
-        // the hotkey passes the selected word here; fill the search box with it.
+        // the hotkey passes the selected word here; fill the search box with it and
+        // let the results select their first row, so the definition is on screen by
+        // the time you look at the window.
         if let Some(word) = parse_flag(&argv, "--search") {
+            ui.auto_select.set(true);
             ui.search.set_text(&word);
             ui.search.grab_focus();
         }
@@ -207,6 +210,11 @@ struct Ui {
     /// the words in the wordlist, in row order — a row is now a box of two labels,
     /// so its word is looked up by index rather than read back out of a widget.
     words: Rc<RefCell<Vec<String>>>,
+    /// set when a search arrived from outside (`--search`, i.e. the global hotkey):
+    /// the next set of results selects its first row on its own. a flag rather than a
+    /// timer because `SearchEntry` debounces `search-changed`, so there is no moment
+    /// after `set_text` at which the rows are known to exist yet.
+    auto_select: Rc<Cell<bool>>,
     library: SharedLibrary,
 }
 
@@ -264,16 +272,31 @@ impl Ui {
         } else {
             quantity(seen.len(), "result", "results")
         });
+
+        // a search fired from the hotkey should land on an answer, not on a list you
+        // still have to click. consumed either way, so a later hand-typed search
+        // doesn't inherit it.
+        if self.auto_select.replace(false) {
+            self.select_first_row();
+        }
     }
 
-    /// move focus into the wordlist and select its first row — which also shows
-    /// that word's definition. gtk's own row navigation takes over from there.
+    /// select the first row, which is what renders its definition. focus stays where
+    /// it is, so a search arriving from the hotkey shows an answer without taking the
+    /// search box away from you mid-typing.
+    fn select_first_row(&self) {
+        if let Some(row) = self.results.row_at_index(0) {
+            self.results.select_row(Some(&row));
+        }
+    }
+
+    /// the same, but move focus into the wordlist too — what Down does. gtk's own row
+    /// navigation takes over from there.
     fn focus_first_row(&self) {
-        let Some(row) = self.results.row_at_index(0) else {
-            return;
-        };
-        self.results.select_row(Some(&row));
-        row.grab_focus();
+        self.select_first_row();
+        if let Some(row) = self.results.row_at_index(0) {
+            row.grab_focus();
+        }
     }
 
     /// send a printable keypress to the search box wherever focus happens to be,
@@ -724,6 +747,7 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         fold: fold.clone(),
         sections: Rc::new(RefCell::new(Vec::new())),
         words: Rc::new(RefCell::new(Vec::new())),
+        auto_select: Rc::new(Cell::new(false)),
         library: Rc::new(RefCell::new(None)),
     };
 
@@ -832,6 +856,14 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
                 .set_placeholder_text(Some("Search all dictionaries…"));
             ui_ready.show_library_size();
             ui_ready.set_message("Type to search all dictionaries.");
+            // a word may already be waiting: firing the hotkey with nothing running
+            // starts the app AND fills the search box, and that search ran while
+            // there was no index to search, so it found nothing. run it again now
+            // that there is one, or the box sits there with a word and no results.
+            let waiting = ui_ready.search.text();
+            if !waiting.trim().is_empty() {
+                ui_ready.populate_results(&waiting);
+            }
             ui_ready.search.grab_focus();
         }
     });

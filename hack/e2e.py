@@ -558,6 +558,27 @@ def main():
             f"expected ['sample'], got {fallback}",
         )
 
+        # roadmap #36: a search arriving from outside (the global hotkey's
+        # `--search`) selects its first result by itself, so the window shows a
+        # definition rather than a list to click. focus must stay in the search box.
+        app_proc.forward("--search", "aardvark")
+        selected = wait_for(
+            lambda: Atspi.Selection.get_n_selected_children(widgets.results) or None,
+            10,
+            "the first row to select itself",
+        )
+        definition = widgets.definition_text()
+        r.check(
+            "a search from the hotkey selects its first result",
+            selected == 1 and "nocturnal" in definition.lower(),
+            f"selected={selected}, definition={definition[:80]!r}",
+        )
+        r.check(
+            "selecting it does not steal the search box's focus",
+            is_focused(widgets.search),
+            "focus left the search entry",
+        )
+
         # roadmap #35: a headword filed under several entries in ONE dictionary gets
         # them numbered, instead of run together as a single answer. the dictd
         # fixture files "byte" twice for exactly this.

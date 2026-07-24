@@ -156,6 +156,16 @@ lost, the substance is not.
   followed), the definition pane attaches an invisible tag carrying the target, clicking
   follows it as a new search, and the pointer turns into a hand over one. links leading out
   of the app — http, mailto — are deliberately inert rather than opening a browser.
+- **[x] #36 a hotkey search lands on an answer.** `Super+F2` (`dictu --search WORD`) now
+  selects the first result itself, so the window shows a definition instead of a list to
+  click, and focus stays in the search box so you can keep refining. it is a flag consumed by
+  the next set of results, not a timer, because `SearchEntry` debounces `search-changed` —
+  there is no moment after `set_text` when the rows are known to exist.
+  it also fixed a worse bug on the same path: firing the hotkey with **nothing running** both
+  starts the app and fills the search box, so that search ran before there was an index and
+  found nothing, and nothing ever re-ran it — the box sat there with a word and an empty
+  wordlist until you typed another character. the search is now re-run once the index
+  arrives (`rex` cold: 0 rows before, 27 rows with the first selected after).
 - **[x] #35 entries under one headword are numbered.** `lookup` used to join every entry
   for a headword into one string with `<hr/>`, which `markup.rs` renders as a plain newline —
   so the 71 entries `sam` is filed under arrived as one run-together paragraph, which is what
