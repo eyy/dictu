@@ -67,6 +67,18 @@ smoke_dump() {
     echo "$out" | head -3
     grep -q 'headwords: 7' <<<"$out" || { echo "expected 7 headwords" >&2; return 1; }
     grep -q 'nocturnal burrowing mammal' <<<"$out" || { echo "definition text missing" >&2; return 1; }
+
+    # a reader that walks away mid-output must not take dump down with it (#32):
+    # rust ignores SIGPIPE, so println! used to panic on the resulting EPIPE.
+    local err status
+    err=$(mktemp) || return 1
+    ./target/debug/dictu dump sample/sample.index 2>"$err" | head -1 >/dev/null
+    status=${PIPESTATUS[0]}
+    if [ -s "$err" ]; then
+        echo "closed pipe: expected no stderr, got:" >&2; cat "$err" >&2; rm -f "$err"; return 1
+    fi
+    rm -f "$err"
+    [ "$status" -eq 0 ] || { echo "closed pipe: dump exited $status, expected 0" >&2; return 1; }
 }
 
 # the same engine the gui uses, pointed at the fixture via a throwaway config,

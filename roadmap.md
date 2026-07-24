@@ -226,6 +226,15 @@ lost, the substance is not.
   says it too: `dictu lookup … sam` reports `(71 entries)` and marks each one, and `dump`
   flags any headword with more than one. the dictd fixture files `byte` twice so an e2e check
   covers it.
+- **[x] #32 the cli stops quietly on a closed pipe.** `dictu dump … | head -3` used to end
+  with `failed printing to stdout: Broken pipe` and exit 101: rust ignores SIGPIPE, so
+  `println!` panics on the `EPIPE` that `head` leaves behind. `dump`, `lookup` and `search`
+  now write through one locked stdout handle and stop at the first failed write — a closed
+  pipe is the reader's choice, so nothing goes to stderr and the exit code is 0. the crate
+  denies unsafe, so restoring the SIGPIPE default was never an option; fixing the writes is
+  also the faster path for the 20-line loops. `hack/check.sh`'s dump smoke stage asserts a
+  truncated pipe leaves stderr empty. (the entry itself went missing from this list by
+  accident in the #35 commit; restored here.)
 - **[x] #34 the French-English dictionary is excluded** (on request). its title misstates
   its direction — see the note under #15 — and it was also the reason `rex` showed `FR`
   while the Latin dictionary defined it too. the library is 5 dictionaries / 1,469,846
