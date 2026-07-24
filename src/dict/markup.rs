@@ -35,18 +35,43 @@ impl Default for Style {
     }
 }
 
-/// a contiguous run of text sharing one style.
+/// a contiguous run of text sharing one style (and one link target, if any).
 pub struct Run {
     pub text: String,
     pub style: Style,
+    /// the raw `href` of the enclosing `<a>`, if the run sits inside one. kept raw
+    /// because whether it's followable is the caller's question — see `link_target`.
+    pub href: Option<String>,
 }
 
 /// parse `html` and return whitespace-normalized styled runs.
 pub fn to_runs(html: &str) -> Vec<Run> {
     let doc = Html::parse_fragment(html);
     let mut builder = Builder::default();
-    walk(doc.tree.root(), Style::default(), &mut builder);
+    walk(doc.tree.root(), Style::default(), None, &mut builder);
     builder.runs
+}
+
+/// the headword a link points at, or `None` if it doesn't point inside the
+/// collection. dictionaries here use babylon's `bword://word` (and a bare
+/// `bword:word` variant); anything with another scheme leads out of the app —
+/// http, mailto — and is deliberately not followable, since a dictionary lookup
+/// should never open a browser.
+pub fn link_target(href: &str) -> Option<String> {
+    let target = href
+        .strip_prefix("bword://")
+        .or_else(|| href.strip_prefix("bword:"))
+        .unwrap_or(href)
+        .trim();
+    if target.is_empty() || target.contains("://") || target.starts_with('#') {
+        return None;
+    }
+    // a scheme we don't know (mailto:, http:) means "not a headword". a bare
+    // word, or the target of a stripped bword link, is one.
+    match target.split_once(':') {
+        Some((scheme, _)) if !scheme.contains(char::is_whitespace) => None,
+        _ => Some(target.to_string()),
+    }
 }
 
 /// the plain text of the html (runs concatenated) — for the `dump` cli and any
@@ -55,12 +80,13 @@ pub fn to_text(html: &str) -> String {
     to_runs(html).into_iter().map(|r| r.text).collect()
 }
 
-/// walk the dom, pushing text into `builder` with the current inherited style.
-fn walk(node: NodeRef<Node>, style: Style, builder: &mut Builder) {
+/// walk the dom, pushing text into `builder` with the current inherited style and
+/// enclosing link target.
+fn walk<'a>(node: NodeRef<'a, Node>, style: Style, href: Option<&'a str>, builder: &mut Builder) {
     let mut child = node.first_child();
     while let Some(current) = child {
         match current.value() {
-            Node::Text(text) => builder.text(text, style),
+            Node::Text(text) => builder.text(text, style, href),
             Node::Element(el) => {
                 let name = el.name();
                 // never render the *contents* of these — that's css/js, not text.
@@ -69,7 +95,9 @@ fn walk(node: NodeRef<Node>, style: Style, builder: &mut Builder) {
                     if block || name == "br" {
                         builder.newline();
                     }
-                    walk(current, child_style(name, style), builder);
+                    // an <a> introduces a target; nested elements inherit it.
+                    let child_href = el.attr("href").or(href);
+                    walk(current, child_style(name, style), child_href, builder);
                     if block {
                         builder.newline();
                     }
@@ -146,7 +174,7 @@ struct Builder {
 }
 
 impl Builder {
-    fn text(&mut self, s: &str, style: Style) {
+    fn text(&mut self, s: &str, style: Style, href: Option<&str>) {
         for ch in s.chars() {
             if ch.is_whitespace() {
                 if self.any_output {
@@ -154,7 +182,7 @@ impl Builder {
                 }
             } else {
                 self.flush_pending();
-                self.push(ch, style);
+                self.push(ch, style, href);
             }
         }
     }
@@ -166,25 +194,29 @@ impl Builder {
         }
     }
 
-    /// emit a pending newline or space (newline wins) before real content.
+    /// emit a pending newline or space (newline wins) before real content. the
+    /// separator itself belongs to no link.
     fn flush_pending(&mut self) {
         if self.newline_pending {
-            self.push('\n', Style::default());
+            self.push('\n', Style::default(), None);
         } else if self.space_pending {
-            self.push(' ', Style::default());
+            self.push(' ', Style::default(), None);
         }
         self.newline_pending = false;
         self.space_pending = false;
     }
 
-    /// append one char, extending the last run if the style matches.
-    fn push(&mut self, ch: char, style: Style) {
+    /// append one char, extending the last run when style AND link target match —
+    /// two adjacent links must not merge into one run, or the second would inherit
+    /// the first one's target. only a new run allocates the href.
+    fn push(&mut self, ch: char, style: Style, href: Option<&str>) {
         self.any_output = true;
         match self.runs.last_mut() {
-            Some(last) if last.style == style => last.text.push(ch),
+            Some(last) if last.style == style && last.href.as_deref() == href => last.text.push(ch),
             _ => self.runs.push(Run {
                 text: ch.to_string(),
                 style,
+                href: href.map(str::to_string),
             }),
         }
     }
@@ -221,6 +253,56 @@ mod tests {
     fn decodes_entities_and_keeps_unicode() {
         // html5ever decodes entities during parsing.
         assert_eq!(to_text("&#945;&#946; &amp; Ελληνικά"), "αβ & Ελληνικά");
+    }
+
+    #[test]
+    fn captures_the_link_target_not_the_visible_text() {
+        // a hebrew-hebrew dictionary's real shape: uppercase <A>, bword scheme, and a target
+        // spelled differently from the text shown (here without the geresh).
+        let runs = to_runs(r#"see <A href="bword://ציק צק">צִ'יק צָ'ק</A> now"#);
+        let link = runs.iter().find(|r| r.style.link).expect("a link run");
+        assert_eq!(link.href.as_deref(), Some("bword://ציק צק"));
+        assert_eq!(
+            link_target(link.href.as_deref().unwrap()).unwrap(),
+            "ציק צק"
+        );
+        // text outside the anchor carries no target.
+        assert!(
+            runs.iter()
+                .any(|r| r.text.contains("see") && r.href.is_none())
+        );
+    }
+
+    #[test]
+    fn adjacent_links_stay_separate_runs() {
+        let runs = to_runs(r#"<a href="bword://one">x</a><a href="bword://two">y</a>"#);
+        let targets: Vec<_> = runs.iter().filter_map(|r| r.href.as_deref()).collect();
+        assert_eq!(targets, ["bword://one", "bword://two"]);
+    }
+
+    #[test]
+    fn nested_markup_inherits_the_enclosing_link() {
+        let runs = to_runs(r#"<a href="bword://lemma"><b>bold</b> plain</a>"#);
+        assert!(
+            runs.iter()
+                .filter(|r| !r.text.trim().is_empty())
+                .all(|r| r.href.as_deref() == Some("bword://lemma"))
+        );
+    }
+
+    #[test]
+    fn link_target_only_follows_links_into_the_collection() {
+        assert_eq!(link_target("bword://dacrima").unwrap(), "dacrima");
+        assert_eq!(link_target("bword:dacrima").unwrap(), "dacrima");
+        assert_eq!(link_target("dacrima").unwrap(), "dacrima");
+        // multi-word headwords are common in the hebrew dictionaries.
+        assert_eq!(link_target("bword://זה לקבל זה").unwrap(), "זה לקבל זה");
+        // and these lead out of the app, so they are not followable.
+        assert!(link_target("http://example.com").is_none());
+        assert!(link_target("https://example.com/x").is_none());
+        assert!(link_target("mailto:someone@example.com").is_none());
+        assert!(link_target("#anchor").is_none());
+        assert!(link_target("").is_none());
     }
 
     #[test]

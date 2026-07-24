@@ -82,7 +82,7 @@ smoke_search() {
     echo "$out"
     [ $status -eq 0 ] || return 1
     grep -q 'zeitgeist' <<<"$out" || { echo "prefix search missed zeitgeist" >&2; return 1; }
-    grep -q '1 dicts' <<<"$out" || { echo "fixture dict not loaded" >&2; return 1; }
+    grep -q "2 dicts" <<<"$out" || { echo "fixture dicts not loaded" >&2; return 1; }
 }
 
 # drive the real widget tree over at-spi (see hack/e2e.py).

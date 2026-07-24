@@ -294,6 +294,29 @@ impl Ui {
         ));
     }
 
+    /// the link target under widget coordinates `(x, y)`, if any — read back off
+    /// the invisible tag `show_word` attached to the link's text.
+    fn link_at(&self, x: f64, y: f64) -> Option<String> {
+        let (bx, by) = self.definition.window_to_buffer_coords(
+            gtk::TextWindowType::Widget,
+            x.round() as i32,
+            y.round() as i32,
+        );
+        let iter = self.definition.iter_at_location(bx, by)?;
+        iter.tags().iter().find_map(|tag| {
+            tag.name()
+                .and_then(|name| name.strip_prefix(LINK_PREFIX).map(str::to_string))
+        })
+    }
+
+    /// follow a link: make it the current search, so the wordlist agrees with the
+    /// definition on screen and Back-by-retyping still works.
+    fn follow_link(&self, target: &str) {
+        self.search.set_text(target);
+        self.search.set_position(-1);
+        self.show_word(target);
+    }
+
     /// show a word's definition(s): the headword bold+large, then each dict that
     /// defines it under a dim source label, its html parsed into styled runs
     /// rendered with OUR uniform tags (dict css ignored → consistent look).
@@ -317,8 +340,16 @@ impl Ui {
             let label = library.dict_label(*dict_index).unwrap_or("");
             buffer.insert_with_tags(&mut iter, &format!("\n{label}\n"), &[&source_tag(&buffer)]);
             for run in dict::markup::to_runs(html) {
-                let tag = style_tag(&buffer, run.style);
-                buffer.insert_with_tags(&mut iter, &run.text, &[&tag]);
+                let style = style_tag(&buffer, run.style);
+                // a followable link gets a second, invisible tag carrying its
+                // target, which is how a click maps back to a headword.
+                match run.href.as_deref().and_then(dict::markup::link_target) {
+                    Some(target) => {
+                        let link = link_tag(&buffer, &target);
+                        buffer.insert_with_tags(&mut iter, &run.text, &[&style, &link]);
+                    }
+                    None => buffer.insert_with_tags(&mut iter, &run.text, &[&style]),
+                }
             }
             buffer.insert(&mut iter, "\n");
         }
@@ -330,6 +361,22 @@ impl Ui {
 const BODY_SCALE: f64 = 1.3;
 const HEAD_SCALE: f64 = 1.6;
 const LINK_COLOR: &str = "#3584e4"; // gnome accent blue, same for every dict.
+
+/// tag-name prefix marking a link tag; what follows is the target headword. the
+/// separator is a unit separator, which can't occur in a headword.
+const LINK_PREFIX: &str = "link\u{1f}";
+
+/// an otherwise inert tag whose *name* carries a link's target, so a click can
+/// recover it from the buffer. the blue-and-underlined look comes from the run's
+/// own style tag, not from here.
+fn link_tag(buffer: &gtk::TextBuffer, target: &str) -> gtk::TextTag {
+    let name = format!("{LINK_PREFIX}{target}");
+    buffer.tag_table().lookup(&name).unwrap_or_else(|| {
+        let tag = gtk::TextTag::builder().name(&name).build();
+        buffer.tag_table().add(&tag);
+        tag
+    })
+}
 
 /// the bold+large headword tag (cached in the buffer's tag table).
 fn head_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
@@ -487,6 +534,31 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         };
         ui_select.show_word(&label.label());
     });
+
+    // clicking a link in a definition looks that word up (roadmap #20).
+    let ui_link = ui.clone();
+    let click = gtk::GestureClick::new();
+    click.connect_released(move |gesture, _clicks, x, y| {
+        let Some(target) = ui_link.link_at(x, y) else {
+            return; // an ordinary click: let the textview place the cursor.
+        };
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        ui_link.follow_link(&target);
+    });
+    ui.definition.add_controller(click);
+
+    // and the pointer says so before you click.
+    let ui_hover = ui.clone();
+    let motion = gtk::EventControllerMotion::new();
+    motion.connect_motion(move |_, x, y| {
+        let cursor = if ui_hover.link_at(x, y).is_some() {
+            "pointer"
+        } else {
+            "text"
+        };
+        ui_hover.definition.set_cursor_from_name(Some(cursor));
+    });
+    ui.definition.add_controller(motion);
 
     // Down from the search box steps into the wordlist (roadmap #16).
     let ui_down = ui.clone();

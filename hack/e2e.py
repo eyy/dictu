@@ -36,6 +36,10 @@ SAMPLE_DIR = os.path.join(REPO, "sample")
 # the fixture dictionary's headwords (sample/sample.index), minus the
 # `00-database-short` control entry that the dictd reader hides.
 SAMPLE_WORDS = ["aardvark", "byte", "dictionary", "gnome", "rust", "zeitgeist"]
+# sample/links.csv adds three entries whose definitions carry real <a> links.
+LINK_WORDS = ["cf", "qv", "ext", "only"]
+# 6 + 4 headwords across the two fixture dictionaries.
+IDLE_STATUS = "10 words · 2 dictionaries"
 
 APP_NAME = "dictu"
 # the status line always starts with a count, which is how we pick it out of the
@@ -87,6 +91,20 @@ def text_of(node):
         return Atspi.Text.get_text(node, 0, Atspi.Text.get_character_count(node))
     except Exception:
         return node.get_name() or ""
+
+
+def underlined_range(node, text, word):
+    """the offsets at-spi reports as underlined around `word`, which is how the
+    link tag is checked: it must cover exactly the link's characters. gtk4 exposes
+    text attributes but NOT character geometry, so this is the precise check
+    available — clicking is aimed separately, see `link_click_column`."""
+    offset = text.find(word)
+    if offset < 0:
+        return None
+    attributes, start, end = Atspi.Text.get_attribute_run(node, offset, True)
+    if attributes.get("underline") != "single":
+        return None
+    return start, end
 
 
 def is_focused(node):
@@ -203,6 +221,19 @@ class AppUnderTest:
             ["xdotool", "type", "--window", self.window_id(), text], check=False, timeout=10
         )
         time.sleep(0.4)
+
+    def click_at(self, x, y):
+        """click at coordinates relative to the window under test — window-relative
+        so no screen-position arithmetic is involved. this moves the real pointer,
+        which is why it only happens inside the pointer checks."""
+        subprocess.run(
+            ["xdotool", "mousemove", "--window", self.window_id(), str(x), str(y)],
+            check=False,
+            timeout=10,
+        )
+        time.sleep(0.25)
+        subprocess.run(["xdotool", "click", "1"], check=False, timeout=10)
+        time.sleep(0.5)
 
     def forward(self, *args):
         """run `dictu <args>`, which the single-instance app forwards to the
@@ -358,8 +389,8 @@ def main():
         # separators and nouns that agree with their counts.
         r.check(
             "idle status reports library size with agreeing plurals",
-            status == "6 words · 1 dictionary",
-            f"expected '6 words · 1 dictionary', got {status!r}",
+            status == IDLE_STATUS,
+            f"expected {IDLE_STATUS!r}, got {status!r}",
         )
 
         # search via the single-instance path — the same route the global hotkey
@@ -469,6 +500,42 @@ def main():
                 f"entry read {entry_text!r}, focused={is_focused(widgets.search)}",
             )
 
+            # roadmap #20: links. first that the link tag covers exactly the link's
+            # own characters, then that clicking one follows it — across
+            # dictionaries, since "cf" lives in links.csv and "byte" in the dictd
+            # fixture.
+            app_proc.forward("--search", "cf")
+            wait_for(lambda: "cf" in widgets.row_words() or None, 10, "the cf row")
+            select_first_row(widgets.results)
+            definition = wait_for(
+                lambda: widgets.definition_text() if "byte" in widgets.definition_text() else None,
+                10,
+                "cf's definition",
+            )
+            log(f"cf definition: {definition!r}")
+            span = underlined_range(widgets.definition, definition, "byte")
+            offset = definition.find("byte")
+            r.check(
+                "a link is styled over exactly its own characters",
+                span == (offset, offset + len("byte")),
+                f"expected {(offset, offset + 4)}, at-spi reported {span}",
+            )
+
+            # aim at the "only" entry, whose definition is nothing but a link, so a
+            # click can find it without character geometry (gtk4 exposes none).
+            app_proc.forward("--search", "only")
+            wait_for(lambda: "only" in widgets.row_words() or None, 10, "the only row")
+            select_first_row(widgets.results)
+            wait_for(
+                lambda: "byte" in widgets.definition_text() or None, 10, "only's definition"
+            )
+            followed = link_click_column(app_proc, widgets)
+            r.check(
+                "clicking a link looks up its target, across dictionaries",
+                followed is not None,
+                "no click in the link's line followed it",
+            )
+
         r.check("the app is still running (no crash)", app_proc.proc.poll() is None)
 
     print(f"\ne2e: {len(r.passed)} passed, {len(r.failed)} failed")
@@ -482,6 +549,40 @@ def safe(fn, *args):
     except Exception as err:
         log(f"{fn.__name__} not ready: {err}")
         return None
+
+
+def link_click_column(app_proc, widgets):
+    """click down a column near the definition pane's left edge until one click
+    lands on the link and follows it. gtk4 reports no character geometry over
+    at-spi, so the y is searched rather than computed: the pane's width comes from
+    at-spi, the window's position from xdotool, and the fixture entry's definition
+    is a link and nothing else, so the link starts at the left margin. returns the
+    followed definition, or None if no click hit it."""
+    # at-spi's WINDOW coords are relative to the *logical* window, but gtk4 on x11
+    # wraps that in a larger x window to hold its client-side shadows, so the two
+    # origins differ. the horizontal shadow is half the difference in width; the
+    # vertical offset is left to the y search below rather than assumed.
+    pane = Atspi.Component.get_extents(widgets.definition, Atspi.CoordType.WINDOW)
+    frame = by_role(widgets.app, "frame")[0]
+    logical = Atspi.Component.get_extents(frame, Atspi.CoordType.WINDOW)
+    geometry = subprocess.run(
+        ["xdotool", "getwindowgeometry", app_proc.window_id()], capture_output=True, text=True
+    ).stdout
+    size = re.search(r"Geometry: (\d+)x(\d+)", geometry)
+    if not size:
+        return None
+    shadow = (int(size.group(1)) - logical.width) // 2
+    # a few px past the pane's 18px left text margin — the fixture's definition is
+    # a link and nothing else, so the link starts there.
+    x = pane.x + 26 + shadow
+    log(f"clicking down x={x} (pane at {pane.x}, shadow {shadow})")
+    for y in range(pane.y + 60, pane.y + 300, 8):
+        app_proc.click_at(x, y)
+        text = widgets.definition_text()
+        if "unit of digital information" in text.lower() and text_of(widgets.search) == "byte":
+            log(f"link followed by the click at ({x}, {y})")
+            return text
+    return None
 
 
 def select_first_row(results):

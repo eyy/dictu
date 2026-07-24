@@ -74,19 +74,30 @@ what you need to know to add a check:
 ## screenshots
 
 ```bash
-hack/shot.sh                            # real collection, ready state, -> $TMPDIR/dictu-shot.png
-hack/shot.sh --sample zeit -o /tmp/x.png    # fixture + a search; seconds, not ~30s
+hack/shot.sh                                  # real collection, ready state, -> $TMPDIR/dictu-shot.png
+hack/shot.sh --sample zeit -o /tmp/x.png      # fixture + a search; seconds, not ~30s
+hack/shot.sh --sample --select cf             # also select the first row, so a definition shows
 ```
 
 this works and needs no human. the route: run the app on **XWayland**
-(`GDK_BACKEND=x11`) on the *real* session — where gtk4 still gets hardware gl — then
-`xdotool` finds the window and ImageMagick's `import -window` grabs it. the script waits
-for the ui's own ready signal first, so it never captures `Indexing…`.
+(`GDK_BACKEND=x11`) on the *real* session, then `xdotool` finds the window and
+ImageMagick's `import -window` grabs it. the script waits for the ui's own ready signal
+first, so it never captures `Indexing…`.
 
-caveat: XWayland gives server-side decorations, so this cannot show wayland
-client-side-decoration bugs. it renders window *content* faithfully, which is what
-layout, typography and markup work needs. for a CSD or window-placement question, ask
-the user for a real screenshot.
+two things are load-bearing, both learned the hard way:
+
+- **`GSK_RENDERER=cairo`.** with gtk4's default gl renderer, `import -window` reads a
+  stale x pixmap — you get the window as it looked when it first painted, however much
+  has changed since. it looks like the app is broken when it isn't. the cairo renderer
+  draws into the x drawable, so captures are current.
+- **capture the window, not the screen.** `import -window root` fails outright under
+  xwayland (`Resource temporarily unavailable`), so there is no full-screen path here.
+
+caveat: the capture is of one window on xwayland with the cairo renderer, so it will not
+reproduce a gl-renderer or compositor-level bug, and gtk4's invisible shadow margins mean
+the x window is larger than the logical one (a 900×600 window is a 1022×722 drawable —
+which also matters when aiming a click; see `link_click_column` in `hack/e2e.py`). window
+*content* is faithful, which is what layout, typography and markup work needs.
 
 routes that do **not** work here (don't re-derive them):
 
@@ -94,9 +105,8 @@ routes that do **not** work here (don't re-derive them):
    allowed`. gnome 46 gates that api to its own components; third parties are expected to
    go through the xdg desktop portal, which prompts the user, so it's useless unattended.
 2. `grim` — needs wlr-screencopy, which mutter doesn't implement.
-3. `Xvfb` + `import` — xvfb has no gl, so gtk4's renderer produces **black** frames
-   unless you force `GSK_RENDERER=cairo`, and x11 has no CSD. superseded by the live
-   XWayland route above.
+3. `Xvfb` + `import` — needs `GSK_RENDERER=cairo` for the same reason as above, and
+   nothing is focusable there. superseded by the live XWayland route.
 4. headless `cage` + `grim` — captured black, and cage crashed on exit, popping apport
    dialogs onto the user's desktop.
 

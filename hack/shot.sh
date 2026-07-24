@@ -25,12 +25,14 @@ cd "$REPO" || exit 1
 OUT="${TMPDIR:-/tmp}/dictu-shot.png"
 SAMPLE=0
 KEEP=0
+SELECT=0
 QUERY=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         -o) OUT="$2"; shift 2 ;;
         --sample) SAMPLE=1; shift ;;
+        --select) SELECT=1; shift ;;  # select the first result, so a definition shows
         --keep) KEEP=1; shift ;;   # leave the app running afterwards
         -*) echo "unknown flag: $1" >&2; exit 2 ;;
         *) QUERY="$1"; shift ;;
@@ -65,7 +67,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-env "${CONFIG_ENV[@]}" GDK_BACKEND=x11 nohup ./target/debug/dictu \
+# GSK_RENDERER=cairo matters: with gtk4's default gl renderer, `import` reads a
+# stale x pixmap — you get the window as it looked when it first painted, no
+# matter what is on screen now. the cairo renderer draws into the x drawable, so
+# a capture is always current. (this, not the absence of gl, is why the earlier
+# xvfb attempts came out blank.)
+env "${CONFIG_ENV[@]}" GDK_BACKEND=x11 GSK_RENDERER=cairo nohup ./target/debug/dictu \
     > "${TMPDIR:-/tmp}/dictu-shot.log" 2>&1 &
 
 # don't shoot the "Indexing…" state: ask the ui itself when it's ready.
@@ -92,6 +99,15 @@ for candidate in $(xdotool search --name '^Dictu$'); do
     ID="$candidate"
 done
 [ -n "$ID" ] || { echo "shot: no mapped Dictu window found" >&2; exit 1; }
+
+if [ "$SELECT" = 1 ]; then
+    # Down steps from the search box into the wordlist and selects the first row,
+    # which is what renders a definition. needs focus: gtk drops keys otherwise.
+    xdotool windowfocus "$ID"
+    sleep 0.5
+    xdotool key --window "$ID" Down
+    sleep 0.8
+fi
 
 import -window "$ID" "png:$OUT" || exit 1
 echo "wrote $OUT ($(identify -format '%wx%h' "$OUT"))"

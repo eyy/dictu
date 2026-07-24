@@ -54,12 +54,6 @@ lost, the substance is not.
     to the dictionary's name when the language is ambiguous. check `.ifo` for a lang field;
     otherwise carry it on `DictEntry` from config.
 
-- **[ ] #20 links in definitions don't work (noticed in a hebrew-hebrew dictionary).**
-  `markup.rs` maps `<a>`/`<kref>` to a link *style* — blue and underlined — but discards
-  the `href`, so nothing is clickable. carry the target on `Style`/`Run`, put it on the
-  TextView tag, and handle click + pointer-cursor hover to run the target as a new lookup.
-  both `bword://`-style and bare-headword targets appear in this collection.
-
 - **[ ] #21 clearer visual separation between the parts of a definition.**
   a definition renders as one continuous flow — headword, then each dictionary's html under
   a dim label (`Ui::show_word`, `src/main.rs`). give the parts real structure: spacing and a
@@ -121,6 +115,13 @@ lost, the substance is not.
   updated to `&[]` ("all dicts") until #14 lands, and the mask itself is now covered by a
   unit test.
 - **[x] #26 `hack/` holds the feedback loop** (was empty).
+- **[x] #20 links in definitions work.** the parser was throwing the `href` away, so link
+  text was styled blue and underlined but dead. runs now carry their target (a hebrew-hebrew dictionary
+  alone has 29,812 of them, shaped `<A href="bword://word">`, where the target is often
+  spelled differently from the visible text — so the href, not the text, is what gets
+  followed), the definition pane attaches an invisible tag carrying the target, clicking
+  follows it as a new search, and the pointer turns into a hand over one. links leading out
+  of the app — http, mailto — are deliberately inert rather than opening a browser.
 - **[x] #19 the overlapping Latin dictionaries are down to one.** measured rather than
   guessed: `bgl-Latin_English_Inflected` and `stardic latin english inflected` are the same
   dictionary twice (Whitaker's Words — identical headword sets, identical 22 MB `.syn`,
