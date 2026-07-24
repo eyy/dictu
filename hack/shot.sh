@@ -52,6 +52,11 @@ done
 
 cargo build 2>&1 | tail -2 || exit 1
 
+# the same machine-wide lock the e2e stage takes: this also kills stray instances,
+# so it must not run while someone else's test app is up (see hack/check.sh).
+exec 9>"${TMPDIR:-/tmp}/dictu-e2e.lock"
+flock -w 900 9 || { echo "shot: gave up waiting for another run to finish" >&2; exit 1; }
+
 # one instance at a time: a second launch forwards its argv to the first and
 # exits, so a leftover process would answer instead of the one we just started.
 # kill by exact process NAME — `pkill -f target/debug/dictu` also matches the

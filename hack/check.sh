@@ -87,11 +87,25 @@ smoke_search() {
 
 # drive the real widget tree over at-spi (see hack/e2e.py).
 e2e() {
+    # take a machine-wide lock first. dictu is single-instance over d-bus, and this
+    # stage kills stray instances to make sure the one it talks to is its own — so
+    # two runs at once (several worktrees, or an agent per branch) kill each other's
+    # app mid-test and fail for no reason. the lock is on the whole machine, not the
+    # checkout, because the thing being contended is the session bus.
+    exec 9>"${TMPDIR:-/tmp}/dictu-e2e.lock"
+    if ! flock -w 900 9; then
+        echo "e2e: gave up waiting for another run to finish" >&2
+        return 1
+    fi
+
     # it refuses to run beside another instance, whose single-instance forwarding
     # would answer with the wrong config. clear the way first.
     pgrep -x dictu | xargs -r kill
     sleep 2
     python3 hack/e2e.py
+    local status=$?
+    exec 9>&-
+    return $status
 }
 
 # -- run --------------------------------------------------------------------
