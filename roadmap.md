@@ -56,19 +56,6 @@ lost, the substance is not.
     to the dictionary's name when the language is ambiguous. check `.ifo` for a lang field;
     otherwise carry it on `DictEntry` from config.
 
-- **[ ] #17 thousands separators in large counts.**
-  the status line reads `4009914 words · 8 dictionaries` (`src/main.rs`). group the digits:
-  `4,009,914`. one small helper, used wherever a count is shown.
-
-- **[ ] #18 "n words" is misleading — say "n results".**
-  the label under the wordlist counts index entries, not what the user is looking at.
-  rename to results and make it reflect the current search; keep the total-headwords figure
-  only where it means "library size".
-
-- **[ ] #28 "1 dictionaries" — pluralize the status line.**
-  found by the e2e harness against the single-dictionary fixture. fix together with #17 and
-  #18, since all three are the same label.
-
 - **[ ] #19 cut the overlapping Latin dictionaries — keep the best one.**
   three near-duplicate inflected Latin sets, all StarDict, all loaded:
   `bgl-Latin_English_Inflected/` and `stardic latin english inflected/` (both
@@ -144,6 +131,12 @@ lost, the substance is not.
   updated to `&[]` ("all dicts") until #14 lands, and the mask itself is now covered by a
   unit test.
 - **[x] #26 `hack/` holds the feedback loop** (was empty).
+- **[x] #17 / #18 / #28 the status line under the wordlist.** one label, three
+  complaints: digits are grouped (`4,009,914`), nouns agree with their counts
+  (`1 dictionary`, not `1 dictionaries`), and while searching it counts what the list
+  actually shows — `1 result` — rather than the size of the index. a capped search says
+  `500+ results` instead of pretending 500 is the whole truth. covered by unit tests on the
+  formatting helpers and two e2e checks on the live label.
 - **[x] #27 a real feedback loop: `hack/check.sh`.** format → clippy (`-D warnings`) → 24
   unit tests → build → two cli smoke tests over the `sample/` fixture → **ui end-to-end
   over at-spi** (`hack/e2e.py`, 8 checks driving the real widget tree), plus
@@ -152,8 +145,7 @@ lost, the substance is not.
 
 ## housekeeping
 
-- **[ ] #25 make the first commit.** the repo has no commits at all — everything is
-  untracked and one `rm -rf` from gone.
+- **[x] #25 first commit made.** the app, then the feedback loop and docs.
 - **[x] #29 rustfmt.** the tree was never formatted; `cargo fmt` applied across all 8
   source files and `hack/check.sh` now keeps it that way.
 

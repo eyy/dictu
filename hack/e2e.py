@@ -17,6 +17,7 @@ exit code is the verdict: 0 all checks passed, 1 something failed.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,9 @@ SAMPLE_DIR = os.path.join(REPO, "sample")
 SAMPLE_WORDS = ["aardvark", "byte", "dictionary", "gnome", "rust", "zeitgeist"]
 
 APP_NAME = "dictu"
+# the status line always starts with a count, which is how we pick it out of the
+# window's other labels.
+COUNT_LINE = re.compile(r"^[\d,]+\+? (word|result|dictionar)")
 READY_TIMEOUT = 60.0  # generous: indexing a real collection can take a while.
 POLL = 0.15
 
@@ -183,9 +187,17 @@ class Widgets:
         ]
 
     def status_text(self):
-        """the dim status line under the wordlist (the last label with text)."""
-        texts = [(l.get_name() or "").strip() for l in by_role(self.app, "label")]
+        """every non-empty label in the window."""
+        texts = [(node.get_name() or "").strip() for node in by_role(self.app, "label")]
         return [t for t in texts if t]
+
+    def status_line(self):
+        """the dim count line under the wordlist, e.g. "6 words · 1 dictionary"
+        or "1 result" — identified by starting with a number."""
+        for text in self.status_text():
+            if COUNT_LINE.match(text):
+                return text
+        return ""
 
     def definition_text(self):
         return text_of(self.definition)
@@ -240,14 +252,7 @@ def wait_ready():
     Atspi.init()
     node = wait_for(find_app, READY_TIMEOUT, "dictu on the a11y bus")
     widgets = wait_for(lambda: safe(Widgets, node), READY_TIMEOUT, "the widget tree")
-    wait_for(
-        lambda: any("dictionar" in t and "Indexing" not in t for t in widgets.status_text()),
-        READY_TIMEOUT,
-        "indexing to finish",
-    )
-    for text in widgets.status_text():
-        if "dictionar" in text:
-            print(text)
+    print(wait_for(lambda: widgets.status_line() or None, READY_TIMEOUT, "indexing to finish"))
     return 0
 
 
@@ -287,14 +292,19 @@ def main():
 
         # the status line says "Indexing…" until the worker thread hands the
         # index over; that transition is the app telling us it is ready.
-        ready = wait_for(
-            lambda: any("dictionar" in t and "Indexing" not in t for t in widgets.status_text()),
-            READY_TIMEOUT,
-            "indexing to finish",
+        # the status line reads "Indexing dictionaries…" until the worker thread
+        # hands the index over; a line starting with a count means it's ready.
+        status = wait_for(lambda: widgets.status_line() or None, READY_TIMEOUT, "indexing to finish")
+        r.check("indexing finishes and the status line updates", bool(status), f"status={status!r}")
+        log(f"status line: {status!r}")
+
+        # roadmap #17/#18/#28: the idle line reports library size, with thousands
+        # separators and nouns that agree with their counts.
+        r.check(
+            "idle status reports library size with agreeing plurals",
+            status == "6 words · 1 dictionary",
+            f"expected '6 words · 1 dictionary', got {status!r}",
         )
-        status = [t for t in widgets.status_text() if "dictionar" in t]
-        r.check("indexing finishes and the status line updates", ready, f"status={status}")
-        log(f"status line: {status}")
 
         # search via the single-instance path — the same route the global hotkey
         # uses — then read what the wordlist actually shows.
@@ -309,6 +319,18 @@ def main():
             "searching 'zeit' shows the matching headword",
             rows == ["zeitgeist"],
             f"expected ['zeitgeist'], got {rows}",
+        )
+
+        # roadmap #18: while searching, the line counts what the list shows.
+        result_line = wait_for(
+            lambda: widgets.status_line() if "result" in widgets.status_line() else None,
+            10,
+            "the result count",
+        )
+        r.check(
+            "the status line counts results, not index entries",
+            result_line == "1 result",
+            f"expected '1 result', got {result_line!r}",
         )
 
         # a prefix that matches nothing must clear the list, not keep stale rows.

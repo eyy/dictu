@@ -184,9 +184,33 @@ impl Ui {
 
         if query.is_empty() {
             self.set_message("Type to search all dictionaries.");
-        } else if seen.is_empty() {
+            self.show_library_size();
+            return;
+        }
+        if seen.is_empty() {
             self.set_message(&format!("No matches for “{query}”."));
         }
+        // count what the list actually shows (deduped), not index entries. the
+        // search stops at SEARCH_LIMIT, so say "500+" instead of pretending 500
+        // is the whole truth.
+        self.status.set_text(&if hits.len() >= SEARCH_LIMIT {
+            format!("{}+ results", thousands(seen.len()))
+        } else {
+            quantity(seen.len(), "result", "results")
+        });
+    }
+
+    /// the idle status line: how much is loaded.
+    fn show_library_size(&self) {
+        let borrow = self.library.borrow();
+        let Some(library) = borrow.as_ref() else {
+            return;
+        };
+        self.status.set_text(&format!(
+            "{} · {}",
+            quantity(library.total_headwords(), "word", "words"),
+            quantity(library.dict_count(), "dictionary", "dictionaries"),
+        ));
     }
 
     /// show a word's definition(s): the headword bold+large, then each dict that
@@ -394,15 +418,12 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     let ui_ready = ui.clone();
     glib::spawn_future_local(async move {
         if let Ok(library) = rx.recv().await {
-            let (words, dicts) = (library.total_headwords(), library.dict_count());
             *ui_ready.library.borrow_mut() = Some(library);
             ui_ready.search.set_sensitive(true);
             ui_ready
                 .search
                 .set_placeholder_text(Some("Search all dictionaries…"));
-            ui_ready
-                .status
-                .set_text(&format!("{words} words · {dicts} dictionaries"));
+            ui_ready.show_library_size();
             ui_ready.set_message("Type to search all dictionaries.");
             ui_ready.search.grab_focus();
         }
@@ -416,4 +437,48 @@ fn toolbar_with(header: &adw::HeaderBar, content: &impl IsA<gtk::Widget>) -> adw
     toolbar.add_top_bar(header);
     toolbar.set_content(Some(content));
     toolbar
+}
+
+/// `n` with thousands separators: 4009914 -> "4,009,914". `rchunks` groups from
+/// the right, which is where digit grouping starts.
+fn thousands(n: usize) -> String {
+    n.to_string()
+        .as_bytes()
+        .rchunks(3)
+        .rev()
+        .map(|group| String::from_utf8_lossy(group).into_owned())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// a count with separators and the noun that agrees with it: 1 -> "1 dictionary",
+/// 8 -> "8 dictionaries".
+fn quantity(n: usize, singular: &str, plural: &str) -> String {
+    format!(
+        "{} {}",
+        thousands(n),
+        if n == 1 { singular } else { plural }
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{quantity, thousands};
+
+    #[test]
+    fn thousands_groups_from_the_right() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(12), "12");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1000), "1,000");
+        assert_eq!(thousands(4_009_914), "4,009,914");
+    }
+
+    #[test]
+    fn quantity_agrees_with_its_count() {
+        assert_eq!(quantity(1, "dictionary", "dictionaries"), "1 dictionary");
+        assert_eq!(quantity(8, "dictionary", "dictionaries"), "8 dictionaries");
+        assert_eq!(quantity(0, "result", "results"), "0 results");
+        assert_eq!(quantity(4_009_914, "word", "words"), "4,009,914 words");
+    }
 }
