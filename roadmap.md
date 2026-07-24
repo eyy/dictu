@@ -53,7 +53,23 @@ lost, the substance is not.
      (`dacrimarum` → an entry beginning "dacrima, dacrimae"). exact, but reading a definition
      per row is too slow to do for 500 rows per keystroke unless only a prefix is read.
 
+  measured evidence for how bad the noise is, from the `.idx` of `latin infl+lewis`:
+  1,427,152 entries for 1,223,585 unique headwords, and the worst offenders are *auxiliary*
+  forms attached to every verb that uses them — `esse` and `eris` appear in 100 entries each,
+  `ero` and `isti` in 99, `sum` in 73, `sam` in 71. the dictionary's generator inflected the
+  auxiliary along with the verb, so searching a form of *esse* pulls up a hundred unrelated
+  verbs. treating these as inflections rather than headwords is what fixes it.
+
 ## later
+
+- **[ ] #35 several entries under one headword render as one blob.** this is ours, and it is
+  what makes the `sam` case look broken. `StarDict::lookup` joins every entry for a headword
+  with `\n<hr/>\n` (`src/dict/stardict.rs:130`) and `markup.rs` maps `<hr>` to a plain
+  newline, so the 71 entries `sam` points at run together as if they were one mangled entry.
+  two things to do: separate the entries visibly, and say how many there are — "1 of 71"
+  answers the "why am I looking at this?" question directly. the tidier shape is for
+  `Dictionary::lookup` to return the entries rather than a pre-joined string, which also lets
+  the ui number them; that touches the trait and all three readers.
 
 - **[ ] #32 the cli panics on a closed pipe.** `dictu dump … | head -3` ends with
   `failed printing to stdout: Broken pipe` and a panic message, because rust ignores
