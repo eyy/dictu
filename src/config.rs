@@ -71,9 +71,12 @@ impl Config {
         fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
     }
 
-    /// exclude a path (gitignore-style `!` prefix) and persist. used when the
-    /// user removes a dictionary from the panel.
-    // not wired into the ui yet — the multi-select panel (task #12) will call it.
+    /// exclude a path (gitignore-style `!` prefix) and persist — a permanent
+    /// "never load this again", the counterpart to the session-only search scope.
+    // deliberately still unwired: the scope panel (roadmap #14) keeps its choice in
+    // memory, because `save` rewrites config.toml through serde and would drop the
+    // comments a hand-edited config has (the #19/#34 exclusions are commented).
+    // permanent removal stays a hand edit until save preserves comments.
     #[allow(dead_code)]
     pub fn exclude(&mut self, path: &Path) -> Result<()> {
         let entry = format!("!{}", path.display());

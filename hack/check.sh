@@ -87,9 +87,14 @@ smoke_search() {
 
 # drive the real widget tree over at-spi (see hack/e2e.py).
 e2e() {
-    # it refuses to run beside another instance, whose single-instance forwarding
-    # would answer with the wrong config. clear the way first.
-    pgrep -x dictu | xargs -r kill
+    # it refuses to run beside another window, whose single-instance forwarding
+    # would answer with the wrong config. clear the way first — windows only: a
+    # `dictu dump|lookup|search` short-circuits before gtk, so it never claims the
+    # d-bus name, and a cli search over a real collection runs for half a minute.
+    for pid in $(pgrep -x dictu); do
+        tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null \
+            | grep -qE ' (dump|lookup|search) ' || kill "$pid"
+    done
     sleep 2
     python3 hack/e2e.py
 }

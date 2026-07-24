@@ -23,17 +23,6 @@ lost, the substance is not.
   the full ~18–30s index cost each time. persist the merged index under
   `$XDG_CACHE_HOME/dictu/`, keyed by (path, mtime, size) per dictionary, and mmap it back.
 
-- **[~] #14 dict scope panel (multi-select which dicts to search).**
-  the data layer is ready and tested: `prefix_search` takes an `active: &[bool]` mask
-  (`src/library.rs:80`), and `Config::exclude` (`src/config.rs`, currently
-  `#[allow(dead_code)]`) persists a `!`-prefixed exclusion. missing: the ui — a popover or
-  preferences page listing the scanned dictionaries with checkboxes, and the wiring from
-  checkbox state → mask → re-search. keep the distinction: the mask is a transient search
-  scope, `Config::exclude` is a permanent "never load this again" (see #19). watch out:
-  `exclude` rewrites `config.toml` through serde, which discards the comments a
-  hand-edited config has (the #19 exclusions are commented) — either preserve them or
-  stop hand-commenting.
-
 ## next — 2026-07-24 feedback
 
 - **[ ] #33 wordlist: tell lemmas from inflections** (the other half of #15).
@@ -70,6 +59,15 @@ lost, the substance is not.
   answers the "why am I looking at this?" question directly. the tidier shape is for
   `Dictionary::lookup` to return the entries rather than a pre-joined string, which also lets
   the ui number them; that touches the trait and all three readers.
+
+- **[ ] #36 saving `config.toml` destroys its comments.** `Config::save` (`src/config.rs`)
+  rewrites the whole file through serde, so the hand-written notes in the real config —
+  which say *why* the #19 Latin duplicates and the #34 French dictionary are excluded —
+  would be gone the first time anything persisted a change. that is why #14's scope panel
+  keeps its choice in memory and why `Config::exclude` is still unwired: a "remove this
+  dictionary for good" ui isn't possible until saving edits the file in place. `toml_edit`
+  (already in the tree as toml 0.8's own dependency) preserves comments and layout; the
+  test that proves it has to round-trip a commented fixture, not a generated one.
 
 - **[ ] #32 the cli panics on a closed pipe.** `dictu dump … | head -3` ends with
   `failed printing to stdout: Broken pipe` and a panic message, because rust ignores
@@ -143,6 +141,27 @@ lost, the substance is not.
   use latin script. it is excluded now (#34), so nothing in the collection hits this, but if
   a latin-script bilingual dictionary is ever added back, sample its headwords instead of
   trusting the title.
+- **[x] #14 the search scope is yours to choose.** a popover off the header bar lists every
+  loaded dictionary with its headword count and a checkbox; unchecking one drops it out of
+  the `active` mask and re-runs whatever is in the search box, so the wordlist follows
+  immediately. a popover rather than an `adw` preferences window **because this is not a
+  setting**: it is a transient scope you flip mid-search, so it belongs one click from the
+  search box and dismisses itself. (it also needs no `v1_5` feature bump for
+  `AdwPreferencesDialog`.) the status line stays honest about what was actually searched —
+  `6 words · 1 of 2 dictionaries`, `1 result · 1 of 2 dictionaries` — and says the scope
+  note only when the scope is narrowed, so a full library reads exactly as it did before.
+  deselecting everything is its own state (`0 dictionaries selected`, and the pane says to
+  pick one) rather than an empty list that looks broken. six e2e checks drive the real
+  popover over at-spi.
+  **nothing is persisted, deliberately.** `Config::exclude` would have to `save`, and save
+  rewrites `config.toml` through serde, discarding the comments that explain the #19/#34
+  exclusions — see #36. permanent removal stays a hand edit; this panel is per-session.
+  **known limit:** the mask scopes the *wordlist*, not the definition pane —
+  `Library::lookup_all` still answers from every dictionary, so a word selected while a
+  dictionary is out of scope can still show that dictionary's definition. arguably right
+  (you asked for that word), but if it should follow the scope, that is a one-line change
+  where the pane is built.
+
 - **[x] #22 a strip says what's below the fold.** under the definition, when a word is
   defined by dictionaries that don't all fit: `1 more definition below: sample` — the count
   and the names. it tracks scrolling and hides itself when everything is in view, so a

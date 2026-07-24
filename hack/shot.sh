@@ -4,6 +4,7 @@
 #   hack/shot.sh                          the real collection, ready state
 #   hack/shot.sh -o /tmp/x.png dacrima    search for a word first, then shoot
 #   hack/shot.sh --sample --select cf     the sample/ fixture, first row selected
+#   hack/shot.sh --sample --scope         with the search-scope panel open
 #
 # how, and why it took a few tries: gnome denies the org.gnome.Shell.Screenshot
 # d-bus api to third parties, and grim needs wlr-screencopy, which mutter doesn't
@@ -33,6 +34,7 @@ OUT="${TMPDIR:-/tmp}/dictu-shot.png"
 SIZE="900x700x24"
 SAMPLE=0
 SELECT=0
+SCOPE=0
 QUERY=""
 
 while [ $# -gt 0 ]; do
@@ -40,6 +42,7 @@ while [ $# -gt 0 ]; do
         -o) OUT="$2"; shift 2 ;;
         --sample) SAMPLE=1; shift ;;      # fixture dictionaries: seconds, not ~20s
         --select) SELECT=1; shift ;;      # select the first result, so a definition shows
+        --scope) SCOPE=1; shift ;;        # open the search-scope panel, and capture it too
         --size) SIZE="$2"; shift 2 ;;     # e.g. --size 1400x900x24
         -*) echo "unknown flag: $1" >&2; exit 2 ;;
         *) QUERY="$1"; shift ;;
@@ -55,8 +58,16 @@ cargo build 2>&1 | tail -2 || exit 1
 # one instance at a time: a second launch forwards its argv to the first and
 # exits, so a leftover process would answer instead of the one we just started.
 # kill by exact process NAME — `pkill -f target/debug/dictu` also matches the
-# shell running this script and kills it (an exit 144 out of nowhere).
-pgrep -x dictu | xargs -r kill
+# shell running this script and kills it (an exit 144 out of nowhere). windows
+# only: `dictu dump|lookup|search` never claims the d-bus name, so it can't answer
+# for us and doesn't deserve killing.
+kill_windows() {
+    for pid in $(pgrep -x dictu); do
+        tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null \
+            | grep -qE ' (dump|lookup|search) ' || kill "$pid"
+    done
+}
+kill_windows
 sleep 2   # d-bus name release; relaunching instantly fails with NoReply.
 
 # a display of our own, on the first free number.
@@ -81,7 +92,7 @@ if [ "$SAMPLE" = 1 ]; then
 fi
 
 cleanup() {
-    pgrep -x dictu | xargs -r kill
+    kill_windows
     kill "$XVFB_PID" 2>/dev/null
     [ -n "$TMPCFG" ] && rm -rf "$TMPCFG"
 }
@@ -128,5 +139,16 @@ if [ "$SELECT" = 1 ]; then
     sleep 0.8
 fi
 
-import -window "$ID" "png:$OUT" || exit 1
+# a gtk4 popover is an x window of its own, sitting over the toplevel — so with the
+# scope panel open the whole display is captured, not just the window. that only
+# works because this is our own Xvfb (under xwayland `import -window root` fails).
+TARGET="$ID"
+if [ "$SCOPE" = 1 ]; then
+    env "${CONFIG_ENV[@]}" timeout 60 python3 hack/e2e.py --open-scope || {
+        echo "shot: could not open the scope panel" >&2; exit 1; }
+    sleep 0.5
+    TARGET="root"
+fi
+
+import -window "$TARGET" "png:$OUT" || exit 1
 echo "wrote $OUT ($(identify -format '%wx%h' "$OUT"))"
