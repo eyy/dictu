@@ -7,6 +7,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::io::{self, Write};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -95,6 +96,24 @@ fn parse_flag(args: &[String], flag: &str) -> Option<String> {
     args.get(idx + 1).cloned()
 }
 
+/// print through one locked stdout handle, stopping at the first failed write.
+/// these subcommands exist to be piped into `head`/`grep`, and rust ignores
+/// SIGPIPE — so `println!` panics once the reader goes away. a closed pipe is the
+/// reader's choice, not a failure: say nothing and exit 0.
+fn printing(
+    write: impl FnOnce(&mut io::StdoutLock) -> io::Result<glib::ExitCode>,
+) -> glib::ExitCode {
+    let mut out = io::stdout().lock();
+    match write(&mut out) {
+        Ok(code) => code,
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => glib::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: writing to stdout: {e}");
+            glib::ExitCode::FAILURE
+        }
+    }
+}
+
 fn search_cli(query: Option<&str>) -> glib::ExitCode {
     let Some(query) = query else {
         eprintln!("usage: dictu search <query>");
@@ -103,16 +122,19 @@ fn search_cli(query: Option<&str>) -> glib::ExitCode {
     let config = config::Config::load_or_create().unwrap_or_default();
     let entries = config::scan(&config.dictionary_dirs);
     let lib = library::Library::open(&entries);
-    println!(
-        "{} dicts, {} headwords total",
-        lib.dict_count(),
-        lib.total_headwords()
-    );
-    for hit in lib.prefix_search(query, 20, &[]) {
-        let label = lib.dict_label(hit.dict).unwrap_or("?");
-        println!("  [{label}] {}", hit.word);
-    }
-    glib::ExitCode::SUCCESS
+    printing(|out| {
+        writeln!(
+            out,
+            "{} dicts, {} headwords total",
+            lib.dict_count(),
+            lib.total_headwords()
+        )?;
+        for hit in lib.prefix_search(query, 20, &[]) {
+            let label = lib.dict_label(hit.dict).unwrap_or("?");
+            writeln!(out, "  [{label}] {}", hit.word)?;
+        }
+        Ok(glib::ExitCode::SUCCESS)
+    })
 }
 
 fn dump(path: Option<&str>) -> glib::ExitCode {
@@ -121,10 +143,10 @@ fn dump(path: Option<&str>) -> glib::ExitCode {
         return glib::ExitCode::FAILURE;
     };
     match dict::open_any(Path::new(path)) {
-        Ok(dict) => {
-            println!("name:      {}", dict.name());
+        Ok(dict) => printing(|out| {
+            writeln!(out, "name:      {}", dict.name())?;
             let headwords = dict.headwords();
-            println!("headwords: {}", headwords.len());
+            writeln!(out, "headwords: {}", headwords.len())?;
             for word in headwords.iter().take(5) {
                 let entries = dict.lookup(word);
                 let text = entries
@@ -138,10 +160,10 @@ fn dump(path: Option<&str>) -> glib::ExitCode {
                     0 | 1 => String::new(),
                     n => format!("  [{n} entries]"),
                 };
-                println!("  {word:?} -> {preview:?}{more}");
+                writeln!(out, "  {word:?} -> {preview:?}{more}")?;
             }
-            glib::ExitCode::SUCCESS
-        }
+            Ok(glib::ExitCode::SUCCESS)
+        }),
         Err(e) => {
             eprintln!("error: {e:#}");
             glib::ExitCode::FAILURE
@@ -164,29 +186,33 @@ fn lookup(path: Option<&str>, word: Option<&str>, html: bool) -> glib::ExitCode 
         }
     };
     let entries = dict.lookup(word);
-    if entries.is_empty() {
-        println!("{}: no entry for {word:?}", dict.name());
-        return glib::ExitCode::FAILURE;
-    }
-    println!(
-        "{} — {word} ({})\n",
-        dict.name(),
-        quantity(entries.len(), "entry", "entries")
-    );
-    for (position, entry) in entries.iter().enumerate() {
-        if entries.len() > 1 {
-            println!("--- {} of {} ---", position + 1, entries.len());
+    printing(|out| {
+        if entries.is_empty() {
+            writeln!(out, "{}: no entry for {word:?}", dict.name())?;
+            return Ok(glib::ExitCode::FAILURE);
         }
-        println!(
-            "{}",
-            if html {
-                entry.clone()
-            } else {
-                dict::html_to_text(entry)
+        writeln!(
+            out,
+            "{} — {word} ({})\n",
+            dict.name(),
+            quantity(entries.len(), "entry", "entries")
+        )?;
+        for (position, entry) in entries.iter().enumerate() {
+            if entries.len() > 1 {
+                writeln!(out, "--- {} of {} ---", position + 1, entries.len())?;
             }
-        );
-    }
-    glib::ExitCode::SUCCESS
+            writeln!(
+                out,
+                "{}",
+                if html {
+                    entry.clone()
+                } else {
+                    dict::html_to_text(entry)
+                }
+            )?;
+        }
+        Ok(glib::ExitCode::SUCCESS)
+    })
 }
 
 /// the widgets + state a load touches, bundled so signal closures capture one
