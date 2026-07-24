@@ -43,10 +43,12 @@ SAMPLE_DIR = os.path.join(REPO, "sample")
 # the fixture dictionary's headwords (sample/sample.index), minus the
 # `00-database-short` control entry that the dictd reader hides.
 SAMPLE_WORDS = ["aardvark", "byte", "dictionary", "gnome", "rust", "zeitgeist"]
-# sample/links.csv adds three entries whose definitions carry real <a> links.
-LINK_WORDS = ["cf", "qv", "ext", "only"]
-# 6 + 4 headwords across the two fixture dictionaries.
-IDLE_STATUS = "10 words · 2 dictionaries"
+# sample/links/links.csv adds entries whose definitions carry real <a> links, plus
+# a deliberately long "byte" — a headword the dictd fixture also has, so that one
+# dictionary's answer pushes the other's below the fold.
+LINK_WORDS = ["cf", "qv", "ext", "only", "byte"]
+# 6 + 5 headwords across the two fixture dictionaries.
+IDLE_STATUS = "11 words · 2 dictionaries"
 
 APP_NAME = "dictu"
 # the status line always starts with a count, which is how we pick it out of the
@@ -326,6 +328,16 @@ class Widgets:
         texts = [(node.get_name() or "").strip() for node in by_role(self.app, "label")]
         return [t for t in texts if t]
 
+    def fold_line(self):
+        """the strip under the definition naming what is below the fold, or "" when
+        it is hidden. hidden widgets stay in the a11y tree, so SHOWING is what
+        distinguishes them."""
+        for node in by_role(self.app, "label"):
+            name = (node.get_name() or "").strip()
+            if "below:" in name and node.get_state_set().contains(Atspi.StateType.SHOWING):
+                return name
+        return ""
+
     def status_line(self):
         """the dim count line under the wordlist, e.g. "6 words · 1 dictionary"
         or "1 result" — identified by starting with a number."""
@@ -513,6 +525,29 @@ def main():
             )
         else:
             r.check("selecting a row renders its definition", False, "could not activate a row")
+
+        # roadmap #22: when several dictionaries define a word and they don't all
+        # fit, a strip under the definition says how many are left and which.
+        app_proc.forward("--search", "cf")
+        wait_for(lambda: "cf" in widgets.row_words() or None, 10, "the cf row")
+        select_first_row(widgets.results)
+        time.sleep(0.8)
+        r.check(
+            "no fold strip when one dictionary answers",
+            widgets.fold_line() == "",
+            f"strip read {widgets.fold_line()!r}",
+        )
+
+        app_proc.forward("--search", "byte")
+        wait_for(lambda: "byte" in widgets.row_words() or None, 10, "the byte row")
+        select_first_row(widgets.results)
+        fold = wait_for(lambda: widgets.fold_line() or None, 10, "the fold strip")
+        log(f"fold strip: {fold!r}")
+        r.check(
+            "the fold strip counts and names the dictionaries below",
+            fold == "1 more definition below: sample",
+            f"expected '1 more definition below: sample', got {fold!r}",
+        )
 
         # keyboard behaviour (roadmap #16, #23). synthetic keys land in whichever
         # window has focus, so skip rather than type into the user's terminal.

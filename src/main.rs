@@ -178,6 +178,12 @@ struct Ui {
     results: gtk::ListBox,
     definition: gtk::TextView,
     status: gtk::Label,
+    /// the strip under the definition naming what is still below the fold.
+    fold: gtk::Label,
+    /// one entry per dictionary section in the definition currently shown: its
+    /// label, and a mark at the line it starts on. marks (not line numbers) because
+    /// they survive the buffer being rewritten under them.
+    sections: Rc<RefCell<Vec<(String, gtk::TextMark)>>>,
     library: SharedLibrary,
 }
 
@@ -328,9 +334,11 @@ impl Ui {
         let defs = library.lookup_all(word);
 
         let buffer = self.definition.buffer();
+        self.clear_sections(&buffer);
         buffer.set_text("");
         if defs.is_empty() {
             buffer.set_text(&format!("No definition for “{word}”."));
+            self.update_fold();
             return;
         }
 
@@ -338,6 +346,10 @@ impl Ui {
         buffer.insert_with_tags(&mut iter, &format!("{word}\n"), &[&head_tag(&buffer)]);
         for (dict_index, html) in &defs {
             let label = library.dict_label(*dict_index).unwrap_or("");
+            // remember where this dictionary's answer starts, so the strip below the
+            // pane can say which ones are still out of sight.
+            let mark = buffer.create_mark(None, &iter, true);
+            self.sections.borrow_mut().push((label.to_string(), mark));
             // no blank line: the heading's own space-above is what separates
             // sections, and a literal newline on top of it just leaves a hole.
             buffer.insert_with_tags(&mut iter, &format!("{label}\n"), &[&source_tag(&buffer)]);
@@ -358,6 +370,46 @@ impl Ui {
             buffer.insert(&mut iter, "\n");
             structure_body(&buffer, body_start, iter.line());
         }
+        // gtk needs to lay the buffer out before any of it has a position, so ask
+        // once the layout has settled rather than measuring nothing here.
+        let ui = self.clone();
+        glib::idle_add_local_once(move || ui.update_fold());
+    }
+
+    /// forget the previous definition's section marks (a mark lives in the buffer
+    /// until deleted, so leaving them behind accumulates them).
+    fn clear_sections(&self, buffer: &gtk::TextBuffer) {
+        for (_, mark) in self.sections.borrow_mut().drain(..) {
+            buffer.delete_mark(&mark);
+        }
+    }
+
+    /// say what is still below the fold: how many further dictionaries define this
+    /// word, and which. hidden when everything already fits.
+    fn update_fold(&self) {
+        let sections = self.sections.borrow();
+        let visible = self.definition.visible_rect();
+        let fold = visible.y() + visible.height();
+        let buffer = self.definition.buffer();
+
+        let below: Vec<&str> = sections
+            .iter()
+            .filter(|(_, mark)| {
+                let iter = buffer.iter_at_mark(mark);
+                self.definition.iter_location(&iter).y() >= fold
+            })
+            .map(|(label, _)| label.as_str())
+            .collect();
+
+        self.fold.set_visible(!below.is_empty());
+        if below.is_empty() {
+            return;
+        }
+        self.fold.set_text(&format!(
+            "{} below: {}",
+            quantity(below.len(), "more definition", "more definitions"),
+            below.join(" · "),
+        ));
     }
 }
 
@@ -576,11 +628,29 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     let def_scroll = gtk::ScrolledWindow::new();
     def_scroll.set_child(Some(&definition));
     def_scroll.set_hexpand(true);
+    def_scroll.set_vexpand(true);
+
+    // the strip naming the definitions still below the fold. hidden until there
+    // are any, so it costs nothing on a single-dictionary word.
+    let fold = gtk::Label::builder()
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .margin_start(18)
+        .margin_end(18)
+        .margin_top(4)
+        .margin_bottom(6)
+        .visible(false)
+        .build();
+    fold.add_css_class("dim-label");
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&def_scroll);
+    content.append(&fold);
 
     // adw::OverlaySplitView: idiomatic sidebar+content (handles csd sizing).
     let split = adw::OverlaySplitView::new();
     split.set_sidebar(Some(&sidebar));
-    split.set_content(Some(&def_scroll));
+    split.set_content(Some(&content));
     split.set_collapsed(false);
     split.set_min_sidebar_width(260.0);
     split.set_max_sidebar_width(380.0);
@@ -601,8 +671,16 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         results: results.clone(),
         definition,
         status,
+        fold: fold.clone(),
+        sections: Rc::new(RefCell::new(Vec::new())),
         library: Rc::new(RefCell::new(None)),
     };
+
+    // scrolling changes what's below the fold, so the strip follows it.
+    let ui_scroll = ui.clone();
+    def_scroll
+        .vadjustment()
+        .connect_value_changed(move |_| ui_scroll.update_fold());
 
     // typing searches the whole index; selecting a result shows its def(s).
     let ui_search = ui.clone();

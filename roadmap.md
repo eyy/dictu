@@ -54,12 +54,13 @@ lost, the substance is not.
     to the dictionary's name when the language is ambiguous. check `.ifo` for a lang field;
     otherwise carry it on `DictEntry` from config.
 
-- **[ ] #22 indicate what's below the fold in the definition panel.**
-  when several dictionaries define a word, everything past the first is invisible until you
-  scroll. show a footer or sticky strip naming how many further definitions there are and
-  which dictionaries they come from — ideally clickable to jump.
-
 ## later
+
+- **[ ] #32 the cli panics on a closed pipe.** `dictu dump … | head -3` ends with
+  `failed printing to stdout: Broken pipe` and a panic message, because rust ignores
+  SIGPIPE and `println!` panics on the resulting `EPIPE`. these subcommands exist to be
+  piped into `head`/`grep`, so they should exit quietly instead — write through
+  `writeln!(io::stdout(), …)` and stop on an error.
 
 - **[ ] #13 DSL (ABBYY Lingvo) parser.**
   the highest-value format still missing: six dictionaries in the collection are
@@ -109,6 +110,13 @@ lost, the substance is not.
   updated to `&[]` ("all dicts") until #14 lands, and the mask itself is now covered by a
   unit test.
 - **[x] #26 `hack/` holds the feedback loop** (was empty).
+- **[x] #22 a strip says what's below the fold.** under the definition, when a word is
+  defined by dictionaries that don't all fit: `1 more definition below: sample` — the count
+  and the names. it tracks scrolling and hides itself when everything is in view, so a
+  single-dictionary word never shows it. positions come from `TextMark`s at each section
+  (marks survive the buffer being rewritten; line numbers wouldn't), measured after gtk has
+  laid the buffer out — measuring during the insert returns nothing. still open: making it
+  clickable to jump to that section.
 - **[x] #21 definitions have visible structure.** senses were the real problem: Lewis &
   Short runs them together separated by a bare `-`, so a long entry read as a wall of text.
   each sense — `- `, `1.`, `II.` — now gets a hanging indent and space above, so the marker
