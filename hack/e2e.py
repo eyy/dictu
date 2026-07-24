@@ -89,6 +89,18 @@ def text_of(node):
         return node.get_name() or ""
 
 
+def is_focused(node):
+    return node.get_state_set().contains(Atspi.StateType.FOCUSED)
+
+
+def window_is_active(app):
+    """whether the app's window has keyboard focus. gtk drops injected keys for an
+    unfocused window, so the keyboard checks depend on this."""
+    return any(
+        frame.get_state_set().contains(Atspi.StateType.ACTIVE) for frame in by_role(app, "frame")
+    )
+
+
 def wait_for(predicate, timeout, what):
     """poll `predicate` until it returns something truthy. raises on timeout."""
     deadline = time.monotonic() + timeout
@@ -127,6 +139,12 @@ class AppUnderTest:
         # be switched on explicitly for the bridge to be registered promptly.
         env["GTK_A11Y"] = "atspi"
         env["NO_AT_BRIDGE"] = "0"
+        # XWayland by default: synthetic keypresses go to whichever window has
+        # focus, and only on x11 can we give focus to the window under test
+        # (wayland won't let a client take it). key handling itself is
+        # backend-independent. set DICTU_E2E_BACKEND=wayland to test natively —
+        # the keyboard checks then skip.
+        env["GDK_BACKEND"] = os.environ.get("DICTU_E2E_BACKEND", "x11")
 
         log(f"launching {BINARY} with XDG_CONFIG_HOME={self.tmp}")
         self.proc = subprocess.Popen(
@@ -147,6 +165,44 @@ class AppUnderTest:
                 self.proc.kill()
         shutil.rmtree(self.tmp, ignore_errors=True)
         return False
+
+    def window_id(self):
+        """the x11 id of the mapped toplevel (gtk also maps a 1x1 helper window)."""
+        ids = subprocess.run(
+            ["xdotool", "search", "--name", "^Dictu$"], capture_output=True, text=True
+        ).stdout.split()
+        for candidate in reversed(ids):
+            geometry = subprocess.run(
+                ["xdotool", "getwindowgeometry", candidate], capture_output=True, text=True
+            ).stdout
+            if "1x1" not in geometry:
+                return candidate
+        return None
+
+    def focus_window(self):
+        """give the window under test keyboard focus. `windowactivate` can't be
+        used — mutter doesn't expose _NET_ACTIVE_WINDOW to xwayland clients — but
+        plain XSetInputFocus works. this does take focus off whatever the user was
+        doing, for as long as the keyboard checks run."""
+        wid = self.window_id()
+        if wid is None:
+            return False
+        subprocess.run(["xdotool", "windowfocus", wid], check=False, timeout=10)
+        time.sleep(0.5)
+        return True
+
+    def press(self, key):
+        """send one keypress to the window under test. `--window` targets it
+        directly, so a key can never land in one of the user's own windows: if
+        focus moved away, gtk drops the event instead."""
+        subprocess.run(["xdotool", "key", "--window", self.window_id(), key], check=False, timeout=10)
+        time.sleep(0.4)
+
+    def type_text(self, text):
+        subprocess.run(
+            ["xdotool", "type", "--window", self.window_id(), text], check=False, timeout=10
+        )
+        time.sleep(0.4)
 
     def forward(self, *args):
         """run `dictu <args>`, which the single-instance app forwards to the
@@ -378,6 +434,40 @@ def main():
             )
         else:
             r.check("selecting a row renders its definition", False, "could not activate a row")
+
+        # keyboard behaviour (roadmap #16, #23). synthetic keys land in whichever
+        # window has focus, so skip rather than type into the user's terminal.
+        app_proc.forward("--search", "aardvark")
+        wait_for(lambda: "aardvark" in widgets.row_words() or None, 10, "the aardvark row")
+        app_proc.focus_window()
+        if not window_is_active(node):
+            print("  skip  keyboard checks (could not focus the test window)")
+        else:
+            app_proc.press("Down")
+            r.check(
+                "Down from the search box selects the first row",
+                Atspi.Selection.get_n_selected_children(widgets.results) == 1
+                and "nocturnal" in widgets.definition_text().lower(),
+                f"selected={Atspi.Selection.get_n_selected_children(widgets.results)}",
+            )
+
+            app_proc.press("Up")
+            r.check(
+                "Up from the first row returns to the search box",
+                is_focused(widgets.search),
+                "search entry did not regain focus",
+            )
+
+            # focus the list again, then type: the character must reach the search
+            # box rather than being swallowed by the list.
+            app_proc.press("Down")
+            app_proc.type_text("x")
+            entry_text = text_of(widgets.search)
+            r.check(
+                "typing while the wordlist has focus goes to the search box",
+                entry_text == "aardvarkx" and is_focused(widgets.search),
+                f"entry read {entry_text!r}, focused={is_focused(widgets.search)}",
+            )
 
         r.check("the app is still running (no crash)", app_proc.proc.poll() is None)
 

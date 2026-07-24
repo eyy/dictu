@@ -33,17 +33,6 @@ lost, the substance is not.
 
 ## next — 2026-07-24 feedback
 
-- **[ ] #16 arrow-down in the search bar moves focus to the wordlist.**
-  *re-raised by feedback.* today the search entry keeps focus and the list is mouse-only.
-  add a key controller on the entry: `Down` focuses the `ListBox` and selects its first
-  row; `Up` from the first row returns to the entry. verifiable in `hack/e2e.py` with
-  `Atspi.generate_keyboard_event`.
-
-- **[ ] #23 typing anywhere in the app refocuses the search bar.**
-  the mirror of #16 — once focus can leave the entry, getting back must be trivial. a
-  window-level `EventControllerKey` that forwards printable keypresses to the
-  `SearchEntry` (appending, not replacing). must not swallow arrow keys the list uses.
-
 - **[ ] #15 wordlist: lemma vs inflection, and a language/dictionary tag.**
   *re-raised by feedback, now clearly two requirements.* the noise is easy to see:
   `dictu search dacrima` returns dacrima, dacrimae, dacrimam, dacrimarum, dacrimas… all
@@ -131,6 +120,12 @@ lost, the substance is not.
   updated to `&[]` ("all dicts") until #14 lands, and the mask itself is now covered by a
   unit test.
 - **[x] #26 `hack/` holds the feedback loop** (was empty).
+- **[x] #16 / #23 keyboard focus moves the way you expect.** `Down` in the search box
+  steps into the wordlist and selects the first row (so its definition shows); `Up` from
+  that first row comes back out to the search box; and typing any printable character
+  anywhere in the window goes to the search box, appending rather than replacing.
+  modifier combinations are left alone as shortcuts, and control keys stay with whatever
+  has focus. all three are covered by e2e checks that inject real keys.
 - **[x] #17 / #18 / #28 the status line under the wordlist.** one label, three
   complaints: digits are grouped (`4,009,914`), nouns agree with their counts
   (`1 dictionary`, not `1 dictionaries`), and while searching it counts what the list

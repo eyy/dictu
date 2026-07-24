@@ -59,8 +59,15 @@ what you need to know to add a check:
   hands the index over. wait for that text to change, never a fixed sleep.
 - drive the search box through `dictu --search WORD` (the single-instance path the global
   hotkey uses) instead of typing — deterministic, and it doesn't steal the user's focus.
-- for keyboard behaviour (roadmap #4, #5) use `Atspi.generate_keyboard_event`; that
-  *does* go to the focused window, so only in a check that owns the app.
+- keyboard behaviour is tested by injecting real keys, which needs two things
+  (`AppUnderTest.focus_window` / `.press` / `.type_text` handle both): the app under test
+  runs on XWayland, because only there can we hand it keyboard focus — mutter refuses
+  `xdotool windowactivate` (no `_NET_ACTIVE_WINDOW` for xwayland clients) but plain
+  `xdotool windowfocus` works — and keys go out as `xdotool key --window <id>`, which
+  targets that window, so a stray key can never land in one of the user's own windows.
+  gtk drops injected keys while a window is unfocused, so the checks skip themselves if
+  focus can't be obtained rather than typing somewhere unexpected. set
+  `DICTU_E2E_BACKEND=wayland` to run the rest natively; the keyboard checks then skip.
 - `python3-pyatspi` is **not** installed and isn't needed — `gi.repository.Atspi` works.
 - the `dbind-WARNING … /org/a11y/atspi/cache` line on startup is noise; ignore it.
 

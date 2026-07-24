@@ -11,7 +11,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{gio, glib};
+use gtk::{gdk, gio, glib};
 
 mod config;
 mod dict;
@@ -198,6 +198,49 @@ impl Ui {
         } else {
             quantity(seen.len(), "result", "results")
         });
+    }
+
+    /// move focus into the wordlist and select its first row — which also shows
+    /// that word's definition. gtk's own row navigation takes over from there.
+    fn focus_first_row(&self) {
+        let Some(row) = self.results.row_at_index(0) else {
+            return;
+        };
+        self.results.select_row(Some(&row));
+        row.grab_focus();
+    }
+
+    /// send a printable keypress to the search box wherever focus happens to be,
+    /// so the search box never has to be aimed for. modified keys are shortcuts
+    /// rather than typing, and keys already destined for the search box are left
+    /// alone.
+    fn redirect_typing(&self, key: gdk::Key, state: gdk::ModifierType) -> glib::Propagation {
+        let shortcut = state.intersects(
+            gdk::ModifierType::CONTROL_MASK
+                | gdk::ModifierType::ALT_MASK
+                | gdk::ModifierType::SUPER_MASK,
+        );
+        if shortcut || self.search_has_focus() {
+            return glib::Propagation::Proceed;
+        }
+        // control characters (escape, backspace, tab, the arrows) are navigation,
+        // not text — leave them to the widget that has focus.
+        let Some(ch) = key.to_unicode().filter(|c| !c.is_control()) else {
+            return glib::Propagation::Proceed;
+        };
+        self.search.grab_focus();
+        self.search.set_text(&format!("{}{ch}", self.search.text()));
+        self.search.set_position(-1);
+        glib::Propagation::Stop
+    }
+
+    /// whether focus is in the search box. gtk4 puts focus on the `GtkText`
+    /// *inside* a `SearchEntry`, so the entry itself is only an ancestor of it.
+    fn search_has_focus(&self) -> bool {
+        let search: &gtk::Widget = self.search.upcast_ref();
+        // spelled out because `Root` and `GtkWindow` both define `focus`.
+        gtk::prelude::GtkWindowExt::focus(&self.window)
+            .is_some_and(|focused| &focused == search || focused.is_ancestor(&self.search))
     }
 
     /// the idle status line: how much is loaded.
@@ -406,6 +449,43 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         };
         ui_select.show_word(&label.label());
     });
+
+    // Down from the search box steps into the wordlist (roadmap #16).
+    let ui_down = ui.clone();
+    let entry_keys = gtk::EventControllerKey::new();
+    entry_keys.connect_key_pressed(move |_, key, _, _| {
+        if key != gdk::Key::Down {
+            return glib::Propagation::Proceed;
+        }
+        ui_down.focus_first_row();
+        glib::Propagation::Stop
+    });
+    search.add_controller(entry_keys);
+
+    // and Up from the first row comes back out to the search box. anywhere else
+    // in the list, gtk's own row navigation is what you want.
+    let ui_up = ui.clone();
+    let list_keys = gtk::EventControllerKey::new();
+    list_keys.connect_key_pressed(move |_, key, _, _| {
+        let on_first_row = ui_up
+            .results
+            .selected_row()
+            .is_some_and(|row| row.index() == 0);
+        if key != gdk::Key::Up || !on_first_row {
+            return glib::Propagation::Proceed;
+        }
+        ui_up.search.grab_focus();
+        glib::Propagation::Stop
+    });
+    results.add_controller(list_keys);
+
+    // typing anywhere in the window goes to the search box (roadmap #23). the
+    // capture phase sees the key before the focused widget does.
+    let ui_type = ui.clone();
+    let window_keys = gtk::EventControllerKey::new();
+    window_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    window_keys.connect_key_pressed(move |_, key, _, state| ui_type.redirect_typing(key, state));
+    window.add_controller(window_keys);
 
     // build the merged index OFF the main thread, then hand it back over an
     // async-channel to the main context. glib::spawn_future_local runs on the
