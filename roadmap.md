@@ -74,11 +74,12 @@ lost, the substance is not.
   cycle that keeps widgets alive after close. switch to `glib::clone!(#[weak] …)`.
 
 - **[ ] #12 unified search ui (results across dictionaries).**
-  largely delivered by #11. what's left is presentation: a row shows the tag of the *first*
-  dictionary that had the word, so `rex` reads `FR` even though the Latin dictionary defines
-  it too and the definition pane shows both — the row should say when several dictionaries
-  answer. and deduping the same headword across dictionaries more intelligently than the
-  current lowercase `HashSet`.
+  largely delivered by #11. what's left is presentation: a row shows the tag of only the
+  *first* dictionary that had the word, even when the definition pane goes on to show
+  several — the row should say when more than one dictionary answers. (this was visible as
+  `rex` reading `FR`; excluding that dictionary in #34 hid the symptom, not the cause.) and
+  deduping the same headword across dictionaries more intelligently than the current
+  lowercase `HashSet`.
 
 ## done
 
@@ -119,6 +120,13 @@ lost, the substance is not.
   `Ref_LSJ` → `GRC`). when neither answers, the row shows the dictionary's name, which is
   the honest fallback the feedback asked for. `src/language.rs`, unit-tested, plus two e2e
   checks. the lemma-vs-inflection half is now #33.
+  **known limit, found the hard way:** a title can lie about its direction. the
+  French-English dictionary called itself `French - English.csv (fr-en)` but its headwords
+  are english (`'em`, `'twas`, `house`) with french definitions — en→fr — so every row got a
+  confident `FR` that should have been `ENG`. the script test can't help when both languages
+  use latin script. it is excluded now (#34), so nothing in the collection hits this, but if
+  a latin-script bilingual dictionary is ever added back, sample its headwords instead of
+  trusting the title.
 - **[x] #22 a strip says what's below the fold.** under the definition, when a word is
   defined by dictionaries that don't all fit: `1 more definition below: sample` — the count
   and the names. it tracks scrolling and hides itself when everything is in view, so a
@@ -147,6 +155,10 @@ lost, the substance is not.
   followed), the definition pane attaches an invisible tag carrying the target, clicking
   follows it as a new search, and the pointer turns into a hand over one. links leading out
   of the app — http, mailto — are deliberately inert rather than opening a browser.
+- **[x] #34 the French-English dictionary is excluded** (on request). its title misstates
+  its direction — see the note under #15 — and it was also the reason `rex` showed `FR`
+  while the Latin dictionary defined it too. the library is 5 dictionaries / 1,469,846
+  headwords now.
 - **[x] #19 the overlapping Latin dictionaries are down to one.** measured rather than
   guessed: `bgl-Latin_English_Inflected` and `stardic latin english inflected` are the same
   dictionary twice (Whitaker's Words — identical headword sets, identical 22 MB `.syn`,
@@ -186,15 +198,15 @@ lost, the substance is not.
 
 ## reference — the collection as dictu sees it
 
-`~/Dictionaries`, 8 of 15 dictionaries currently loadable (4,009,914
+`~/Dictionaries`, 5 of 15 dictionaries loadable and kept (1,469,846
 headwords):
 
 | loadable | dictionary | format |
 | --- | --- | --- |
-| yes | Latin_English_Inflected (bgl-converted) | StarDict |
-| yes | Latin_English_Inflected (stardic) | StarDict |
+| no (#19) | Latin_English_Inflected (bgl-converted) | StarDict |
+| no (#19) | Latin_English_Inflected (stardic) | StarDict |
 | yes | latin infl+lewis | StarDict |
-| yes | French - English | StarDict |
+| no (#34) | French - English (actually en→fr) | StarDict |
 | yes | MiddleLiddell | StarDict |
 | yes | a hebrew-hebrew dictionary (HEB-HEB) | StarDict |
 | yes | מילון אבן ספיר | StarDict |
@@ -206,5 +218,5 @@ headwords):
 | no (#13) | Larousse Chambers français-anglais | DSL |
 | no (#13) | Lexicon to Pindar | DSL |
 
-three of the eight loadable dictionaries are the overlapping Latin sets (#19), so the
-effective library is smaller than the count suggests.
+the six DSL dictionaries are the big gap (#13): the collection has more than twice the
+content dictu can currently read.
