@@ -45,8 +45,10 @@ already-running window, focuses it and fills the search box. bound to a shell ho
 word anywhere on the desktop into a lookup.
 
 **no-gui subcommands.** `dictu dump <file>` prints one dictionary's metadata and first
-entries; `dictu search <query>` runs the real search engine and prints the hits. both work
-without a display, which is how parsing and search get verified.
+entries; `dictu lookup <file> <word> [--html]` prints a single entry, which is how two
+dictionaries' coverage of the same word gets compared; `dictu search <query>` runs the real
+search engine and prints the hits. all three work without a display, which is how parsing
+and search get verified.
 
 ### dictionary formats
 

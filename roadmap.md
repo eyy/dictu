@@ -29,7 +29,10 @@ lost, the substance is not.
   `#[allow(dead_code)]`) persists a `!`-prefixed exclusion. missing: the ui — a popover or
   preferences page listing the scanned dictionaries with checkboxes, and the wiring from
   checkbox state → mask → re-search. keep the distinction: the mask is a transient search
-  scope, `Config::exclude` is a permanent "never load this again" (see #19).
+  scope, `Config::exclude` is a permanent "never load this again" (see #19). watch out:
+  `exclude` rewrites `config.toml` through serde, which discards the comments a
+  hand-edited config has (the #19 exclusions are commented) — either preserve them or
+  stop hand-commenting.
 
 ## next — 2026-07-24 feedback
 
@@ -38,20 +41,18 @@ lost, the substance is not.
   `dictu search dacrima` returns dacrima, dacrimae, dacrimam, dacrimarum, dacrimas… all
   inflections of one lemma, each tripled across the overlapping Latin dictionaries (#19).
   - **lemmas vs inflections:** differentiate them visually in the row, and add a config
-    option to hide inflections / search lemmas only. the signal probably lives in StarDict
-    `.syn` synonyms and in entries whose body is only a cross-reference — spike it before
-    building ui.
+    option to hide inflections / search lemmas only. **the `.syn` hypothesis is dead for
+    the dictionary we kept** — measured while doing #19: the Whitaker copies stored 34,443
+    lemmas in `.idx` and ~1.19M inflections in a 22 MB `.syn`, which would have been a
+    clean signal, but `latin infl+lewis` has no `.syn` at all and puts all 1,223,585 forms
+    directly in `.idx`. the signal that does survive: an inflected form's `.idx` entry
+    points at the *same byte range* as its lemma, and the entry text opens with the lemma
+    (`dacrimarum` → an entry beginning "dacrima, dacrimae"). so a headword that differs
+    from the lemma its definition opens with is an inflection. cheap to compute at index
+    time, no format-specific hack.
   - **language tag:** a small all-caps `LAT` / `HEB` / `FR` after each word, falling back
     to the dictionary's name when the language is ambiguous. check `.ifo` for a lang field;
     otherwise carry it on `DictEntry` from config.
-
-- **[ ] #19 cut the overlapping Latin dictionaries — keep the best one.**
-  three near-duplicate inflected Latin sets, all StarDict, all loaded:
-  `bgl-Latin_English_Inflected/` and `stardic latin english inflected/` (both
-  `Latin_English_Inflected.*`, one converted from BGL) and `fulllatininflected[1]/`
-  (`latin infl+lewis.*`). every Latin hit currently appears three times. compare headword
-  counts, definition depth (Lewis? Whitaker?) and markup quality with `dictu dump`, keep
-  one, exclude the other two with the config's `!` prefix. record the decision here.
 
 - **[ ] #20 links in definitions don't work (noticed in a hebrew-hebrew dictionary).**
   `markup.rs` maps `<a>`/`<kref>` to a link *style* — blue and underlined — but discards
@@ -120,6 +121,19 @@ lost, the substance is not.
   updated to `&[]` ("all dicts") until #14 lands, and the mask itself is now covered by a
   unit test.
 - **[x] #26 `hack/` holds the feedback loop** (was empty).
+- **[x] #19 the overlapping Latin dictionaries are down to one.** measured rather than
+  guessed: `bgl-Latin_English_Inflected` and `stardic latin english inflected` are the same
+  dictionary twice (Whitaker's Words — identical headword sets, identical 22 MB `.syn`,
+  identical definitions), and `fulllatininflected[1]` (`latin infl+lewis`) covers **every**
+  one of their headwords — 0 missing of 34,443 — while adding full Lewis & Short entries
+  with citations for lemmas. so the two Whitaker copies are excluded in `config.toml` via
+  the `!` prefix and the superset is kept. every Latin hit now appears once instead of
+  three times, and the library drops from 8 dictionaries / 4,009,914 headwords to 6 /
+  1,567,076 — which also cuts startup indexing.
+- **[x] #30 `dictu lookup <file> <word> [--html]`.** a dev affordance added to answer #19:
+  `dump` only shows a dictionary's first five entries, so there was no way to compare two
+  dictionaries' coverage of the same word. `--html` prints the raw fragment, which is what
+  markup work (#20, #21) needs to see.
 - **[x] #16 / #23 keyboard focus moves the way you expect.** `Down` in the search box
   steps into the wordlist and selects the first row (so its definition shows); `Up` from
   that first row comes back out to the search box; and typing any printable character

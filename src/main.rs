@@ -31,11 +31,19 @@ fn main() -> glib::ExitCode {
     let raw: Vec<String> = std::env::args().collect();
 
     // dev affordances (no gui): `dictu dump <file>` prints one dictionary's
-    // stats; `dictu search <query>` runs unified search across all configured
-    // dicts and prints the hits.
+    // stats; `dictu lookup <file> <word> [--html]` prints one entry, which is how
+    // two dictionaries' coverage of the same word get compared; `dictu search
+    // <query>` runs unified search across all configured dicts and prints the hits.
     let subcommand = raw.get(1).map(String::as_str);
     if subcommand == Some("dump") {
         return dump(raw.get(2).map(String::as_str));
+    }
+    if subcommand == Some("lookup") {
+        return lookup(
+            raw.get(2).map(String::as_str),
+            raw.get(3).map(String::as_str),
+            raw.iter().any(|arg| arg == "--html"),
+        );
     }
     if subcommand == Some("search") {
         return search_cli(raw.get(2).map(String::as_str));
@@ -129,6 +137,36 @@ fn dump(path: Option<&str>) -> glib::ExitCode {
             glib::ExitCode::FAILURE
         }
     }
+}
+
+/// print one word's entry from one dictionary — the plain text by default, the
+/// raw html with `--html` (which is what markup work needs to see).
+fn lookup(path: Option<&str>, word: Option<&str>, html: bool) -> glib::ExitCode {
+    let (Some(path), Some(word)) = (path, word) else {
+        eprintln!("usage: dictu lookup <dictionary-file> <word> [--html]");
+        return glib::ExitCode::FAILURE;
+    };
+    let dict = match dict::open_any(Path::new(path)) {
+        Ok(dict) => dict,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            return glib::ExitCode::FAILURE;
+        }
+    };
+    let Some(definition) = dict.lookup(word) else {
+        println!("{}: no entry for {word:?}", dict.name());
+        return glib::ExitCode::FAILURE;
+    };
+    println!("{} — {word}\n", dict.name());
+    println!(
+        "{}",
+        if html {
+            definition.clone()
+        } else {
+            dict::html_to_text(&definition)
+        }
+    );
+    glib::ExitCode::SUCCESS
 }
 
 /// the widgets + state a load touches, bundled so signal closures capture one

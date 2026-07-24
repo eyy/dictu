@@ -183,10 +183,14 @@ both subcommands short-circuit `main` before any gtk setup, so they work with no
 ```bash
 ./target/debug/dictu dump sample/sample.index        # name, headword count, first 5 entries
 ./target/debug/dictu dump "$D/HEB-HEB a hebrew-hebrew dictionary/hebrew-hebrew.ifo"
+./target/debug/dictu lookup sample/sample.index rust # one entry, as plain text
+./target/debug/dictu lookup "$D/fulllatininflected[1]/latin infl+lewis.ifo" virtus --html
 ./target/debug/dictu search abbrevi                  # whole collection, top 20 hits
 ```
 
-`dump` takes a dictionary's *entry* file — `.ifo` (stardict), `.index` (dictd), `.csv`.
+`dump` and `lookup` take a dictionary's *entry* file — `.ifo` (stardict), `.index`
+(dictd), `.csv`. `lookup --html` prints the raw html fragment, which is what markup work
+needs to see; without it you get the plain text.
 `search` scans the configured dirs and builds the full index first, so budget ~30s
 against the real collection; `time` it when testing load performance.
 
