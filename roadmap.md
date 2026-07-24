@@ -62,21 +62,6 @@ lost, the substance is not.
 
 ## later
 
-- **[ ] #35 several entries under one headword render as one blob.** this is ours, and it is
-  what makes the `sam` case look broken. `StarDict::lookup` joins every entry for a headword
-  with `\n<hr/>\n` (`src/dict/stardict.rs:130`) and `markup.rs` maps `<hr>` to a plain
-  newline, so the 71 entries `sam` points at run together as if they were one mangled entry.
-  two things to do: separate the entries visibly, and say how many there are — "1 of 71"
-  answers the "why am I looking at this?" question directly. the tidier shape is for
-  `Dictionary::lookup` to return the entries rather than a pre-joined string, which also lets
-  the ui number them; that touches the trait and all three readers.
-
-- **[ ] #32 the cli panics on a closed pipe.** `dictu dump … | head -3` ends with
-  `failed printing to stdout: Broken pipe` and a panic message, because rust ignores
-  SIGPIPE and `println!` panics on the resulting `EPIPE`. these subcommands exist to be
-  piped into `head`/`grep`, so they should exit quietly instead — write through
-  `writeln!(io::stdout(), …)` and stop on an error.
-
 - **[ ] #13 DSL (ABBYY Lingvo) parser.**
   the highest-value format still missing: six dictionaries in the collection are
   `.dsl`/`.dsl.dz` and invisible to the app — Klein's Etymological Hebrew, Dodson Greek,
@@ -171,6 +156,14 @@ lost, the substance is not.
   followed), the definition pane attaches an invisible tag carrying the target, clicking
   follows it as a new search, and the pointer turns into a hand over one. links leading out
   of the app — http, mailto — are deliberately inert rather than opening a browser.
+- **[x] #35 entries under one headword are numbered.** `lookup` used to join every entry
+  for a headword into one string with `<hr/>`, which `markup.rs` renders as a plain newline —
+  so the 71 entries `sam` is filed under arrived as one run-together paragraph, which is what
+  made noisy data look like a broken app. the trait now returns the entries (`Vec<String>`,
+  empty meaning "not in this dictionary") and the pane prints `1 of 71` above each. the cli
+  says it too: `dictu lookup … sam` reports `(71 entries)` and marks each one, and `dump`
+  flags any headword with more than one. the dictd fixture files `byte` twice so an e2e check
+  covers it.
 - **[x] #34 the French-English dictionary is excluded** (on request). its title misstates
   its direction — see the note under #15 — and it was also the reason `rex` showed `FR`
   while the Latin dictionary defined it too. the library is 5 dictionaries / 1,469,846
