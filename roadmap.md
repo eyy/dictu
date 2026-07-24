@@ -70,10 +70,6 @@ lost, the substance is not.
   `is_supported()` returns false and `open_any` bails. the parser must convert dsl's own
   markup to html to satisfy the `Dictionary::lookup` contract, and handle utf-16.
 
-- **[ ] #8 use `glib::clone!` weak refs in signal closures.**
-  handlers capture strong `Ui` clones (`src/main.rs`), which hold the window — a reference
-  cycle that keeps widgets alive after close. switch to `glib::clone!(#[weak] …)`.
-
 - **[ ] #12 unified search ui (results across dictionaries).**
   largely delivered by #11. what's left is presentation: a row shows the tag of only the
   *first* dictionary that had the word, even when the definition pane goes on to show
@@ -99,6 +95,24 @@ lost, the substance is not.
   second invocation's argv to the running instance, which focuses the window and fills the
   search box — the path the global hotkey takes. plus the no-gui `dump` and `search`
   subcommands.
+- **[x] #8 signal handlers hold weak refs, not strong `Ui` clones.** the cycle was real:
+  the window owns the widgets, each widget owns its handlers, and every handler held a
+  strong `Ui` — which holds the window. `Ui` is a plain struct, not a `GObject`, so
+  `#[weak]` had nothing to attach to; it is now `Rc<UiInner>`, which `glib::clone!` *can*
+  downgrade (`Downgrade` is implemented for `Rc`), so the nine handlers read
+  `glib::clone!(#[weak] ui, …)` and every call site keeps working unchanged — the alias
+  hides the `Rc` the way `SharedLibrary` already does. the alternative, capturing each
+  widget a closure needs weakly, was rejected: the handlers call `Ui` methods that touch
+  four or five fields each, so it would have meant upgrading half the struct per closure.
+  upgrade failure is a quiet early return everywhere (`#[upgrade_or]
+  Propagation::Proceed` for the key handlers). the honest limit: the app itself still owns
+  one strong `Ui` for its lifetime, deliberately — that is the single-instance window
+  being reused — so this changes no runtime behaviour; what it changes is that dropping
+  the ui now actually frees it. proved mechanically by a unit test that builds the real
+  widget tree (skipped when `adw::init` finds no display), drops the ui and asserts the
+  `Weak` no longer upgrades, then destroys the window and asserts the window and the
+  definition pane are finalized too. re-adding one strong capture makes it fail, so it
+  isn't vacuous.
 - **[x] #10 memory-map `.dict` + lazy per-entry reads.** plain `.dict` files are mmapped so
   the kernel pages definitions in on demand; `.dz`/gzip is decompressed once, with a 2 GiB
   zip-bomb cap.
