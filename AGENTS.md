@@ -212,7 +212,9 @@ needs to see; without it you get the plain text.
 `search` scans the configured dirs and builds the full index first, so budget ~30s
 against the real collection; `time` it when testing load performance.
 
-real test data: `~/Dictionaries` — 8 loadable dicts, 4,009,914 headwords.
+real test data: `~/Dictionaries` — 14 loadable dicts, 1,941,292 headwords
+(the count in `roadmap.md`'s collection table; the old 4M figure predates the excluded
+duplicate Latin dictionaries).
 `sample/` is a hand-built dictd fixture (6 definitions, gzipped `.dict.dz`, dictd-base64
 offsets) and is what the smoke tests and e2e use; no unit test reads it.
 
@@ -236,8 +238,7 @@ don't mix a symlink with its target between an include and its exclude. point
 3. `pkill -f target/debug/dictu` kills your own wrapper shell (exit 144) *and* the
    instance the user is looking at. use `pgrep -x dictu`.
 4. relaunch race: kill, wait ~2s, then start.
-5. `.dsl` is not parsed at all yet (roadmap #13) — six dictionaries in the collection are
-   invisible to the app because of it. `.bgl` needs pyglossary first.
+5. `.dsl` is read now (roadmap #13); `.bgl` still needs pyglossary first.
 6. stale doc: `src/config.rs`'s module comment says the config sits "next to the
    executable". it doesn't — `Config::path()` is the xdg path above.
 

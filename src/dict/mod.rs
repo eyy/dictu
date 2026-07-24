@@ -3,6 +3,7 @@
 
 pub mod csv;
 pub mod dictd;
+pub mod dsl;
 pub mod markup;
 pub mod stardict;
 
@@ -126,6 +127,10 @@ pub enum Format {
 
 impl Format {
     /// short human label for the ui.
+    // nothing calls it since every format now has an `open_any` arm and the
+    // "not supported yet" message it used to fill is gone; kept for the panel
+    // that will show each dictionary's format.
+    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             Format::StarDict => "StarDict",
@@ -138,9 +143,12 @@ impl Format {
 
     /// whether `open_any` can actually read this format today. the directory
     /// scanner uses this to keep unsupported formats out of the picker (BGL is
-    /// pre-converted to StarDict; DSL/CSV parsers aren't written yet).
+    /// pre-converted to StarDict, so it is never opened directly).
     pub fn is_supported(self) -> bool {
-        matches!(self, Format::StarDict | Format::Dictd | Format::Csv)
+        matches!(
+            self,
+            Format::StarDict | Format::Dictd | Format::Csv | Format::Dsl
+        )
     }
 }
 
@@ -171,12 +179,11 @@ pub fn open_any(path: &Path) -> Result<Box<dyn Dictionary>> {
         Some(Format::StarDict) => Ok(Box::new(stardict::StarDict::open(path)?)),
         Some(Format::Dictd) => Ok(Box::new(dictd::DictdDictionary::open(path)?)),
         Some(Format::Csv) => Ok(Box::new(csv::CsvDictionary::open(path)?)),
+        Some(Format::Dsl) => Ok(Box::new(dsl::DslDictionary::open(path)?)),
         // bgl is pre-converted to StarDict offline rather than parsed in-app.
         Some(Format::Bgl) => {
             bail!("BGL isn’t read directly — convert it to StarDict with pyglossary first")
         }
-        // dsl, csv parsers land here in later milestones.
-        Some(fmt) => bail!("{} dictionaries aren’t supported yet", fmt.label()),
         None => bail!("unrecognized dictionary file: {}", path.display()),
     }
 }
