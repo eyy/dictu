@@ -62,15 +62,6 @@ lost, the substance is not.
 
 ## later
 
-- **[ ] #32 the cli panics on a closed pipe.** `dictu dump … | head -3` ends with
-  `failed printing to stdout: Broken pipe` and a panic message, because rust ignores
-  SIGPIPE and `println!` panics on the resulting `EPIPE`. these subcommands exist to be
-  piped into `head`/`grep`, so they should exit quietly instead — write through
-  `writeln!(io::stdout(), …)` and stop on an error.
-  (implemented on `eyy/cli-broken-pipe`, awaiting review. this entry was deleted by
-  accident in 590529d and restored here — a scripted roadmap edit took the neighbouring
-  item with it.)
-
 - **[ ] #37 offline Wiktionary, chosen by language pair.** pick `French > English` in the
   config and get every French entry from the **English** Wiktionary, glossed in english,
   offline. the appeal is obvious: it covers the modern languages this collection has no
