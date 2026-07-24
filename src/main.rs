@@ -9,7 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::io::{self, Write};
 use std::path::Path;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
@@ -64,7 +64,8 @@ fn main() -> glib::ExitCode {
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
 
-    // the single Ui, built on the first invocation and reused after.
+    // the single Ui, built on the first invocation and reused after. this cell is
+    // its one strong owner — the handlers inside it all hold weak handles.
     let ui_cell: Rc<RefCell<Option<Ui>>> = Rc::new(RefCell::new(None));
     app.connect_command_line(move |app, cmdline| {
         let argv: Vec<String> = cmdline
@@ -226,9 +227,18 @@ fn lookup(path: Option<&str>, word: Option<&str>, html: bool) -> glib::ExitCode 
 }
 
 /// the widgets + state a load touches, bundled so signal closures capture one
-/// cheap `Ui` clone instead of half a dozen individual widget handles.
-#[derive(Clone)]
-struct Ui {
+/// cheap handle instead of half a dozen individual widget handles.
+///
+/// behind an `Rc` so handlers can hold a `Weak` rather than a strong clone
+/// (roadmap #8): the window owns the widgets and each widget owns its signal
+/// handlers, so a handler holding the `Ui` — which holds the window — closes a
+/// cycle that keeps the whole tree alive for the life of the process.
+type Ui = Rc<UiInner>;
+
+struct UiInner {
+    /// a weak handle to ourselves, for the deferred work a method schedules (the
+    /// idle fold measurement in `show_word`) — `&self` can't produce one.
+    this: Weak<UiInner>,
     window: adw::ApplicationWindow,
     search: gtk::SearchEntry,
     results: gtk::ListBox,
@@ -251,7 +261,7 @@ struct Ui {
     library: SharedLibrary,
 }
 
-impl Ui {
+impl UiInner {
     /// plain message in the definition pane (hint / "no definition").
     fn set_message(&self, text: &str) {
         self.definition.buffer().set_text(text);
@@ -459,9 +469,14 @@ impl Ui {
             }
         }
         // gtk needs to lay the buffer out before any of it has a position, so ask
-        // once the layout has settled rather than measuring nothing here.
-        let ui = self.clone();
-        glib::idle_add_local_once(move || ui.update_fold());
+        // once the layout has settled rather than measuring nothing here. weakly:
+        // the window can be closed between now and the next main-loop turn.
+        let ui = self.this.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.update_fold();
+            }
+        });
     }
 
     /// forget the previous definition's section marks (a mark lives in the buffer
@@ -771,7 +786,10 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         .content(&toolbar_with(&header, &split))
         .build();
 
-    let ui = Ui {
+    // new_cyclic so the ui can hold a weak handle to itself; every closure below
+    // captures `#[weak] ui` and quietly does nothing once the ui is gone.
+    let ui = Rc::new_cyclic(|this| UiInner {
+        this: this.clone(),
         window: window.clone(),
         search: search.clone(),
         results: results.clone(),
@@ -782,93 +800,121 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         words: Rc::new(RefCell::new(Vec::new())),
         auto_select: Rc::new(Cell::new(false)),
         library: Rc::new(RefCell::new(None)),
-    };
-
-    // scrolling changes what's below the fold, so the strip follows it.
-    let ui_scroll = ui.clone();
-    def_scroll
-        .vadjustment()
-        .connect_value_changed(move |_| ui_scroll.update_fold());
-
-    // typing searches the whole index; selecting a result shows its def(s).
-    let ui_search = ui.clone();
-    search.connect_search_changed(move |entry| ui_search.populate_results(&entry.text()));
-
-    let ui_select = ui.clone();
-    results.connect_row_selected(move |_list, row| {
-        let Some(row) = row else { return };
-        let word = usize::try_from(row.index())
-            .ok()
-            .and_then(|index| ui_select.words.borrow().get(index).cloned());
-        if let Some(word) = word {
-            ui_select.show_word(&word);
-        }
     });
 
+    // scrolling changes what's below the fold, so the strip follows it.
+    def_scroll.vadjustment().connect_value_changed(glib::clone!(
+        #[weak]
+        ui,
+        move |_| ui.update_fold()
+    ));
+
+    // typing searches the whole index; selecting a result shows its def(s).
+    search.connect_search_changed(glib::clone!(
+        #[weak]
+        ui,
+        move |entry| ui.populate_results(&entry.text())
+    ));
+
+    results.connect_row_selected(glib::clone!(
+        #[weak]
+        ui,
+        move |_list, row| {
+            let Some(row) = row else { return };
+            let word = usize::try_from(row.index())
+                .ok()
+                .and_then(|index| ui.words.borrow().get(index).cloned());
+            if let Some(word) = word {
+                ui.show_word(&word);
+            }
+        }
+    ));
+
     // clicking a link in a definition looks that word up (roadmap #20).
-    let ui_link = ui.clone();
     let click = gtk::GestureClick::new();
     // capture phase: the textview's own drag-select gesture claims the sequence
     // otherwise, and this handler never hears about the release.
     click.set_propagation_phase(gtk::PropagationPhase::Capture);
-    click.connect_released(move |gesture, _clicks, x, y| {
-        let Some(target) = ui_link.link_at(x, y) else {
-            return; // an ordinary click: let the textview place the cursor.
-        };
-        gesture.set_state(gtk::EventSequenceState::Claimed);
-        ui_link.follow_link(&target);
-    });
+    click.connect_released(glib::clone!(
+        #[weak]
+        ui,
+        move |gesture, _clicks, x, y| {
+            let Some(target) = ui.link_at(x, y) else {
+                return; // an ordinary click: let the textview place the cursor.
+            };
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            ui.follow_link(&target);
+        }
+    ));
     ui.definition.add_controller(click);
 
     // and the pointer says so before you click.
-    let ui_hover = ui.clone();
     let motion = gtk::EventControllerMotion::new();
     motion.set_propagation_phase(gtk::PropagationPhase::Capture);
-    motion.connect_motion(move |_, x, y| {
-        let cursor = if ui_hover.link_at(x, y).is_some() {
-            "pointer"
-        } else {
-            "text"
-        };
-        ui_hover.definition.set_cursor_from_name(Some(cursor));
-    });
+    motion.connect_motion(glib::clone!(
+        #[weak]
+        ui,
+        move |_, x, y| {
+            let cursor = if ui.link_at(x, y).is_some() {
+                "pointer"
+            } else {
+                "text"
+            };
+            ui.definition.set_cursor_from_name(Some(cursor));
+        }
+    ));
     ui.definition.add_controller(motion);
 
     // Down from the search box steps into the wordlist (roadmap #16).
-    let ui_down = ui.clone();
     let entry_keys = gtk::EventControllerKey::new();
-    entry_keys.connect_key_pressed(move |_, key, _, _| {
-        if key != gdk::Key::Down {
-            return glib::Propagation::Proceed;
+    entry_keys.connect_key_pressed(glib::clone!(
+        #[weak]
+        ui,
+        #[upgrade_or]
+        glib::Propagation::Proceed,
+        move |_, key, _, _| {
+            if key != gdk::Key::Down {
+                return glib::Propagation::Proceed;
+            }
+            ui.focus_first_row();
+            glib::Propagation::Stop
         }
-        ui_down.focus_first_row();
-        glib::Propagation::Stop
-    });
+    ));
     search.add_controller(entry_keys);
 
     // and Up from the first row comes back out to the search box. anywhere else
     // in the list, gtk's own row navigation is what you want.
-    let ui_up = ui.clone();
     let list_keys = gtk::EventControllerKey::new();
-    list_keys.connect_key_pressed(move |_, key, _, _| {
-        let on_first_row = ui_up
-            .results
-            .selected_row()
-            .is_some_and(|row| row.index() == 0);
-        if key != gdk::Key::Up || !on_first_row {
-            return glib::Propagation::Proceed;
+    list_keys.connect_key_pressed(glib::clone!(
+        #[weak]
+        ui,
+        #[upgrade_or]
+        glib::Propagation::Proceed,
+        move |_, key, _, _| {
+            let on_first_row = ui
+                .results
+                .selected_row()
+                .is_some_and(|row| row.index() == 0);
+            if key != gdk::Key::Up || !on_first_row {
+                return glib::Propagation::Proceed;
+            }
+            ui.search.grab_focus();
+            glib::Propagation::Stop
         }
-        ui_up.search.grab_focus();
-        glib::Propagation::Stop
-    });
+    ));
     results.add_controller(list_keys);
 
     // typing anywhere in the window goes to the search box (roadmap #23). the
     // capture phase sees the key before the focused widget does.
-    let ui_type = ui.clone();
     let window_keys = gtk::EventControllerKey::new();
     window_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-    window_keys.connect_key_pressed(move |_, key, _, state| ui_type.redirect_typing(key, state));
+    window_keys.connect_key_pressed(glib::clone!(
+        #[weak]
+        ui,
+        #[upgrade_or]
+        glib::Propagation::Proceed,
+        move |_, key, _, state| ui.redirect_typing(key, state)
+    ));
     window.add_controller(window_keys);
 
     // build the merged index OFF the main thread, then hand it back over an
@@ -879,25 +925,27 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     std::thread::spawn(move || {
         let _ = tx.send_blocking(Library::open(&entries_owned));
     });
-    let ui_ready = ui.clone();
+    // weakly, and upgraded only after the await: indexing takes ~30s, so the
+    // window can be closed while this is still pending.
+    let ui_ready = Rc::downgrade(&ui);
     glib::spawn_future_local(async move {
         if let Ok(library) = rx.recv().await {
-            *ui_ready.library.borrow_mut() = Some(library);
-            ui_ready.search.set_sensitive(true);
-            ui_ready
-                .search
+            let Some(ui) = ui_ready.upgrade() else { return };
+            *ui.library.borrow_mut() = Some(library);
+            ui.search.set_sensitive(true);
+            ui.search
                 .set_placeholder_text(Some("Search all dictionaries…"));
-            ui_ready.show_library_size();
-            ui_ready.set_message("Type to search all dictionaries.");
+            ui.show_library_size();
+            ui.set_message("Type to search all dictionaries.");
             // a word may already be waiting: firing the hotkey with nothing running
             // starts the app AND fills the search box, and that search ran while
             // there was no index to search, so it found nothing. run it again now
             // that there is one, or the box sits there with a word and no results.
-            let waiting = ui_ready.search.text();
+            let waiting = ui.search.text();
             if !waiting.trim().is_empty() {
-                ui_ready.populate_results(&waiting);
+                ui.populate_results(&waiting);
             }
-            ui_ready.search.grab_focus();
+            ui.search.grab_focus();
         }
     });
 
@@ -966,7 +1014,69 @@ fn quantity(n: usize, singular: &str, plural: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{quantity, thousands};
+    use super::{Rc, build_ui, quantity, thousands};
+    use adw::prelude::*;
+    use gtk::gio;
+
+    /// the point of roadmap #8: the handlers `build_ui` connects hold weak handles,
+    /// so dropping the last strong one frees the ui — and the widget tree goes with
+    /// it when the window closes. with strong clones, the handlers owned by the
+    /// window's own widgets kept both alive for the life of the process.
+    #[test]
+    fn handlers_do_not_keep_the_ui_alive() {
+        // a real widget tree needs a display. skipping is the only option headless,
+        // but say so out loud: libtest reports a silent early return as a pass, and
+        // this test is the only thing standing between us and the cycle coming back.
+        // DICTU_REQUIRE_DISPLAY makes the skip a failure where a display is expected
+        // (hack/check.sh sets it), so the guard can't quietly go inert.
+        if adw::init().is_err() {
+            assert!(
+                std::env::var_os("DICTU_REQUIRE_DISPLAY").is_none(),
+                "no display, but DICTU_REQUIRE_DISPLAY is set: this test would have \
+                 been skipped, leaving the reference-cycle guard inert"
+            );
+            eprintln!("skipping handlers_do_not_keep_the_ui_alive: no display");
+            return;
+        }
+        let app = adw::Application::builder()
+            .application_id("io.github.eyy.Dictu.Test")
+            // NON_UNIQUE so concurrent runs (several worktrees, an agent per branch)
+            // don't race for the bus name: the loser registers as a *remote* app,
+            // never emits `startup`, refuses to adopt the window with a
+            // Gtk-CRITICAL — and then owns nothing, which quietly voids the window
+            // assertions below.
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        // register first: an unregistered GApplication refuses to take ownership of
+        // a window, and it owning the window is what makes `destroy()` below the
+        // thing that releases it.
+        let _ = app.register(gio::Cancellable::NONE);
+        let ui = build_ui(&app, &[]);
+        let weak_ui = Rc::downgrade(&ui);
+        // watch the widgets themselves too, not just our own bookkeeping.
+        let window = ui.window.clone();
+        let weak_window = window.downgrade();
+        let definition = ui.definition.downgrade();
+        assert!(weak_ui.upgrade().is_some(), "the ui should be alive here");
+
+        drop(ui);
+        assert!(
+            weak_ui.upgrade().is_none(),
+            "a signal handler still holds a strong Ui"
+        );
+
+        // and with nothing holding the ui, closing the window drops the tree.
+        window.destroy();
+        drop(window);
+        assert!(
+            weak_window.upgrade().is_none(),
+            "the window outlived the ui"
+        );
+        assert!(
+            definition.upgrade().is_none(),
+            "the definition pane outlived the window"
+        );
+    }
 
     #[test]
     fn thousands_groups_from_the_right() {

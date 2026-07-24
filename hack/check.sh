@@ -55,7 +55,16 @@ lint() {
     cargo clippy --all-targets -- -D warnings
 }
 
-unit() { cargo test; }
+# DICTU_REQUIRE_DISPLAY turns the reference-cycle test's headless skip into a
+# failure: it needs a real widget tree, and libtest reports a silent skip as a
+# pass, so without this the guard can go inert without anyone noticing.
+unit() {
+    if [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
+        DICTU_REQUIRE_DISPLAY=1 cargo test
+    else
+        cargo test
+    fi
+}
 
 build() { cargo build; }
 
