@@ -70,9 +70,13 @@ smoke_dump() {
 
     # a reader that walks away mid-output must not take dump down with it (#32):
     # rust ignores SIGPIPE, so println! used to panic on the resulting EPIPE.
+    # the reader is `true`, not `head -1`: dump writes only seven short lines, and
+    # head usually reads all of them before the writer notices, so that version of
+    # this gate caught a reintroduced panic barely half the time (and less on a busy
+    # machine). a reader that never reads at all closes the pipe first, every time.
     local err status
     err=$(mktemp) || return 1
-    ./target/debug/dictu dump sample/sample.index 2>"$err" | head -1 >/dev/null
+    ./target/debug/dictu dump sample/sample.index 2>"$err" | true
     status=${PIPESTATUS[0]}
     if [ -s "$err" ]; then
         echo "closed pipe: expected no stderr, got:" >&2; cat "$err" >&2; rm -f "$err"; return 1

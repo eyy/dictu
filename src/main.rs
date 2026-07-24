@@ -189,11 +189,18 @@ fn lookup(path: Option<&str>, word: Option<&str>, html: bool) -> glib::ExitCode 
         }
     };
     let entries = dict.lookup(word);
-    printing(|out| {
-        if entries.is_empty() {
+    if entries.is_empty() {
+        // the verdict is about the dictionary, not about whether anyone was still
+        // listening: report the message through `printing` (so a closed pipe stays
+        // quiet) but fail regardless, or `lookup … | grep -q x` would call a missing
+        // word a success the moment grep exits early.
+        printing(|out| {
             writeln!(out, "{}: no entry for {word:?}", dict.name())?;
-            return Ok(glib::ExitCode::FAILURE);
-        }
+            Ok(glib::ExitCode::SUCCESS)
+        });
+        return glib::ExitCode::FAILURE;
+    }
+    printing(|out| {
         writeln!(
             out,
             "{} — {word} ({})\n",
