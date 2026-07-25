@@ -43,6 +43,20 @@ nothing open right now.
   auxiliary along with the verb, so searching a form of *esse* pulls up a hundred unrelated
   verbs. treating these as inflections rather than headwords is what fixes it.
 
+## deferred — needs you
+
+these are blocked on a decision or an action only you can take. nothing else waits on them.
+
+- **#37 Wiktionary, phase A** — the cheap path is dropping a prebuilt StarDict build of the
+  language pair you want into the collection, which needs (a) picking the languages and
+  (b) a download. both are yours; the app needs no change to read them.
+- **a look at the real window.** the harness screenshots on a private display with the cairo
+  renderer, so it cannot show a wayland client-side-decoration or gl-renderer problem. if
+  something looks wrong on your actual desktop that the screenshots don't reproduce, that is
+  the reason.
+- **the stray character in commit `81fd7b1`'s body** (`a真 frame`). unpushed history, so it is
+  fixable, but rewriting it is your call — the convention here is never to amend.
+
 ## later
 
 - **[ ] #42 fuzzy search, typable greek and hebrew, lemmas-only — see
