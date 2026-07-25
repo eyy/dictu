@@ -57,27 +57,47 @@ this plan gives it two more keys, one more column, and one more entry point.
 
 ## 1. keys you can actually type (#39)
 
-**two normalized keys, not one.**
+**the rule: matching is asymmetric in how specific the query is.**
 
-- **fold key** = NFC, then **full case folding**, in that order. NFC maps Greek oxia U+1F79
-  to tonos U+03CC (that is #39's headline fix); case folding maps final sigma `ς` to `σ`,
-  which lowercasing does *not* — and 139,079 headwords contain a final sigma. Order matters
-  and neither step subsumes the other: `casefold(U+1F79) = U+1F79`. Rust's `std` has no case
-  folding, only lowercasing, so this needs a crate.
-- **bare key** = fold key, then NFD, drop every `Mn` (combining mark), recompose. This is
-  the one r2 missed. Of 121,615 Hebrew headwords, 99,388 carry niqqud and **74,174 have no
-  unpointed sibling anywhere in the collection** — so after NFC alone they remain unreachable
-  by normal Hebrew typing, and fuzzy cannot rescue them either (`מֶ֫לֶךְ` vs `מלך` is distance
-  4, above any sane `k`). Greek mostly escapes by luck: 90.3% of accented Greek headwords
-  already have a bare form indexed, because Liddell&Scott ships an unaccented copy and
-  Dodson/HALOT ship a bare alias per card. Hebrew has no such luck.
+- a query written **without** diacritics matches headwords **with or without** them;
+- a query written **with** diacritics must **not** match headwords that contradict them.
 
-both keys get their own sorted order, so both are prefix-searchable: one extra
-`Vec<(u32, u32)>`, about 13 MB. cost of the keys themselves: a contiguous blob (21 MB) +
-`u32` offsets (6.8 MB) + a `u8` char-length array (1.7 MB) ≈ **+30 MB on a 164 MB RSS**,
-which is the honest price and must be stated rather than "costs nothing".
+so `מלך` finds both `מֶלֶךְ` and `מָלָךְ`, while `מֶלֶךְ` finds only the first. this is
+script-agnostic and applies to every combining mark in the collection: greek accents,
+breathings and iota subscript (`λογος` → `λόγος`, but `λόγος` ↛ `λὀγος`), hebrew niqqud and
+dagesh, and **latin macrons** — Lewis & Short writes `rēx` and `virtūs`, so `rex` finds the
+macronised entry while `rēx` deliberately does not find the unmarked Whitaker one. that last
+consequence is worth knowing rather than discovering: typing macrons *narrows*, which is the
+point, but it hides the un-macronised duplicates.
 
-77,990 headwords are non-NFC today (37,699 Greek, 40,291 Hebrew) — ten times r2's estimate.
+**one sorted order, not two.** sort and binary-search on the **bare key**:
+NFC → full case fold → NFD → drop every combining mark (`Mn`) → recompose. that alone gives
+the permissive direction, which is the one that matters most here: of 121,615 hebrew
+headwords, 99,388 carry niqqud and **74,174 have no unpointed sibling anywhere in the
+collection**, so without it they are unreachable by normal hebrew typing — and fuzzy cannot
+rescue them either, since `מֶ֫לֶךְ` vs `מלך` is distance 4. greek mostly escapes by luck
+(Liddell&Scott ships an unaccented copy and Dodson/HALOT a bare alias per card); hebrew has
+no such luck.
+
+the ordering inside the key is load-bearing and neither step subsumes the other: NFC maps
+greek oxia U+1F79 to tonos U+03CC, and case folding maps final sigma `ς` to `σ` — which
+`to_lowercase()` does *not*, and 139,079 headwords end in one. `casefold(U+1F79)` is still
+U+1F79, so it must be **NFC first, then fold**. rust's `std` has no case folding, only
+lowercasing, so this needs a crate.
+
+**then filter the candidate run by mark compatibility.** derive the query's fold key (NFC →
+fold, marks kept) alongside its bare key; if they are equal the query specifies nothing and
+every candidate is accepted. otherwise accept a candidate only where the query's marks are a
+**subset** of the headword's, aligned on base characters. subset rather than equality so
+partial pointing behaves: `מֶלך` still reaches `מֶלֶךְ` while still excluding `מָלָךְ`.
+
+the fold key therefore does not need materializing — it is only wanted for candidates in the
+prefix run, which is bounded by `SEARCH_LIMIT`, so a few hundred derivations per keystroke.
+only the bare key goes in the cache image, as a contiguous blob + `u32` offsets (and a `u8`
+char-length array for phase C). that is well under the +30 MB an earlier draft budgeted for
+two materialized keys and two orders.
+
+77,990 headwords are non-NFC today (37,699 greek, 40,291 hebrew).
 
 ## 2. fuzzy
 
