@@ -111,17 +111,17 @@ lost, the substance is not.
      rather than lexicons; useful as ux prior art, not as a data source. **pyglossary** (already
      used here for BGL→StarDict) converts between several of these.
 
-  suggested order, cheapest first:
-  - **A.** drop Vuizur's StarDict build of French→English into the collection and judge the
-    quality. if it is good, the "feature" is a config entry and a paragraph of documentation.
-  - **B.** if it isn't, add `src/dict/wiktextract.rs` reading the JSONL directly, filtered by
-    `lang_code` at import. that also buys something #33 badly wants: wiktextract exposes
-    **`forms` with inflection tags**, a real lemma-vs-inflection signal, which the Whitaker
-    dump flattened away.
-  - **C.** only then the picker in the config modal. note dictu has **no network code at all**
-    today, and this means a multi-GB download plus a filter pass — background import, progress,
-    a cache under `$XDG_CACHE_HOME`, resumability. that is a design decision to make
-    deliberately, not a detail to discover halfway.
+  order, now that the requirement is a few languages rather than all of Wiktionary (see
+  `docs/search-index-plan.md` for the settled architecture):
+  - **A.** drop Vuizur's StarDict build of the wanted pair into the collection and judge it.
+    dictu has read StarDict since day one, so this is a config entry and no code at all.
+  - **B.** only if those builds read poorly **and** lemmas-only is wanted for those languages
+    too — which needs wiktextract's `forms` with inflection tags, and the prebuilt
+    dictionaries almost certainly flatten those away — write a one-off import *outside* the
+    app that emits a dictionary file plus a lemma-flag sidecar in the shape the app already
+    understands. no database inside dictu; it stays a reader.
+  - the per-language kaikki slice that matches this exactly is deprecated, so filter the big
+    jsonl by `lang_code` if it comes to B.
 
   **licensing is not optional here:** Wiktionary text is CC BY-SA (dual-licensed GFDL), so a
   derived dictionary must attribute and stay share-alike, and kaikki asks that Ylonen's LREC

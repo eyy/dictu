@@ -7,6 +7,34 @@ it but kept r1's unexamined evidence. r3 is written against measurements taken f
 files; where r2 was wrong it says so, because the wrong premises are more instructive than
 the right conclusion.
 
+## the architecture decision (settled)
+
+| layer | choice |
+|---|---|
+| matcher — prefix and fuzzy | **sorted arrays + a bounded scan.** no new structure |
+| definition bodies | mmapped source files, as today |
+| lemma flags, normalized keys, attributes | columns in the #7 cache image |
+| Wiktionary (#37) | **just another StarDict directory** — see below |
+
+**`fst`: no.** it optimises matching, which is not the bottleneck, and it cannot filter —
+it maps keys to ids, so "lemmas only, in these three dictionaries" still needs postings and
+side tables on top. the two features interact against it: with lemmas-only on, the latin
+candidate set falls from 1,223,585 to **37,273**, and a scan over 37k keys is microseconds.
+it would buy index complexity to speed up the case that is already free.
+
+**SQLite: no.** it was justified only by importing all of Wiktionary — 23 GB of JSONL needing
+real ETL. the requirement is a handful of languages, and someone already publishes those as
+StarDict, a format this app has read since day one. no database in the app.
+
+**tantivy: no.** it is the right answer for full-text search *inside definitions*, and that
+is explicitly not wanted. this is the one requirement that would have overturned everything
+above, so it is recorded here rather than left implicit.
+
+**scale check with Wiktionary.** French-from-English is 388,993 forms; three or four
+languages is about +1.2M keys, so ~3M total, putting the worst-case scan near 120 ms
+single-threaded and ~25 ms threaded — under the falsifier, and that is a 12-character query
+at distance 2, not a common one.
+
 ## the short version
 
 no new index structure, no database. three of these four are a column and a filter on the
