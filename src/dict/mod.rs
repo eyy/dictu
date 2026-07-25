@@ -8,14 +8,15 @@ pub mod markup;
 pub mod stardict;
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use flate2::read::MultiGzDecoder;
 use memmap2::Mmap;
 
-/// the bytes of a `.dict`: memory-mapped for plain files (paged in lazily by the
-/// OS — no big up-front read), or owned when we had to gunzip a `.dz`.
+/// a file's bytes: memory-mapped for plain files (paged in lazily by the OS — no
+/// big up-front read), or owned when we had to gunzip a `.dz`, or when we built
+/// the bytes ourselves (see `index_cache`).
 pub(crate) enum DictBytes {
     Mapped(Mmap),
     Owned(Vec<u8>),
@@ -51,8 +52,27 @@ pub(crate) fn load_dict_bytes(dir: &Path, stem: &str, exts: &[&str]) -> Result<D
     bail!("none of {exts:?} found for base {stem}");
 }
 
+/// the first of `exts` that exists next to `dir/stem` — which sibling
+/// `load_dict_bytes` would pick, without reading it. the cache key needs to name
+/// the file, not its contents.
+pub(crate) fn sibling(dir: &Path, stem: &str, exts: &[&str]) -> Option<PathBuf> {
+    exts.iter()
+        .map(|ext| dir.join(format!("{stem}.{ext}")))
+        .find(|path| path.exists())
+}
+
+/// every file a dictionary's index is derived from, plus the data file its byte
+/// ranges point into. the cached index is only valid while all of them are
+/// unchanged, so this is what the cache key is built over.
+pub(crate) fn source_files(path: &Path) -> Vec<PathBuf> {
+    match classify(path) {
+        Some(Format::StarDict) => stardict::source_files(path),
+        _ => vec![path.to_path_buf()],
+    }
+}
+
 /// memory-map a file read-only.
-fn mmap_file(path: &Path) -> Result<Mmap> {
+pub(crate) fn mmap_file(path: &Path) -> Result<Mmap> {
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     // SAFETY: opened read-only and used as immutable bytes. the accepted mmap
     // caveat applies: if another process TRUNCATES this file in place while we
@@ -60,6 +80,8 @@ fn mmap_file(path: &Path) -> Result<Mmap> {
     // a rust panic). we accept this — dictionaries are static assets; editors
     // and sync clients (incl. Dropbox) replace via atomic rename, which leaves
     // our map on the old inode with stale-but-valid bytes rather than faulting.
+    // our own cache files, mapped through here too, are published the same way
+    // (see `index_cache::store`), so the same reasoning covers them.
     #[allow(unsafe_code)]
     let map =
         unsafe { Mmap::map(&file) }.with_context(|| format!("mmapping {}", path.display()))?;
@@ -174,12 +196,17 @@ pub fn classify(path: &Path) -> Option<Format> {
 
 /// open whichever dictionary format `path` points at.
 /// returns a boxed trait object so callers don't care about the concrete type.
-pub fn open_any(path: &Path) -> Result<Box<dyn Dictionary>> {
+///
+/// `cache` is the directory holding the on-disk index cache (`index_cache`), or
+/// `None` to parse the dictionary from scratch and cache nothing. only StarDict
+/// uses it so far — it is the format whose `.idx` parse dominates startup; the
+/// dictd `.index` and the LSJ csv are text files that parse in milliseconds.
+pub fn open_any(path: &Path, cache: Option<&Path>) -> Result<Box<dyn Dictionary>> {
     match classify(path) {
-        Some(Format::StarDict) => Ok(Box::new(stardict::StarDict::open(path)?)),
+        Some(Format::StarDict) => Ok(Box::new(stardict::StarDict::open(path, cache)?)),
         Some(Format::Dictd) => Ok(Box::new(dictd::DictdDictionary::open(path)?)),
         Some(Format::Csv) => Ok(Box::new(csv::CsvDictionary::open(path)?)),
-        Some(Format::Dsl) => Ok(Box::new(dsl::DslDictionary::open(path)?)),
+        Some(Format::Dsl) => Ok(Box::new(dsl::DslDictionary::open(path, cache)?)),
         // bgl is pre-converted to StarDict offline rather than parsed in-app.
         Some(Format::Bgl) => {
             bail!("BGL isn’t read directly — convert it to StarDict with pyglossary first")

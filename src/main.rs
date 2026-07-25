@@ -16,6 +16,7 @@ use gtk::{gdk, gio, glib};
 
 mod config;
 mod dict;
+mod index_cache;
 mod language;
 mod library;
 use library::Library;
@@ -146,7 +147,7 @@ fn dump(path: Option<&str>) -> glib::ExitCode {
         eprintln!("usage: dictu dump <dictionary-file>");
         return glib::ExitCode::FAILURE;
     };
-    match dict::open_any(Path::new(path)) {
+    match dict::open_any(Path::new(path), Some(&config::cache_dir())) {
         Ok(dict) => printing(|out| {
             writeln!(out, "name:      {}", dict.name())?;
             let headwords = dict.headwords();
@@ -182,7 +183,7 @@ fn lookup(path: Option<&str>, word: Option<&str>, html: bool) -> glib::ExitCode 
         eprintln!("usage: dictu lookup <dictionary-file> <word> [--html]");
         return glib::ExitCode::FAILURE;
     };
-    let dict = match dict::open_any(Path::new(path)) {
+    let dict = match dict::open_any(Path::new(path), Some(&config::cache_dir())) {
         Ok(dict) => dict,
         Err(e) => {
             eprintln!("error: {e:#}");

@@ -205,6 +205,9 @@ class AppUnderTest:
 
         env = dict(os.environ)
         env["XDG_CONFIG_HOME"] = self.tmp
+        # and a throwaway cache, so a run neither reads nor leaves an index cache
+        # in the real one (roadmap #7) — every run indexes the fixture from scratch.
+        env["XDG_CACHE_HOME"] = self.tmp
         # gtk4 talks at-spi regardless of the display backend, but a11y has to
         # be switched on explicitly for the bridge to be registered promptly.
         env["GTK_A11Y"] = "atspi"
@@ -295,6 +298,7 @@ class AppUnderTest:
         running window (the path the global hotkey takes)."""
         env = dict(os.environ)
         env["XDG_CONFIG_HOME"] = self.tmp
+        env["XDG_CACHE_HOME"] = self.tmp
         subprocess.run([BINARY, *args], env=env, timeout=30, check=False)
 
 

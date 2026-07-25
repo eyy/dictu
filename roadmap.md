@@ -15,13 +15,7 @@ lost, the substance is not.
 
 ## in progress
 
-- **[~] #7 load dictionaries off the ui thread (perf).**
-  off-thread indexing is done — `std::thread::spawn` + `async_channel` hands the built
-  `Library` back to the main context (`src/main.rs:365`), with an `Indexing…` state on the
-  search entry and status label. what remains is the **fst disk cache**: ~4M headwords are
-  re-sorted on every launch (`Library::from_loaded`, `src/library.rs:50`), so startup pays
-  the full ~18–30s index cost each time. persist the merged index under
-  `$XDG_CACHE_HOME/dictu/`, keyed by (path, mtime, size) per dictionary, and mmap it back.
+nothing open right now.
 
 ## next — 2026-07-24 feedback
 
@@ -200,6 +194,62 @@ lost, the substance is not.
   ignored, so everything renders in one look.
 - **[x] #6 rich-text rendering via `gtk::TextView` (no webkit).** styles become cached
   `TextTag`s — bold, italic, mono, sup/sub rise, scale, link colour.
+- **[x] #7 load dictionaries off the ui thread, and stop re-indexing on every launch.**
+  the off-thread half was already done (`std::thread::spawn` + `async_channel` hands the
+  built `Library` to the main context, with an `Indexing…` state). the disk cache is now
+  there too, in `src/index_cache.rs`, under `$XDG_CACHE_HOME/dictu/`.
+  **measured first, because it decided the design** (debug build, the real 5-dictionary /
+  1,469,846-headword collection, `dictu search rex` = a full index build): 16.1 s total, of
+  which parsing the `.idx` files was 10.3 s and the merged case-insensitive sort 4.4 s. the
+  Latin dictionary alone (28 MB `.idx`, 1,427,152 entries) took 7.4 s — and only 0.3 s of
+  that was scanning the bytes; 1.7 s was allocating a `String` per headword and **5.5 s was
+  building the `HashMap<String, Vec<Range>>`** (a `Vec` allocation and two `String` clones
+  per entry). so caching only the sort order would have left two thirds of the cost in
+  place: the cache had to carry the headword → byte-range mapping itself.
+  it does. each dictionary gets a `<name>-<hash>.didx` holding its keys (sorted, so lookup
+  is a binary search over the mapped bytes), their byte ranges, and its display headword
+  list; the merged order is 8 bytes per headword in `merged.dord`. both are memory-mapped
+  back, both carry a fingerprint of every source file they were derived from (path + mtime
+  + size of the `.ifo`, `.idx`, `.dict` and `.syn` — the `.dict` too, since a new data file
+  under an unchanged index would silently move every range), and anything stale, truncated
+  or unreadable is ignored in favour of rebuilding. writes go through a temp file and a
+  rename, so a half-written cache can never be read.
+  **then #13 landed nine DSL dictionaries under it**, so the measurement was redone against
+  the collection as it now is — 13 dictionaries, 1,825,792 headwords, `dictu search rex`
+  10.2 s uncached. DSL was 4.3 s of the 5.5 s spent opening dictionaries, and **2.6 s of that
+  was decoding utf-16** (1.4 s for the 170 MB Liddell-Scott alone), the rest parsing cards.
+  that settles a question the format raises: a DSL card's range points into the *decoded*
+  text, so caching the index alone would still have decoded every file on every launch and
+  saved only the 1.7 s of parsing. so an index can now carry a **payload** — the bytes its
+  ranges point into — and DSL stores its decoded text there. StarDict leaves it empty,
+  because its `.dict` is already a file we can map.
+  **result: 10.2 s → 0.52 s warm** (peak RSS 792 MB → 164 MB, since the decoded text is now
+  paged out of a mapped file rather than held as ~206 MB of `String`). the *cold* path is
+  7.1 s, better than the 10.2 s it replaces because laying out the blob is cheaper than the
+  hash map it used to build. the cache costs 279 MB on disk, ~240 MB of which is DSL text.
+  **no `fst`, though the item asked for one** — measured rather than assumed: an `fst::Map`
+  of the Latin keys is 474 KB against the blob's 40.7 MB, but it can only carry
+  `key -> u64`, so the 22 MB of range side-tables stay either way (22.5 MB against 40.7 MB
+  all told), it takes 1.30 s to build against 0.33 s, and 20k lookups cost the same (89 ms
+  against 100 ms). its one real advantage — prefix search off the map — doesn't apply,
+  because dictu's prefix search is case-insensitive *across* dictionaries and so runs on the
+  merged order, never on one dictionary's exact-byte map. 18 MB of a memory-mapped file was
+  not worth a dependency and a 4x slower rebuild; the note is in `index_cache`'s module doc.
+  **still open, in rough order of value:**
+  1. `headwords()` still materializes a `Vec<String>` per dictionary at open — nearly all of
+     what the 0.52 s warm start now is — purely because the `Dictionary` trait hands out a
+     `&[String]`. an indexed accessor (`headword(i) -> &str`) would let the words stay in the
+     mapped file and take the warm start to near-nothing.
+  2. dictd and the csv still parse from scratch — they are text formats that cost
+     milliseconds *here*, but a large dictd dictionary would want the same treatment, and
+     `index_cache::build` takes whatever a format hands it.
+  3. the cache is big (279 MB) because DSL text is stored decoded. a `.dsl` that is already
+     plain utf-8 could be mapped in place instead of copied, but every large one here is
+     utf-16, so it would buy nothing today.
+  4. nothing ever evicts a `.didx` for a dictionary removed from the config; entries are
+     keyed by path, so they are overwritten when a dictionary changes but orphaned when one
+     goes away.
+
 - **[x] #9 `dictu --search` cli + single instance.** `HANDLES_COMMAND_LINE` forwards a
   second invocation's argv to the running instance, which focuses the window and fills the
   search box — the path the global hotkey takes. plus the no-gui `dump` and `search`
