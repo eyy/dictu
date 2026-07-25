@@ -237,11 +237,15 @@ class AppUnderTest:
         return False
 
     def window_id(self):
-        """the x11 id of the mapped toplevel (gtk also maps a 1x1 helper window)."""
+        """the x11 id of the mapped toplevel (gtk also maps a 1x1 helper window).
+        lowest id wins: a gtk4 popover is a surface of its own, its x window is
+        named "dictu" — which xdotool's case-insensitive search matches too — and it
+        is created later, so taking the last match would aim keys and clicks at the
+        popover's origin instead of the window's."""
         ids = subprocess.run(
             ["xdotool", "search", "--name", "^Dictu$"], capture_output=True, text=True
         ).stdout.split()
-        for candidate in reversed(ids):
+        for candidate in sorted(ids, key=int):
             geometry = subprocess.run(
                 ["xdotool", "getwindowgeometry", candidate], capture_output=True, text=True
             ).stdout
@@ -308,7 +312,9 @@ class Widgets:
         if not entries:
             raise LookupError("no search entry in the widget tree")
         self.search = entries[0]
-        lists = by_role(app, "list")
+        # by name, not by position: the scope panel holds a second list of the same
+        # role, and it sits earlier in the tree (the header bar comes first).
+        lists = [n for n in by_role(app, "list") if (n.get_name() or "") == "Wordlist"]
         if not lists:
             raise LookupError("no wordlist in the widget tree")
         self.results = lists[0]
@@ -403,6 +409,7 @@ def dump_tree():
         wait_for(lambda: safe(Widgets, node), READY_TIMEOUT, "the widget tree")
         app_proc.forward("--search", "aardvark")
         time.sleep(1.5)  # let the search settle so rows are in the tree.
+        safe(open_scope, node)  # popover widgets join the tree only while it is open.
         print_tree(node)
     return 0
 
@@ -417,21 +424,33 @@ def wait_ready():
     return 0
 
 
+def open_scope_only():
+    """pop the search-scope panel up on an ALREADY-RUNNING dictu, so hack/shot.sh
+    can screenshot it. its widgets are in the a11y tree only while it is open."""
+    Atspi.init()
+    node = wait_for(find_app, READY_TIMEOUT, "dictu on the a11y bus")
+    boxes = open_scope(node)
+    print(" ".join(sorted(boxes)))
+    return 0
+
+
 def main():
     if not os.path.exists(BINARY):
         print(f"e2e: {BINARY} not built — run cargo build first", file=sys.stderr)
         return 1
 
-    # this mode attaches to a running instance, so it must skip the check below.
+    # these modes attach to a running instance, so they must skip the check below.
     if "--wait-ready" in sys.argv:
         return wait_ready()
+    if "--open-scope" in sys.argv:
+        return open_scope_only()
 
     # a stale instance would swallow our single-instance forwarding and answer
     # with the wrong config, so refuse to run alongside one.
-    stale = subprocess.run(["pgrep", "-x", "dictu"], capture_output=True, text=True)
-    if stale.stdout.strip():
+    stale = running_windows()
+    if stale:
         print(
-            f"e2e: another dictu is running (pid {stale.stdout.split()[0]}) — "
+            f"e2e: another dictu window is running (pid {stale[0]}) — "
             "stop it first, it would intercept the single-instance forwarding",
             file=sys.stderr,
         )
@@ -497,7 +516,7 @@ def main():
         # a prefix that matches nothing must clear the list, not keep stale rows.
         app_proc.forward("--search", "qqqq")
         cleared = wait_for(
-            lambda: not [w for w in widgets.row_words() if w] or "no-rows",
+            lambda: not [w for w in widgets.row_words() if w] or None,
             15,
             "the wordlist to clear",
         )
@@ -619,6 +638,114 @@ def main():
             f"expected '1 more definition below: sample', got {fold!r}",
         )
 
+        # roadmap #14: the scope panel decides which dictionaries the search covers.
+        # start from an empty search box, so the status line is the idle one.
+        app_proc.forward("--search", "")
+        wait_for(
+            lambda: widgets.status_line() == IDLE_STATUS or None, 10, "the idle status line"
+        )
+        open_scope(node)
+        rows = scope_rows(node)
+        r.check(
+            "the scope panel lists every dictionary with its size",
+            rows == [("links", "6 headwords"), ("sample", "7 headwords")],
+            f"panel rows read {rows}",
+        )
+
+        toggle_scope(app_proc, node, "sample")
+        narrowed = wait_for(
+            lambda: widgets.status_line() if "of 2" in widgets.status_line() else None,
+            10,
+            "the narrowed scope in the status line",
+        )
+        r.check(
+            "deselecting a dictionary narrows the scope and the status line says so",
+            narrowed == "6 words · 1 of 2 dictionaries",
+            f"status={narrowed!r}",
+        )
+
+        # searching is done with the panel shut, the way a user would: a click that
+        # lands in the popover while the search box is being filled from another
+        # process is one race not worth chasing.
+        close_scope(node)
+
+        # "zeit" lives only in the dictd fixture, which is now out of scope. the
+        # status line reaches the ui over the bus a beat after the rows do, so wait
+        # on both rather than reading one and assuming the other.
+        app_proc.forward("--search", "zeit")
+        gone = wait_for(
+            lambda: widgets.status_line()
+            if not widgets.row_words() and "result" in widgets.status_line()
+            else None,
+            10,
+            "'zeit' to leave the wordlist",
+        )
+        r.check(
+            "a word from a deselected dictionary drops out of the wordlist",
+            gone == "0 results · 1 of 2 dictionaries",
+            f"rows={widgets.row_words()}, status={gone!r}",
+        )
+
+        # "cf" is in links.csv, which is still selected.
+        app_proc.forward("--search", "cf")
+        kept = wait_for(lambda: widgets.row_words() or None, 10, "the cf row")
+        counted = wait_for(
+            lambda: widgets.status_line() if "1 result" in widgets.status_line() else None,
+            10,
+            "the scoped result count",
+        )
+        r.check(
+            "a word from a selected dictionary is still found, count included",
+            kept == ["cf"] and counted == "1 result · 1 of 2 dictionaries",
+            f"rows={kept}, status={counted!r}",
+        )
+
+        # nothing selected is a state of its own, not an empty result. the toggle
+        # re-runs the search that is already in the box ("cf"), so no forwarding here.
+        open_scope(node)
+        toggle_scope(app_proc, node, "links")
+        empty = wait_for(
+            lambda: widgets.status_line()
+            if "selected" in widgets.status_line()
+            and "No dictionaries selected" in widgets.definition_text()
+            else None,
+            10,
+            "the empty-scope status line",
+        )
+        r.check(
+            "with nothing selected the ui says so rather than looking broken",
+            empty == "0 dictionaries selected" and widgets.row_words() == [],
+            f"status={empty!r}, rows={widgets.row_words()}, pane={widgets.definition_text()[:40]!r}",
+        )
+
+        # and back: reselecting restores both the wordlist and the counts.
+        toggle_scope(app_proc, node, "links")
+        toggle_scope(app_proc, node, "sample")
+        close_scope(node)
+        app_proc.forward("--search", "zeit")
+        restored = wait_for(lambda: widgets.row_words() or None, 10, "the wordlist to come back")
+        unscoped = wait_for(
+            lambda: widgets.status_line() if "result" in widgets.status_line() else None,
+            10,
+            "the unscoped result count",
+        )
+        r.check(
+            "reselecting brings the words back, and the scope note goes away",
+            restored == ["zeitgeist"] and unscoped == "1 result",
+            f"rows={restored}, status={unscoped!r}",
+        )
+        app_proc.forward("--search", "")
+        idle = wait_for(
+            lambda: widgets.status_line() if "word" in widgets.status_line() else None,
+            10,
+            "the idle status line",
+        )
+        r.check(
+            "a full scope reads as the whole library again",
+            idle == IDLE_STATUS,
+            f"expected {IDLE_STATUS!r}, got {idle!r}",
+        )
+
         # keyboard behaviour (roadmap #16, #23). synthetic keys land in whichever
         # window has focus, so skip rather than type into the user's terminal.
         app_proc.forward("--search", "aardvark")
@@ -695,6 +822,25 @@ def main():
     return 1 if r.failed else 0
 
 
+def running_windows():
+    """pids of dictu processes that would answer our single-instance forwarding.
+    `dictu dump|lookup|search …` short-circuits before any gtk setup, so it never
+    claims the d-bus name — worth telling apart, since a cli search over a real
+    collection runs for half a minute and would otherwise block the whole suite."""
+    pids = subprocess.run(["pgrep", "-x", "dictu"], capture_output=True, text=True).stdout.split()
+    windows = []
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                argv = fh.read().decode(errors="replace").split("\0")
+        except OSError:
+            continue  # it exited while we looked.
+        if argv[1:2] and argv[1] in ("dump", "lookup", "search"):
+            continue
+        windows.append(pid)
+    return windows
+
+
 def safe(fn, *args):
     """call `fn`, returning None instead of raising (for use inside wait_for)."""
     try:
@@ -726,6 +872,78 @@ def link_click_column(app_proc, widgets):
             log(f"link followed by the click at ({x}, {y})")
             return text
     return None
+
+
+def scope_toggle(app):
+    """the header-bar button that pops the search-scope panel up. gtk4 renders a
+    MenuButton as a push button wrapping a toggle button, and only the inner toggle
+    carries the "click" action."""
+    for node in descendants(app):
+        if node.get_role_name() == "toggle button" and node.get_name() == "Search scope":
+            return node
+    raise LookupError("no scope button in the widget tree")
+
+
+def scope_boxes(app):
+    """the scope panel's check boxes, by dictionary name. the popover is a surface
+    of its own, so its widgets are in the tree only while it is open."""
+    return {
+        node.get_name(): node
+        for node in descendants(app)
+        if node.get_role_name() == "check box" and node.get_name()
+    }
+
+
+def scope_rows(app):
+    """each scope row as (dictionary, size), read off the row's two labels."""
+    lists = [n for n in by_role(app, "list") if (n.get_name() or "") == "Dictionaries"]
+    if not lists:
+        return []
+    rows = []
+    for row in by_role(lists[0], "list item"):
+        labels = [(n.get_name() or "").strip() for n in by_role(row, "label")]
+        rows.append(tuple(labels))
+    return rows
+
+
+def open_scope(app):
+    """pop the scope panel up; returns its check boxes by dictionary name."""
+    Atspi.Action.do_action(scope_toggle(app), 0)
+    return wait_for(lambda: scope_boxes(app) or None, 10, "the scope panel to open")
+
+
+def close_scope(app):
+    Atspi.Action.do_action(scope_toggle(app), 0)
+    return wait_for(lambda: not scope_boxes(app) or None, 10, "the scope panel to close")
+
+
+def is_checked(box):
+    return box.get_state_set().contains(Atspi.StateType.CHECKED)
+
+
+def toggle_scope(app_proc, app, dictionary):
+    """flip one dictionary's check box, and prove it flipped. clicking is the only
+    route — a check box exposes no Action, unlike a button — and at-spi reports its
+    WINDOW extents in the toplevel's coordinates even though the popover is a
+    surface of its own, so they can be aimed at directly. a click that misses
+    dismisses the popover, so a miss reopens it and aims again."""
+    for _ in range(3):
+        box = scope_boxes(app).get(dictionary)
+        if box is None:
+            open_scope(app)
+            continue
+        was = is_checked(box)
+        extents = Atspi.Component.get_extents(box, Atspi.CoordType.WINDOW)
+        app_proc.click_at(extents.x + extents.width // 2, extents.y + extents.height // 2)
+        try:
+            return wait_for(
+                lambda: is_checked(scope_boxes(app)[dictionary]) != was or None,
+                3,
+                f"the {dictionary!r} check box to flip",
+            )
+        except (TimeoutError, KeyError):
+            log(f"the click on {dictionary!r} missed; reopening the panel")
+    raise TimeoutError(f"could not toggle {dictionary!r} in the scope panel")
 
 
 def select_first_row(results):

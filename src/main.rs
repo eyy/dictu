@@ -258,6 +258,14 @@ struct UiInner {
     /// timer because `SearchEntry` debounces `search-changed`, so there is no moment
     /// after `set_text` at which the rows are known to exist yet.
     auto_select: Rc<Cell<bool>>,
+    /// the search scope: one flag per dictionary, in library order, as
+    /// `prefix_search` wants it. empty until indexing finishes (nothing to scope
+    /// before then, and `&[]` already means "all dictionaries").
+    scope: Rc<RefCell<Vec<bool>>>,
+    /// the scope panel's rows, filled once the dictionaries are known, and the
+    /// header button that pops it up.
+    scope_list: gtk::ListBox,
+    scope_button: gtk::MenuButton,
     library: SharedLibrary,
 }
 
@@ -280,8 +288,19 @@ impl UiInner {
         };
 
         let query = query.trim();
-        // `&[]` scopes to every dict; the scope panel (roadmap #14) passes a real mask.
-        let hits = library.prefix_search(query, SEARCH_LIMIT, &[]);
+        // searching nothing is a state, not an empty result: say so instead of
+        // showing an empty list that looks broken.
+        let (dicts, _) = self.scope_size(library);
+        // `dicts == 0` means the user deselected everything — but only if there was
+        // anything to deselect. with no dictionaries loaded at all the honest answer
+        // names the config, not a menu that would be empty.
+        if dicts == 0 && library.dict_count() > 0 {
+            self.set_message("No dictionaries selected.\n\nPick one in the search-scope menu.");
+            self.show_scope_only();
+            return;
+        }
+
+        let hits = library.prefix_search(query, SEARCH_LIMIT, &self.scope.borrow());
         let mut seen = HashSet::new();
         self.words.borrow_mut().clear();
         for hit in &hits {
@@ -310,11 +329,18 @@ impl UiInner {
         // count what the list actually shows (deduped), not index entries. the
         // search stops at SEARCH_LIMIT, so say "500+" instead of pretending 500
         // is the whole truth.
-        self.status.set_text(&if hits.len() >= SEARCH_LIMIT {
+        let counted = if hits.len() >= SEARCH_LIMIT {
             format!("{}+ results", thousands(seen.len()))
         } else {
             quantity(seen.len(), "result", "results")
-        });
+        };
+        // and name the scope when it isn't the whole library, so the count can't be
+        // read as "this is all your dictionaries have".
+        self.status
+            .set_text(&match scope_note(dicts, library.dict_count()) {
+                Some(note) => format!("{counted} · {note}"),
+                None => counted,
+            });
 
         // a search fired from the hotkey should land on an answer, not on a list you
         // still have to click. consumed either way, so a later hand-typed search
@@ -355,15 +381,31 @@ impl UiInner {
         if shortcut || self.search_has_focus() {
             return glib::Propagation::Proceed;
         }
+        // Space activates a focused button, so leave that one key alone: otherwise
+        // the scope button can't be opened from the keyboard and, worse, the space
+        // lands in the query — focus parks on that button whenever the panel closes.
+        // every other printable character still goes to the search box.
+        if key == gdk::Key::space && self.focus_is_on_a_button() {
+            return glib::Propagation::Proceed;
+        }
         // control characters (escape, backspace, tab, the arrows) are navigation,
         // not text — leave them to the widget that has focus.
         let Some(ch) = key.to_unicode().filter(|c| !c.is_control()) else {
             return glib::Propagation::Proceed;
         };
+        // if the scope panel had the keyboard, typing means you're done with it.
+        self.scope_button.popdown();
         self.search.grab_focus();
         self.search.set_text(&format!("{}{ch}", self.search.text()));
         self.search.set_position(-1);
         glib::Propagation::Stop
+    }
+
+    /// whether focus sits on something that treats Space as activation rather than
+    /// as text — `CheckButton` is not a `Button` subclass in gtk4, so check both.
+    fn focus_is_on_a_button(&self) -> bool {
+        gtk::prelude::GtkWindowExt::focus(&self.window)
+            .is_some_and(|focused| focused.is::<gtk::Button>() || focused.is::<gtk::CheckButton>())
     }
 
     /// whether focus is in the search box. gtk4 puts focus on the `GtkText`
@@ -375,17 +417,107 @@ impl UiInner {
             .is_some_and(|focused| &focused == search || focused.is_ancestor(&self.search))
     }
 
-    /// the idle status line: how much is loaded.
+    /// the idle status line: how much is *in scope* — with every dictionary
+    /// selected that is the whole library, which is what it used to say.
     fn show_library_size(&self) {
         let borrow = self.library.borrow();
         let Some(library) = borrow.as_ref() else {
             return;
         };
+        let (dicts, words) = self.scope_size(library);
+        if dicts == 0 && library.dict_count() > 0 {
+            self.show_scope_only();
+            return;
+        }
         self.status.set_text(&format!(
             "{} · {}",
-            quantity(library.total_headwords(), "word", "words"),
-            quantity(library.dict_count(), "dictionary", "dictionaries"),
+            quantity(words, "word", "words"),
+            scope_note(dicts, library.dict_count()).unwrap_or_else(|| quantity(
+                dicts,
+                "dictionary",
+                "dictionaries"
+            )),
         ));
+    }
+
+    /// the status line when the scope is empty — no counts to give, because
+    /// nothing is being searched.
+    fn show_scope_only(&self) {
+        self.status
+            .set_text(&quantity(0, "dictionary selected", "dictionaries selected"));
+    }
+
+    /// what the scope covers: how many dictionaries, and how many headwords they
+    /// hold between them. an empty mask is "everything" (the panel isn't built
+    /// until indexing finishes).
+    fn scope_size(&self, library: &Library) -> (usize, usize) {
+        let scope = self.scope.borrow();
+        if scope.is_empty() {
+            return (library.dict_count(), library.total_headwords());
+        }
+        scope
+            .iter()
+            .enumerate()
+            .filter(|(_, active)| **active)
+            .fold((0, 0), |(dicts, words), (index, _)| {
+                (dicts + 1, words + library.dict_headwords(index))
+            })
+    }
+
+    /// fill the scope panel once the dictionaries are known: one row per
+    /// dictionary, its size under its name, everything selected to begin with.
+    fn build_scope(&self) {
+        let borrow = self.library.borrow();
+        let Some(library) = borrow.as_ref() else {
+            return;
+        };
+        *self.scope.borrow_mut() = vec![true; library.dict_count()];
+        for index in 0..library.dict_count() {
+            let label = library.dict_label(index).unwrap_or("?");
+            let check = gtk::CheckButton::builder()
+                .active(true)
+                .valign(gtk::Align::Center)
+                .build();
+            // name the checkbox after its dictionary: the row's title is a separate
+            // widget, so otherwise the box is anonymous to a screen reader.
+            check.update_property(&[gtk::accessible::Property::Label(label)]);
+            let row = adw::ActionRow::builder()
+                // a dictionary's name is data — escape it, the row renders markup.
+                .title(glib::markup_escape_text(label))
+                .subtitle(quantity(
+                    library.dict_headwords(index),
+                    "headword",
+                    "headwords",
+                ))
+                .activatable_widget(&check)
+                .build();
+            row.add_prefix(&check);
+            // weakly, like every other handler (#8): this checkbox lives in the
+            // popover, which the header bar owns, which the window owns — a strong
+            // handle here would rebuild the very cycle #8 removed, and it would do it
+            // where the cycle test cannot see it, since `build_scope` runs from the
+            // indexing future rather than from `build_ui`. `&self` has no `Rc` for
+            // `glib::clone!` to downgrade, so use the self-weak the idle path uses.
+            let this = self.this.clone();
+            check.connect_toggled(move |check| {
+                if let Some(ui) = this.upgrade() {
+                    ui.set_dict_active(index, check.is_active());
+                }
+            });
+            self.scope_list.append(&row);
+        }
+        // nothing to scope when nothing loaded: leave the button dead rather than
+        // popping up an empty list.
+        self.scope_button.set_sensitive(library.dict_count() > 0);
+    }
+
+    /// a checkbox changed: update the mask, then re-run whatever is in the search
+    /// box so the wordlist and the status line follow immediately.
+    fn set_dict_active(&self, index: usize, active: bool) {
+        if let Some(flag) = self.scope.borrow_mut().get_mut(index) {
+            *flag = active;
+        }
+        self.populate_results(&self.search.text());
     }
 
     /// the link target under widget coordinates `(x, y)`, if any — read back off
@@ -419,7 +551,16 @@ impl UiInner {
         let Some(library) = borrow.as_ref() else {
             return;
         };
-        let defs = library.lookup_all(word);
+        // scoped, like the wordlist: a definition from a dictionary the user
+        // deselected would contradict the status line, and the fold strip would go
+        // further and advertise that dictionary by name.
+        let scope = self.scope.borrow();
+        let defs: Vec<_> = library
+            .lookup_all(word)
+            .into_iter()
+            .filter(|(index, _)| scope.get(*index).copied().unwrap_or(true))
+            .collect();
+        drop(scope);
 
         let buffer = self.definition.buffer();
         self.clear_sections(&buffer);
@@ -710,6 +851,9 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
 
     let results = gtk::ListBox::new();
     results.add_css_class("navigation-sidebar");
+    // named so it can be told apart from the scope panel's list, which is another
+    // list of the same role.
+    results.update_property(&[gtk::accessible::Property::Label("Wordlist")]);
 
     let status = gtk::Label::builder()
         .label("Indexing dictionaries…")
@@ -777,7 +921,50 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     split.set_max_sidebar_width(380.0);
     split.set_sidebar_width_fraction(0.32);
 
+    // -- header: the search-scope panel -------------------------------------
+    // a popover, not an adw preferences window: this is a transient search scope
+    // you flip while searching, not a setting — it belongs one click from the
+    // search box, and it dismisses itself when you go back to typing.
+    let scope_list = gtk::ListBox::new();
+    scope_list.set_selection_mode(gtk::SelectionMode::None);
+    scope_list.add_css_class("boxed-list");
+    scope_list.update_property(&[gtk::accessible::Property::Label("Dictionaries")]);
+
+    let scope_title = gtk::Label::builder()
+        .label("Search scope")
+        .xalign(0.0)
+        .build();
+    scope_title.add_css_class("heading");
+    let scope_hint = gtk::Label::builder()
+        .label(
+            "Narrows this session's searches. What gets loaded at all is config.toml's business.",
+        )
+        .xalign(0.0)
+        .wrap(true)
+        .max_width_chars(34)
+        .build();
+    scope_hint.add_css_class("dim-label");
+    scope_hint.add_css_class("caption");
+
+    let scope_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    scope_box.set_margin_top(6);
+    scope_box.set_margin_bottom(6);
+    scope_box.set_margin_start(6);
+    scope_box.set_margin_end(6);
+    scope_box.append(&scope_title);
+    scope_box.append(&scope_hint);
+    scope_box.append(&scope_list);
+
+    let scope_button = gtk::MenuButton::builder()
+        .icon_name("view-list-symbolic")
+        .tooltip_text("Search scope")
+        .popover(&gtk::Popover::builder().child(&scope_box).build())
+        .sensitive(false) // there is nothing to scope until indexing finishes.
+        .build();
+    scope_button.update_property(&[gtk::accessible::Property::Label("Search scope")]);
+
     let header = adw::HeaderBar::new();
+    header.pack_end(&scope_button);
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Dictu")
@@ -799,6 +986,9 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         sections: Rc::new(RefCell::new(Vec::new())),
         words: Rc::new(RefCell::new(Vec::new())),
         auto_select: Rc::new(Cell::new(false)),
+        scope: Rc::new(RefCell::new(Vec::new())),
+        scope_list,
+        scope_button,
         library: Rc::new(RefCell::new(None)),
     });
 
@@ -917,6 +1107,22 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     ));
     window.add_controller(window_keys);
 
+    // a popover holds the keyboard while open, on a surface the window controller
+    // above is not part of — without this, typing into the open scope panel is
+    // silently swallowed instead of going to the search box (roadmap #23).
+    if let Some(popover) = ui.scope_button.popover() {
+        let popover_keys = gtk::EventControllerKey::new();
+        popover_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        popover_keys.connect_key_pressed(glib::clone!(
+            #[weak]
+            ui,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_, key, _, state| ui.redirect_typing(key, state)
+        ));
+        popover.add_controller(popover_keys);
+    }
+
     // build the merged index OFF the main thread, then hand it back over an
     // async-channel to the main context. glib::spawn_future_local runs on the
     // main thread, so touching the !Send Rc `ui` there is fine.
@@ -932,6 +1138,8 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         if let Ok(library) = rx.recv().await {
             let Some(ui) = ui_ready.upgrade() else { return };
             *ui.library.borrow_mut() = Some(library);
+            // size the scope before anything searches: the re-run below reads it.
+            ui.build_scope();
             ui.search.set_sensitive(true);
             ui.search
                 .set_placeholder_text(Some("Search all dictionaries…"));
@@ -1012,9 +1220,20 @@ fn quantity(n: usize, singular: &str, plural: &str) -> String {
     )
 }
 
+/// how the status line names a narrowed search scope — `None` when every
+/// dictionary is in scope, so the ordinary case reads exactly as it did before.
+fn scope_note(active: usize, total: usize) -> Option<String> {
+    (active < total).then(|| {
+        format!(
+            "{active} of {}",
+            quantity(total, "dictionary", "dictionaries")
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Rc, build_ui, quantity, thousands};
+    use super::{Rc, build_ui, quantity, scope_note, thousands};
     use adw::prelude::*;
     use gtk::gio;
 
@@ -1093,5 +1312,12 @@ mod tests {
         assert_eq!(quantity(8, "dictionary", "dictionaries"), "8 dictionaries");
         assert_eq!(quantity(0, "result", "results"), "0 results");
         assert_eq!(quantity(4_009_914, "word", "words"), "4,009,914 words");
+    }
+
+    #[test]
+    fn scope_note_only_speaks_up_when_the_scope_is_narrowed() {
+        assert_eq!(scope_note(2, 2), None);
+        assert_eq!(scope_note(1, 2).as_deref(), Some("1 of 2 dictionaries"));
+        assert_eq!(scope_note(0, 5).as_deref(), Some("0 of 5 dictionaries"));
     }
 }

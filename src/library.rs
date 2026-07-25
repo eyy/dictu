@@ -69,6 +69,14 @@ impl Library {
         self.dicts.get(index).map(|d| d.label.as_str())
     }
 
+    /// how many headwords one dictionary holds — shown per row in the scope panel,
+    /// and summed to say how much a narrowed scope covers.
+    pub fn dict_headwords(&self, index: usize) -> usize {
+        self.dicts
+            .get(index)
+            .map_or(0, |loaded| loaded.dict.headwords().len())
+    }
+
     pub fn total_headwords(&self) -> usize {
         self.sorted.len()
     }
@@ -211,5 +219,13 @@ mod tests {
     #[test]
     fn total_headwords_counts_all() {
         assert_eq!(lib().total_headwords(), 4);
+    }
+
+    #[test]
+    fn per_dict_headwords_add_up_to_the_total() {
+        let lib = lib();
+        assert_eq!(lib.dict_headwords(0), 2);
+        assert_eq!(lib.dict_headwords(1), 2);
+        assert_eq!(lib.dict_headwords(2), 0, "no such dictionary");
     }
 }

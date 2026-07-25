@@ -123,9 +123,18 @@ e2e() {
         return 1
     fi
 
-    # it refuses to run beside another instance, whose single-instance forwarding
-    # would answer with the wrong config. clear the way first.
-    pgrep -x dictu | xargs -r kill
+    # it refuses to run beside another window, whose single-instance forwarding
+    # would answer with the wrong config. clear the way first — windows only: a
+    # `dictu dump|lookup|search` short-circuits before gtk, so it never claims the
+    # d-bus name, and a cli search over a real collection runs for half a minute.
+    # the subcommand is read positionally, exactly as main() dispatches it: a
+    # substring match would spare `dictu --search dump`, which IS a window.
+    for pid in $(pgrep -x dictu); do
+        case "$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | sed -n 2p)" in
+            dump|lookup|search) continue ;;
+        esac
+        kill "$pid" 2>/dev/null
+    done
     sleep 2
     python3 hack/e2e.py
     local status=$?

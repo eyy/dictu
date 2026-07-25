@@ -21,7 +21,7 @@ the command line, then by driving the real ui. exit 0 means all of it passed.
 ```
 format        cargo fmt (in place; --ci fails instead of fixing)
 clippy        cargo clippy --all-targets -- -D warnings
-unit tests    cargo test — 24 tests, all in-tree, no external data
+unit tests    cargo test — 36 tests, all in-tree, no external data
 build         cargo build
 smoke: dump   reads sample/ end to end, asserts 6 headwords + real definition text
 smoke: search the merged-index engine over sample/, asserts a prefix hit
@@ -75,6 +75,18 @@ what you need to know to add a check:
   directly. the link click test aims at a fixture entry whose definition is one wide,
   **gap-free** link — a space between two words belongs to neither link, so a click there
   follows nothing — and searches down a column for it.
+- a popover (the search-scope panel) is a **surface of its own**: its widgets join the
+  a11y tree only while it is open, and its x window is *also* named `dictu`, which
+  xdotool's case-insensitive `--name '^Dictu$'` matches — so the toplevel is the **lowest**
+  matching window id, or keys and clicks get aimed at the popover's origin.
+- a `gtk::MenuButton` shows up as a `push button` wrapping a `toggle button`, and only the
+  inner toggle carries the `click` action (`Atspi.Action.do_action`) that opens the popover.
+  a `check box` has **no** action, so it has to be clicked — its `WINDOW` extents are in
+  the toplevel's coordinates even though it lives in another surface. `toggle_scope` clicks,
+  then waits for the state to flip, and reopens the panel if the click missed (a stray click
+  dismisses it).
+- don't interleave `dictu --search` with an open popover: the panel is driven by clicks and
+  the search box by another process, and the two together are a race not worth chasing.
 - `python3-pyatspi` is **not** installed and isn't needed — `gi.repository.Atspi` works.
 - the `dbind-WARNING … /org/a11y/atspi/cache` line on startup is noise; ignore it.
 
@@ -84,7 +96,13 @@ what you need to know to add a check:
 hack/shot.sh                                  # real collection, ready state, -> $TMPDIR/dictu-shot.png
 hack/shot.sh --sample zeit -o /tmp/x.png      # fixture + a search; seconds, not ~30s
 hack/shot.sh --sample --select cf             # also select the first row, so a definition shows
+hack/shot.sh --sample --scope                 # with the search-scope panel open
 ```
+
+`--scope` opens the panel through `hack/e2e.py --open-scope` and captures the whole display
+rather than the window, because a popover is an x window of its own and `import -window
+$ID` would miss it. (`import -window root` works here; it is only under xwayland that it
+fails.)
 
 this works and needs no human. the app runs on a **private Xvfb display** where it is the
 only window, and ImageMagick's `import -window` grabs it; the script waits for the ui's own
