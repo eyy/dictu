@@ -204,9 +204,11 @@ the running instance and exits. so:
 - `dictu --search WORD` fills the running window's search box. `--open` no longer exists.
 
 startup: the window appears immediately showing `Indexing…`, a worker thread builds the
-merged ~4M-headword index (~18–30s), then search enables and the status line reads
-`N words · M dictionaries`. there is no on-disk index cache yet (roadmap #2), so this
-happens on **every** launch — an "it hangs at startup" report is almost always this.
+merged index, then search enables and the status line reads `N words · M dictionaries`.
+the index is **cached on disk** (roadmap #7), so that takes ~1s once warm, ~5s the first
+time and after any dictionary file changes. the cache is in `~/.cache/dictu` and is pure
+derived data — `rm -rf ~/.cache/dictu` costs one slow launch and nothing else, which is also
+how you force the cold path when timing it. dictu says so on stderr if it can't write there.
 
 **global hotkey:** `Super+\` → `~/.local/bin/dictu-lookup`, which reads the primary
 selection (`wl-paste --primary --no-newline`) and execs `dictu --search "$word"`. it
@@ -227,8 +229,9 @@ both subcommands short-circuit `main` before any gtk setup, so they work with no
 `dump` and `lookup` take a dictionary's *entry* file — `.ifo` (stardict), `.index`
 (dictd), `.csv`. `lookup --html` prints the raw html fragment, which is what markup work
 needs to see; without it you get the plain text.
-`search` scans the configured dirs and builds the full index first, so budget ~30s
-against the real collection; `time` it when testing load performance.
+`search` scans the configured dirs and builds the full index first — ~1s against the real
+collection with a warm cache, ~5s with a cold one. `time` it when testing load performance,
+and `rm -rf ~/.cache/dictu` first if the cold path is what you mean to measure.
 
 real test data: `~/Dictionaries` — 14 loadable dicts, 1,941,292 headwords
 (the count in `roadmap.md`'s collection table; the old 4M figure predates the excluded

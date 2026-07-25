@@ -101,7 +101,10 @@ if [ "$SAMPLE" = 1 ]; then
     TMPCFG=$(mktemp -d)
     mkdir -p "$TMPCFG/dictu"
     printf 'dictionary_dirs = ["%s/sample"]\n' "$REPO" > "$TMPCFG/dictu/config.toml"
-    CONFIG_ENV=(XDG_CONFIG_HOME="$TMPCFG")
+    # a throwaway cache dir too, so a fixture shot never touches the real index
+    # cache. the default (real collection) run deliberately does use it — that is
+    # what makes shooting the real library take a second rather than half a minute.
+    CONFIG_ENV=(XDG_CONFIG_HOME="$TMPCFG" XDG_CACHE_HOME="$TMPCFG")
 fi
 
 cleanup() {

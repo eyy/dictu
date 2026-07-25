@@ -87,6 +87,18 @@ impl Config {
     }
 }
 
+/// where the on-disk index cache lives: `$XDG_CACHE_HOME/dictu`, i.e. the
+/// idiomatic `~/.cache/dictu`. everything in it is derived data — deleting it
+/// costs one slow launch and nothing else (see `index_cache`).
+pub fn cache_dir() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| home_dir().map(|h| h.join(".cache")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("dictu")
+}
+
 /// a dictionary discovered on disk (not yet loaded — loading is deferred until
 /// the user selects it, since some files are hundreds of MB).
 #[derive(Debug, Clone)]

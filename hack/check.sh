@@ -101,7 +101,9 @@ smoke_search() {
     tmp=$(mktemp -d) || return 1
     mkdir -p "$tmp/dictu"
     printf 'dictionary_dirs = ["%s/sample"]\n' "$REPO" > "$tmp/dictu/config.toml"
-    out=$(XDG_CONFIG_HOME="$tmp" ./target/debug/dictu search zeit)
+    # a throwaway cache dir too, so the index cache (roadmap #7) is exercised from
+    # cold here and the real ~/.cache/dictu is left alone.
+    out=$(XDG_CONFIG_HOME="$tmp" XDG_CACHE_HOME="$tmp" ./target/debug/dictu search zeit)
     local status=$?
     rm -rf "$tmp"
     echo "$out"
