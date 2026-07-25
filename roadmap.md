@@ -110,6 +110,9 @@ lost, the substance is not.
   already classified and `.dsl`/`.dsl.dz` pairs deduped (`src/config.rs`);
   `is_supported()` returns false and `open_any` bails. the parser must convert dsl's own
   markup to html to satisfy the `Dictionary::lookup` contract, and handle utf-16.
+- **[ ] #8 use `glib::clone!` weak refs in signal closures.**
+  handlers capture strong `Ui` clones (`src/main.rs`), which hold the window — a reference
+  cycle that keeps widgets alive after close. switch to `glib::clone!(#[weak] …)`.
 
 - **[ ] #12 unified search ui (results across dictionaries).**
   largely delivered by #11. what's left is presentation: a row shows the tag of only the
@@ -121,6 +124,48 @@ lost, the substance is not.
 
 ## done
 
+- **[x] #13 DSL (ABBYY Lingvo) reader.** `src/dict/dsl.rs`. the collection's nine `.dsl` /
+  `.dsl.dz` files load — 471,446 headwords, a third more than the app could read before —
+  and the six dictionaries the format was hiding are searchable: Klein's Etymological
+  Hebrew, Dodson Greek, both Liddell-Scotts, HALOT, Larousse Chambers, Lexicon to Pindar.
+  the file is decoded once (utf-16 le/be by bom, utf-8 with or without one, utf-16le
+  guessed from its nul bytes when there is none) and kept; the index holds one byte range
+  per card and markup is converted **in `lookup`**, so nothing parsed is stored per entry.
+  ascii code units skip the decode machinery, which is what makes opening the 170 MB
+  Liddell-Scott 2.7s rather than 9.8s in the unoptimized build we run.
+  what it renders: `[b] [i] [u] [sup] [sub]`, `[ex]` and `[p]` (italic — 822k `[p]`s in
+  Liddell-Scott alone), `[mN]` as nested blocks, `\[` escapes, `~` as the headword, and
+  both `[ref]…[/ref]` and `<<…>>` as `bword://` links, so dsl cross-references are
+  clickable through #20 with no ui change. what it drops: colour (`[c]`, the most common
+  tag in every one of these files), zone markers (`[trn] [!trs] [com]`), `[lang]`, `[s]`
+  media (contents and all), `{{…}}` comments, and every unknown tag — dropping a
+  distinction beats leaking brackets into the text. mis-nested markup (real dsl is full of
+  `[b]…[c]…[/b]…[/c]`) is closed at the line end so the renderer always gets a tree.
+  `(…)` in a headword is dsl's optional part, so it is filed both ways — that is what makes
+  HALOT's 6.5k `(*)`-marked hebrew roots findable by the bare root, and `ad lib(itum)`
+  findable as either.
+  three things this exposed, none of them dsl's fault: the L&S folder holds the *same*
+  dictionary twice (`Grc-Eng_L&S_….dsl.dz` and the identical `….dsl/Grc-Eng.dsl` inside a
+  directory that ends in `.dsl`, which `dedupe_dsl` doesn't catch) — 115k duplicate
+  headwords, ~3.5s and ~200 MB of startup for nothing; that nested folder also makes the
+  wordlist label read `Grc-Eng_L&S_Greek-English Lexicon_or_2.dsl`, since `label_for` uses
+  the parent folder's name; and lookup is exact bytes, so Dodson's `ό` (U+1F79 oxia) is a
+  different word from a typed `ό` (U+03CC tonos) — nothing normalizes either side.
+  reviewed before merging, which caught three things worth the delay. halot writes nested
+  optional groups — `((*)II) root` — and the parser tracked a flag rather than a depth, so
+  942 junk headwords were filed (`II) root`) and ~471 cards were unreachable from the bare
+  root, defeating a goal the branch claimed; `אבד` went from 2 entries to 3 once fixed. the
+  decoded text kept its utf-16 capacity for the life of the process, ~225 MB of slack across
+  the collection, since these scripts all encode smaller in utf-8. and the Liddell-Scott
+  folder ships the same lexicon twice — a `.dz` beside a **directory** whose name ends in
+  `.dsl`, which `dedupe_dsl` could not see because a directory is never a scanned entry —
+  costing 115k duplicate headwords, ~190 MB, and every greek word listed under two labels.
+  measured after: 14 dictionaries / 1,941,292 headwords → **13 / 1,825,792**, peak RSS
+  917 MB → 791 MB.
+  still open, and app-wide rather than DSL's fault: **lookup matches exact bytes**, so
+  Dodson's 4,686 non-NFC greek headwords (U+1F79 oxia) can't be found by typing the U+03CC
+  tonos every greek keyboard produces, and HALOT adds 3,259 with non-canonical hebrew mark
+  order. normalising both the index key and the query to NFC belongs in `Library`, not here.
 - **[x] #1 gtk4 + libadwaita app skeleton.** `adw::Application`, `OverlaySplitView`
   sidebar + content, `ToolbarView`/`HeaderBar`.
 - **[x] #2 StarDict reader.** `.ifo` metadata, big-endian `.idx`, `.dict`/`.dict.dz` data,
@@ -321,25 +366,31 @@ lost, the substance is not.
 
 ## reference — the collection as dictu sees it
 
-`~/Dictionaries`, 5 of 15 dictionaries loadable and kept (1,469,846
+`~/Dictionaries`, 14 of 18 dictionaries loadable and kept (1,941,292
 headwords):
 
-| loadable | dictionary | format |
-| --- | --- | --- |
-| no (#19) | Latin_English_Inflected (bgl-converted) | StarDict |
-| no (#19) | Latin_English_Inflected (stardic) | StarDict |
-| yes | latin infl+lewis | StarDict |
-| no (#34) | French - English (actually en→fr) | StarDict |
-| yes | MiddleLiddell | StarDict |
-| yes | a hebrew-hebrew dictionary (HEB-HEB) | StarDict |
-| yes | מילון אבן ספיר | StarDict |
-| yes | Ref_LSJ (abbreviations) | tab-separated csv |
-| no (#13) | Klein, Comprehensive Etymological Hebrew | DSL |
-| no (#13) | Dodson, Greek-English Lexicon | DSL |
-| no (#13) | Liddell & Scott, full | DSL |
-| no (#13) | Hebrew and Aramaic Lexicon of the OT (HALOT) | DSL |
-| no (#13) | Larousse Chambers français-anglais | DSL |
-| no (#13) | Lexicon to Pindar | DSL |
+| loadable | dictionary | format | headwords |
+| --- | --- | --- | --- |
+| no (#19) | Latin_English_Inflected (bgl-converted) | StarDict | |
+| no (#19) | Latin_English_Inflected (stardic) | StarDict | |
+| yes | latin infl+lewis | StarDict | |
+| no (#34) | French - English (actually en→fr) | StarDict | |
+| yes | MiddleLiddell | StarDict | |
+| yes | a hebrew-hebrew dictionary (HEB-HEB) | StarDict | |
+| yes | מילון אבן ספיר | StarDict | |
+| yes | Ref_LSJ (abbreviations) | tab-separated csv | |
+| yes | Klein, Comprehensive Etymological Hebrew | DSL | 27,620 |
+| yes | Klein abbreviations (`_abrv`) | DSL | 186 |
+| yes | Dodson, Greek-English Lexicon | DSL | 10,688 |
+| yes | Liddell-Scott (`Liddell-Scott.dsl`) | DSL | 130,454 |
+| yes | Liddell&Scott (`….dsl.dz`) | DSL | 115,076 |
+| yes | Liddell&Scott again (`….dsl/Grc-Eng.dsl`) | DSL | 115,076 |
+| yes | Hebrew and Aramaic Lexicon of the OT (HALOT) | DSL | 19,579 |
+| yes | Larousse Chambers français-anglais | DSL | 47,419 |
+| yes | Lexicon to Pindar | DSL | 5,348 |
 
-the six DSL dictionaries are the big gap (#13): the collection has more than twice the
-content dictu can currently read.
+the five StarDict/csv dictionaries account for 1,469,846 of those headwords and the nine
+DSL files for 471,446. the last two Liddell&Scott rows are the same 115,076 headwords
+twice — see the note under #13 — so excluding
+`!…/Greek-English Lexicon - Liddell & Scott/Grc-Eng_L&S_Greek-English Lexicon_or_2.dsl`
+in `config.toml` costs nothing and saves ~3.5s and ~200 MB at startup.

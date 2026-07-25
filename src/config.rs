@@ -125,8 +125,8 @@ pub fn scan(entries: &[String]) -> Vec<DictEntry> {
                 return None;
             }
             let format = dict::classify(&path)?;
-            // only list formats we can actually open (keeps raw .bgl and the
-            // not-yet-supported dsl/csv out of the picker).
+            // only list formats we can actually open — which keeps raw .bgl out of
+            // the picker, since it is converted to StarDict offline instead.
             if !format.is_supported() {
                 return None;
             }
@@ -174,9 +174,15 @@ fn dedupe_dsl(entries: &mut Vec<DictEntry>) {
 
     entries.retain(|e| {
         if e.format == Format::Dsl && ends_with_ci(&e.path, ".dsl.dz") {
-            // keep only if there's no plain .dsl next to it.
+            // keep only if there's no plain .dsl next to it. `is_dir` matters as much
+            // as the set: one dictionary here ships as `X.dsl.dz` beside a *directory*
+            // named `X.dsl/` holding the identical file, and a directory is never a
+            // scanned entry — so without this the same 115k-headword lexicon loads
+            // twice, costing ~190 MB and showing every greek word under two labels.
             let plain_sibling = strip_suffix_ci(&e.path, ".dz");
-            !plain_sibling.map(|p| plain.contains(&p)).unwrap_or(false)
+            !plain_sibling
+                .map(|p| plain.contains(&p) || p.is_dir())
+                .unwrap_or(false)
         } else {
             true
         }
