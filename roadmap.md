@@ -51,6 +51,26 @@ lost, the substance is not.
 
 ## later
 
+- **[ ] #39 lookup matches exact bytes, so Greek can't be typed.** Dodson stores 4,686 of
+  its headwords in non-NFC form (`ό` as U+1F79 oxia), and every greek keyboard — and every
+  other greek dictionary here — produces U+03CC tonos, which finds nothing. HALOT adds 3,259
+  headwords with non-canonical hebrew mark order. app-wide, not DSL's doing: `lookup` is an
+  exact `HashMap` hit and `prefix_search` only lowercases. normalise both the index key and
+  the query to NFC in `Library`, where every format benefits at once.
+
+- **[ ] #40 two dictionaries can share one name.** labels come from the parent folder, and
+  the Liddell-Scott folder holds two *different* lexicons (115k unaccented, 130k accented)
+  that both display as "Greek-English Lexicon - Liddell & Scott"; Klein's two files collide
+  the same way. the scope panel (#14) shows them as two rows you can't tell apart, and the
+  definition pane names them identically. fall back to the file stem when a label repeats.
+
+- **[ ] #41 a headword whose only entry renders empty stays in the wordlist.** `lookup`
+  drops entries that convert to nothing, but the headword was already filed — so a card that
+  is only an audio reference (`[s]snd.wav[/s]`) leaves a row that shows nothing when
+  selected. no occurrences in the current collection (0 of 475,360 entries), so it is latent;
+  the fix is to reconcile the two at index time rather than filter at lookup time.
+
+
 - **[ ] #37 offline Wiktionary, chosen by language pair.** pick `French > English` in the
   config and get every French entry from the **English** Wiktionary, glossed in english,
   offline. the appeal is obvious: it covers the modern languages this collection has no

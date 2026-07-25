@@ -9,6 +9,9 @@
 use ego_tree::NodeRef;
 use scraper::{Html, Node};
 
+/// how deep the tag nesting may go before we stop descending — see `walk`.
+const MAX_NESTING: u32 = 256;
+
 /// semantic styling for a run of text. the ui maps these flags to its own tags.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Style {
@@ -48,7 +51,7 @@ pub struct Run {
 pub fn to_runs(html: &str) -> Vec<Run> {
     let doc = Html::parse_fragment(html);
     let mut builder = Builder::default();
-    walk(doc.tree.root(), Style::default(), None, &mut builder);
+    walk(doc.tree.root(), Style::default(), None, &mut builder, 0);
     builder.runs
 }
 
@@ -82,7 +85,21 @@ pub fn to_text(html: &str) -> String {
 
 /// walk the dom, pushing text into `builder` with the current inherited style and
 /// enclosing link target.
-fn walk<'a>(node: NodeRef<'a, Node>, style: Style, href: Option<&'a str>, builder: &mut Builder) {
+fn walk<'a>(
+    node: NodeRef<'a, Node>,
+    style: Style,
+    href: Option<&'a str>,
+    builder: &mut Builder,
+    depth: u32,
+) {
+    // a dictionary file is untrusted input, and this walk is recursive: ~40k nested
+    // tags overflow the stack, which aborts the process outright — not a panic the
+    // loader could catch and report. the deepest nesting in the real collection is 3,
+    // so a cap this high only ever fires on a corrupt or hostile entry, and dropping
+    // the rest of that entry beats taking the app down with it.
+    if depth > MAX_NESTING {
+        return;
+    }
     let mut child = node.first_child();
     while let Some(current) = child {
         match current.value() {
@@ -97,7 +114,13 @@ fn walk<'a>(node: NodeRef<'a, Node>, style: Style, href: Option<&'a str>, builde
                     }
                     // an <a> introduces a target; nested elements inherit it.
                     let child_href = el.attr("href").or(href);
-                    walk(current, child_style(name, style), child_href, builder);
+                    walk(
+                        current,
+                        child_style(name, style),
+                        child_href,
+                        builder,
+                        depth + 1,
+                    );
                     if block {
                         builder.newline();
                     }
@@ -225,6 +248,15 @@ impl Builder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absurd_nesting_is_cut_off_rather_than_overflowing_the_stack() {
+        // 40k of these aborted the process before the cap; the text up to the cap is
+        // still rendered, and nothing panics.
+        let html = "<b>".repeat(40_000) + "deep" + &"</b>".repeat(40_000);
+        let text = to_text(&html);
+        assert!(text.is_empty() || text == "deep");
+    }
 
     #[test]
     fn maps_bold_italic_and_collapses_whitespace() {

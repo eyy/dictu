@@ -207,9 +207,14 @@ fn from_utf16(bytes: &[u8], little_endian: bool) -> String {
     out
 }
 
-/// utf-16le without a bom: valid utf-8 never contains a nul, and half of an
-/// ascii-heavy utf-16le file's bytes are nul (the markup alone guarantees
-/// plenty even for hebrew or greek text).
+/// utf-16le without a bom, by NUL ratio: ascii encoded as utf-16le is a byte then a
+/// NUL, so such a file is about half NULs. the sample is only the first kilobyte —
+/// in practice the `#NAME`/`#INDEX_LANGUAGE` header, which is ascii even in the
+/// hebrew and greek dictionaries, and that is what makes the ratio dependable.
+/// (a NUL is perfectly *legal* in utf-8, so this is a ratio test and not a validity
+/// one: a misread decodes to nonsense and `from_text` then bails rather than
+/// indexing it. a bom-less file whose first kilobyte is non-ascii would be refused,
+/// which is the right way to be wrong.)
 fn looks_utf16le(bytes: &[u8]) -> bool {
     let sample = &bytes[..bytes.len().min(1024)];
     !sample.is_empty() && sample.iter().filter(|&&b| b == 0).count() * 5 > sample.len()
