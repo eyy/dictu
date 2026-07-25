@@ -51,6 +51,16 @@ lost, the substance is not.
 
 ## later
 
+- **[ ] #42 fuzzy search, normalized keys, lemmas-only — see `docs/search-index-plan.md`.**
+  the plan of record for #33, #39, #12 and fuzzy matching. its claim is that none of them
+  need a new index structure or a database: normalization is a column on the existing sorted
+  index, lemmas-only is a bitset filtered in the same walk as the scope mask, attribution is
+  data `populate_results` already walks past, and fuzzy is a bounded scan run only when a
+  search finds nothing. `fst` and SQLite are recorded there as rejected-for-now with the
+  measurement that would reopen them. under independent review.
+
+
+
 - **[ ] #39 lookup matches exact bytes, so Greek can't be typed.** Dodson stores 4,686 of
   its headwords in non-NFC form (`ό` as U+1F79 oxia), and every greek keyboard — and every
   other greek dictionary here — produces U+03CC tonos, which finds nothing. HALOT adds 3,259
