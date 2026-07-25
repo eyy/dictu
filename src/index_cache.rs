@@ -35,6 +35,7 @@
 
 use std::borrow::Cow;
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -81,8 +82,49 @@ pub fn fingerprint(sources: &[PathBuf]) -> String {
             )),
             None => out.push_str(&format!(":?:{}", meta.len())),
         }
+        // mtime and size alone have a blind spot: a tool that deliberately
+        // preserves the timestamp — `cp -p`, `rsync --times`, a dropbox sync
+        // restoring an older version — can change the content and leave both
+        // unchanged, and the cache then answers from a stale index with no sign
+        // that anything is wrong. this collection lives in dropbox, so that is a
+        // real path rather than a hypothetical. sampling three windows of the
+        // content closes it for anything but a change that lands entirely
+        // outside them, and costs ~192 KiB of reads per file.
+        out.push(':');
+        out.push_str(&sample_hash(path, meta.len()));
     }
     out
+}
+
+/// a cheap content fingerprint: fnv-1a over the first, middle and last window of
+/// the file. deliberately not a full hash — the largest dictionary here is 186 MB
+/// and warm startup is the whole point of this cache — so it trades certainty for
+/// ~1 ms, catching any edit that touches a sampled window.
+fn sample_hash(path: &Path, len: u64) -> String {
+    const WINDOW: u64 = 64 * 1024;
+    let Ok(mut file) = fs::File::open(path) else {
+        return "unreadable".to_string();
+    };
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut buf = vec![0u8; WINDOW as usize];
+    for start in [0, len.saturating_sub(WINDOW) / 2, len.saturating_sub(WINDOW)] {
+        if file.seek(SeekFrom::Start(start)).is_err() {
+            continue;
+        }
+        let mut filled = 0;
+        while filled < buf.len() {
+            match file.read(&mut buf[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(_) => break,
+            }
+        }
+        for byte in &buf[..filled] {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x1000_0000_01b3);
+        }
+    }
+    format!("{hash:016x}")
 }
 
 /// where a dictionary's cached index goes: a readable stem so the directory can
