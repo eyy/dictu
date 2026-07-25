@@ -205,10 +205,11 @@ the running instance and exits. so:
 
 startup: the window appears immediately showing `Indexing…`, a worker thread builds the
 merged index, then search enables and the status line reads `N words · M dictionaries`.
-the index is **cached on disk** (roadmap #7), so that takes ~1s once warm, ~5s the first
-time and after any dictionary file changes. the cache is in `~/.cache/dictu` and is pure
-derived data — `rm -rf ~/.cache/dictu` costs one slow launch and nothing else, which is also
-how you force the cold path when timing it. dictu says so on stderr if it can't write there.
+the index is **cached on disk** (roadmap #7), so that takes ~0.5s once warm, ~7s the first
+time and after any dictionary file changes. the cache is in `~/.cache/dictu` — ~280 MB for
+this collection, most of it the decoded text of the DSL dictionaries — and is pure derived
+data: `rm -rf ~/.cache/dictu` costs one slow launch and nothing else, which is also how you
+force the cold path when timing it. dictu says so on stderr if it can't write there.
 
 **global hotkey:** `Super+\` → `~/.local/bin/dictu-lookup`, which reads the primary
 selection (`wl-paste --primary --no-newline`) and execs `dictu --search "$word"`. it
@@ -229,8 +230,8 @@ both subcommands short-circuit `main` before any gtk setup, so they work with no
 `dump` and `lookup` take a dictionary's *entry* file — `.ifo` (stardict), `.index`
 (dictd), `.csv`. `lookup --html` prints the raw html fragment, which is what markup work
 needs to see; without it you get the plain text.
-`search` scans the configured dirs and builds the full index first — ~1s against the real
-collection with a warm cache, ~5s with a cold one. `time` it when testing load performance,
+`search` scans the configured dirs and builds the full index first — ~0.5s against the real
+collection with a warm cache, ~7s with a cold one. `time` it when testing load performance,
 and `rm -rf ~/.cache/dictu` first if the cold path is what you mean to measure.
 
 real test data: `~/Dictionaries` — 14 loadable dicts, 1,941,292 headwords

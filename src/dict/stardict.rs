@@ -142,7 +142,16 @@ impl StarDict {
         if let Some(syn) = syn.as_deref() {
             apply_syn(syn, &mut entries, &mut display);
         }
-        let image = index_cache::build(&entries, &display, fingerprint);
+        // no name or payload: the `.ifo` names the dictionary for a few µs, and
+        // the `.dict` its ranges point into is already a file we can map.
+        let image = index_cache::build(
+            index_cache::Built {
+                entries: &entries,
+                display: &display,
+                ..Default::default()
+            },
+            fingerprint,
+        );
 
         // best effort: a read-only or full cache directory costs speed, not
         // correctness.

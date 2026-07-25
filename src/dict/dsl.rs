@@ -8,35 +8,52 @@
 //! square-bracket markup, which we convert to html so that the single renderer
 //! serving every format can read it — `Dictionary::lookup`'s contract.
 //!
-//! the file is decoded once and kept; the index holds only a byte range per
-//! card, and markup is converted lazily in `lookup`, so a 110 MB lexicon costs
-//! its text plus its headwords, not a parsed entry per card.
+//! the file is decoded once *ever*: the decoded text and the byte range per card
+//! are written to the index cache (`index_cache`, roadmap #7) and memory-mapped
+//! back on later launches, so a 110 MB lexicon costs an mmap rather than a
+//! utf-16 decode, and its text is paged in by the kernel instead of held on the
+//! heap. markup is still converted lazily in `lookup`, so a card costs nothing
+//! until it is read.
 
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
+use std::borrow::Cow;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use super::{Dictionary, load_dict_bytes};
+use crate::index_cache::{self, Index};
 
-/// a card body's byte range `(start, end)` in `text`. `u32` halves the index
-/// against a `usize` pair; the largest dsl here decodes to ~110 MB.
+use super::{DictBytes, Dictionary, load_dict_bytes};
+
+/// a card body's byte range `(start, end)` in the decoded text. `u32` halves the
+/// index against a `usize` pair; the largest dsl here decodes to ~110 MB.
 type Range = (u32, u32);
 
 pub struct DslDictionary {
     name: String,
     headwords: Vec<String>,
-    /// headword -> the body ranges filed under it. a `Vec` because one headword
-    /// can head several cards, and one card several headwords.
-    index: HashMap<String, Vec<Range>>,
-    /// the whole file, decoded once. bodies are sliced out of it on demand.
-    text: String,
+    /// headword -> the body ranges filed under it, and the decoded text those
+    /// ranges point into, both read off one memory-mapped cache image
+    /// (roadmap #7). decoding utf-16 is what opening a DSL dictionary mostly
+    /// costs — 1.4 s for the 170 MB Liddell-Scott — so the decoded text is
+    /// cached as the index's payload and never decoded twice.
+    index: Index,
 }
 
 impl DslDictionary {
-    /// open a dictionary given the path to its `.dsl` or `.dsl.dz`.
-    pub fn open(path: &Path) -> Result<Self> {
+    /// open a dictionary given the path to its `.dsl` or `.dsl.dz`. `cache` is the
+    /// directory holding cached indexes; with `Some`, a matching cache is mapped
+    /// instead of decoding and parsing the file, and a fresh one is written when
+    /// there isn't.
+    pub fn open(path: &Path, cache: Option<&Path>) -> Result<Self> {
+        let fingerprint = index_cache::fingerprint(&[path.to_path_buf()]);
+        let cache_file = cache.map(|dir| index_cache::index_path(dir, path));
+        if let Some(index) = cache_file
+            .as_deref()
+            .and_then(|file| Index::load(file, &fingerprint))
+        {
+            return Ok(Self::from_index(index));
+        }
+
         let file_name = path
             .file_name()
             .and_then(|s| s.to_str())
@@ -60,23 +77,51 @@ impl DslDictionary {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or(stem);
-        Self::from_text(text, fallback)
+        let image = Self::image(&text, fallback, &fingerprint)?;
+        drop(text); // the image holds its own copy; don't keep both mapped in.
+
+        // best effort: a read-only or full cache directory costs speed, not
+        // correctness.
+        let bytes = match cache_file.map(|file| index_cache::store(&file, &image)) {
+            Some(Ok(mapped)) => mapped,
+            Some(Err(err)) => {
+                eprintln!("dictu: not caching the index for {file_name}: {err:#}");
+                DictBytes::Owned(image)
+            }
+            None => DictBytes::Owned(image),
+        };
+        let index =
+            Index::open(bytes, &fingerprint).context("reading back the index we just built")?;
+        Ok(Self::from_index(index))
     }
 
-    /// parse already-decoded text. pure (no i/o), so tests drive it directly.
-    fn from_text(text: String, fallback_name: &str) -> Result<Self> {
+    /// everything the ui needs, off the (mapped or in-memory) cache image.
+    fn from_index(index: Index) -> Self {
+        Self {
+            name: index.name().to_string(),
+            headwords: index.headwords(),
+            index,
+        }
+    }
+
+    /// parse already-decoded text into a cache image, text and all. pure (no i/o),
+    /// so tests drive it directly.
+    fn image(text: &str, fallback_name: &str, fingerprint: &str) -> Result<Vec<u8>> {
         if text.len() > u32::MAX as usize {
             bail!("dsl file is larger than 4 GiB");
         }
         let mut name = None;
-        let mut headwords = Vec::new();
-        let mut index: HashMap<String, Vec<Range>> = HashMap::new();
+        // every (headword, body) pair in card order, and which of them the ui
+        // lists — the same shape every format hands the cache. repeats of a
+        // headword across cards are deduped there, not here.
+        let mut entries: Vec<(Cow<'_, str>, index_cache::Range)> = Vec::new();
+        let mut display: Vec<u32> = Vec::new();
         // headword lines waiting for the body they share, and that body so far.
         let mut pending: Vec<&str> = Vec::new();
         let mut body: Option<Range> = None;
         let mut in_header = true;
 
-        for (offset, line) in lines_with_offsets(&text) {
+        for (offset, line) in lines_with_offsets(text) {
             // only tab and space indent a body line. `char::is_whitespace` would
             // also match the nbsp some headwords start with (20 in klein), and
             // read those cards as bodies with no headword.
@@ -101,28 +146,43 @@ impl DslDictionary {
             } else {
                 if let Some(range) = body.take() {
                     // a column-0 line after a body starts a new card.
-                    file_card(&pending, range, &mut headwords, &mut index);
+                    file_card(&pending, range, &mut entries, &mut display);
                     pending.clear();
                 }
                 pending.push(line);
             }
         }
         if let Some(range) = body {
-            file_card(&pending, range, &mut headwords, &mut index);
+            file_card(&pending, range, &mut entries, &mut display);
         }
 
         // no cards and no header: whatever this file is, it isn't dsl. failing
         // here beats handing the ui a dictionary of garbage headwords.
-        if headwords.is_empty() && name.is_none() {
+        if entries.is_empty() && name.is_none() {
             bail!("no dsl header or entries found — not a DSL file?");
         }
 
-        Ok(Self {
-            name: name.unwrap_or_else(|| fallback_name.to_string()),
-            headwords,
-            index,
-            text,
-        })
+        // the name is only known after reading the header, and the ranges point
+        // into the decoded text — so both travel with the index.
+        Ok(index_cache::build(
+            index_cache::Built {
+                entries: &entries,
+                display: &display,
+                name: name.as_deref().unwrap_or(fallback_name),
+                payload: text.as_bytes(),
+            },
+            fingerprint,
+        ))
+    }
+
+    /// parse already-decoded text into a dictionary held in memory, caching
+    /// nothing. the tests' way in, and the fallback when the cache can't be read.
+    #[cfg(test)]
+    fn from_text(text: String, fallback_name: &str) -> Result<Self> {
+        let image = Self::image(&text, fallback_name, "test")?;
+        let index = Index::open(DictBytes::Owned(image), "test")
+            .context("reading back the index we just built")?;
+        Ok(Self::from_index(index))
     }
 }
 
@@ -136,11 +196,18 @@ impl Dictionary for DslDictionary {
     }
 
     fn lookup(&self, headword: &str) -> Vec<String> {
+        let text = self.index.payload();
         self.index
-            .get(headword)
+            .ranges(headword)
             .into_iter()
             .flatten()
-            .filter_map(|&(start, end)| self.text.get(start as usize..end as usize))
+            .filter_map(|(start, len)| {
+                let start = usize::try_from(start).ok()?;
+                // the payload is our own decoded text, so it is valid utf-8 and a
+                // range lands on char boundaries — unless the cache file is
+                // corrupt, in which case the body is dropped rather than trusted.
+                std::str::from_utf8(text.get(start..start + len as usize)?).ok()
+            })
             // `~` in a body stands for the headword, so conversion needs it.
             .map(|body| body_to_html(body, headword))
             .filter(|html| !html.is_empty())
@@ -241,29 +308,28 @@ fn directive(line: &str, key: &str) -> Option<String> {
 }
 
 /// file one card's body under every headword it is listed with. the same
-/// headword can appear twice in one card (halot does that 9.5k times), so the
-/// same range is never filed twice — it would show the entry twice.
+/// headword can appear twice in one card (halot does that 9.5k times), so a
+/// card's keys are deduped — filing the same range twice would show the entry
+/// twice. across cards the ranges differ, so only the card's own keys need it,
+/// and a card has a handful.
 fn file_card(
     hw_lines: &[&str],
     body: Range,
-    headwords: &mut Vec<String>,
-    index: &mut HashMap<String, Vec<Range>>,
+    entries: &mut Vec<(Cow<'static, str>, index_cache::Range)>,
+    display: &mut Vec<u32>,
 ) {
+    let mut keys: Vec<String> = Vec::new();
     for line in hw_lines {
         for key in index_variants(line) {
-            match index.entry(key) {
-                Entry::Vacant(slot) => {
-                    headwords.push(slot.key().clone());
-                    slot.insert(vec![body]);
-                }
-                Entry::Occupied(mut slot) => {
-                    let ranges = slot.get_mut();
-                    if !ranges.contains(&body) {
-                        ranges.push(body);
-                    }
-                }
+            if !keys.contains(&key) {
+                keys.push(key);
             }
         }
+    }
+    let (start, end) = body;
+    for key in keys {
+        display.push(entries.len() as u32);
+        entries.push((Cow::Owned(key), (start as u64, end - start)));
     }
 }
 
@@ -855,9 +921,90 @@ mod tests {
         let path = dir.join("Klein_v1_0.dsl.dz");
         std::fs::write(&path, gz.finish().unwrap()).unwrap();
 
-        let dict = DslDictionary::open(&path).unwrap();
+        let dict = DslDictionary::open(&path, None).unwrap();
         assert_eq!(dict.name(), "Test Lexicon");
         assert_eq!(dict.lookup("logos").len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// a plain utf-16 `.dsl` on disk, so the cache has a real file to key on.
+    fn write_dsl(dir: &Path, text: &str) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join("Lexicon.dsl");
+        std::fs::write(&path, utf16(text, true)).unwrap();
+        path
+    }
+
+    /// everything a caller can see, so a warm open can be compared to a cold one
+    /// in one assertion instead of five.
+    fn answers(dict: &DslDictionary) -> (String, Vec<String>, Vec<String>, Vec<String>) {
+        (
+            dict.name().to_string(),
+            dict.headwords().to_vec(),
+            dict.lookup("λόγος"),
+            dict.lookup("ad lib"),
+        )
+    }
+
+    #[test]
+    fn the_decoded_text_is_cached_and_reused() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = std::env::temp_dir().join(format!("dictu-dslc-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let cache = dir.join("cache");
+        let path = write_dsl(&dir, SAMPLE);
+        let cache_file = index_cache::index_path(&cache, &path);
+
+        let cold = DslDictionary::open(&path, Some(&cache)).unwrap();
+        let written = std::fs::metadata(&cache_file).expect("a cache file").ino();
+        // the decoded text travels with the index — that is the point for dsl,
+        // whose ranges are offsets into it.
+        assert!(
+            String::from_utf8_lossy(cold.index.payload()).contains("λόγος"),
+            "the payload should be the decoded text"
+        );
+
+        // second open: identical answers, and no rebuild (a rebuild publishes by
+        // rename, which would give a different inode).
+        let warm = DslDictionary::open(&path, Some(&cache)).unwrap();
+        assert_eq!(answers(&warm), answers(&cold));
+        assert!(warm.lookup("λόγος")[0].contains("word, λόγος as spoken"));
+        assert_eq!(std::fs::metadata(&cache_file).unwrap().ino(), written);
+
+        // a changed file is decoded again rather than answered from the old cache.
+        write_dsl(&dir, &SAMPLE.replace("λόγος", "λογισμός"));
+        let rebuilt = DslDictionary::open(&path, Some(&cache)).unwrap();
+        assert!(rebuilt.headwords().contains(&"λογισμός".to_string()));
+        assert!(rebuilt.lookup("λόγος").is_empty());
+        assert_ne!(std::fs::metadata(&cache_file).unwrap().ino(), written);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_corrupt_dsl_cache_falls_back_to_the_file() {
+        let dir = std::env::temp_dir().join(format!("dictu-dslx-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let cache = dir.join("cache");
+        let path = write_dsl(&dir, SAMPLE);
+        let cache_file = index_cache::index_path(&cache, &path);
+        let good = answers(&DslDictionary::open(&path, Some(&cache)).unwrap());
+        let image = std::fs::read(&cache_file).unwrap();
+
+        // truncated (the payload is the last section, so this cuts the text),
+        // emptied, and something else entirely.
+        for broken in [
+            image[..image.len() - 32].to_vec(),
+            Vec::new(),
+            b"garbage".to_vec(),
+        ] {
+            std::fs::write(&cache_file, &broken).unwrap();
+            let dict = DslDictionary::open(&path, Some(&cache)).unwrap();
+            assert_eq!(answers(&dict), good);
+            assert_eq!(std::fs::read(&cache_file).unwrap(), image);
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }

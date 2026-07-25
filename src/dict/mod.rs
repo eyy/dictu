@@ -206,7 +206,7 @@ pub fn open_any(path: &Path, cache: Option<&Path>) -> Result<Box<dyn Dictionary>
         Some(Format::StarDict) => Ok(Box::new(stardict::StarDict::open(path, cache)?)),
         Some(Format::Dictd) => Ok(Box::new(dictd::DictdDictionary::open(path)?)),
         Some(Format::Csv) => Ok(Box::new(csv::CsvDictionary::open(path)?)),
-        Some(Format::Dsl) => Ok(Box::new(dsl::DslDictionary::open(path)?)),
+        Some(Format::Dsl) => Ok(Box::new(dsl::DslDictionary::open(path, cache)?)),
         // bgl is pre-converted to StarDict offline rather than parsed in-app.
         Some(Format::Bgl) => {
             bail!("BGL isn’t read directly — convert it to StarDict with pyglossary first")

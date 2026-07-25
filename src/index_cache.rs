@@ -11,6 +11,12 @@
 //! - one **merged order** file (`merged.dord`): the cross-dictionary
 //!   case-insensitive sort order (`library`), which cost a further 4.4 s.
 //!
+//! an index can also carry a **payload**: the bytes its ranges point into, for a
+//! format whose data doesn't already sit on disk in a mappable shape. StarDict
+//! leaves it empty and maps its own `.dict`; DSL puts its decoded text there,
+//! because decoding utf-16 is most of what opening a DSL dictionary costs (2.6 s
+//! of 4.3 s across the nine here) and the decoded text is what its ranges index.
+//!
 //! every file carries a fingerprint of the source files it was derived from
 //! (path + mtime + size of each), and is used only when that still matches. a
 //! missing, stale, truncated or otherwise unreadable file is simply not used —
@@ -41,10 +47,10 @@ pub type Range = (u64, u32);
 
 /// bump on any layout change — old files then fail the header check and are
 /// rebuilt rather than misread.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 const INDEX_MAGIC: &[u8; 8] = b"DICTUIDX";
-const INDEX_HEADER: usize = 76;
+const INDEX_HEADER: usize = 108;
 const ORDER_MAGIC: &[u8; 8] = b"DICTUMRG";
 const ORDER_HEADER: usize = 20;
 
@@ -104,15 +110,30 @@ pub fn order_path(dir: &Path) -> PathBuf {
 
 // -- per-dictionary index --------------------------------------------------
 
-/// lay out a dictionary's index as the bytes of a cache file.
-///
-/// `entries` is every `(headword, range)` pair in the order the format stored
-/// them, `.syn` synonyms appended; `display` names the entries the ui lists, by
+/// what a format hands the cache. `entries` is every `(headword, range)` pair in
+/// the order the format stored them; `display` names the entries the ui lists, by
 /// index into `entries`, in display order (the caller has already dropped
-/// whatever its format considers non-words). the first occurrence of each
+/// whatever its format considers non-words). `name` and `payload` are for formats
+/// that only learn their own name by parsing, and whose ranges point into bytes
+/// that aren't a file we could map — both default to empty.
+#[derive(Default)]
+pub struct Built<'a> {
+    pub entries: &'a [(Cow<'a, str>, Range)],
+    pub display: &'a [u32],
+    pub name: &'a str,
+    pub payload: &'a [u8],
+}
+
+/// lay an index out as the bytes of a cache file. the first occurrence of each
 /// distinct headword in `display` is what survives — dedup happens here because
 /// this is where the key table exists.
-pub fn build(entries: &[(Cow<'_, str>, Range)], display: &[u32], fingerprint: &str) -> Vec<u8> {
+pub fn build(source: Built<'_>, fingerprint: &str) -> Vec<u8> {
+    let Built {
+        entries,
+        display,
+        name,
+        payload,
+    } = source;
     // sort entry indices by headword. byte order and `str` order agree, so the
     // reader can binary-search the blob without decoding utf-8.
     let mut order: Vec<u32> = (0..entries.len() as u32).collect();
@@ -162,8 +183,10 @@ pub fn build(entries: &[(Cow<'_, str>, Range)], display: &[u32], fingerprint: &s
     let range_off_at = blob_at + blob.len();
     let ranges_at = range_off_at + range_start.len() * 4;
     let display_at = ranges_at + ranges.len() * 12;
+    let name_at = display_at + display.len() * 4;
+    let payload_at = name_at + name.len();
 
-    let mut out = Vec::with_capacity(display_at + display.len() * 4);
+    let mut out = Vec::with_capacity(payload_at + payload.len());
     out.extend_from_slice(INDEX_MAGIC);
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&(keys.len() as u32).to_le_bytes());
@@ -177,6 +200,10 @@ pub fn build(entries: &[(Cow<'_, str>, Range)], display: &[u32], fingerprint: &s
         range_off_at,
         ranges_at,
         display_at,
+        name_at,
+        name.len(),
+        payload_at,
+        payload.len(),
     ] {
         out.extend_from_slice(&(at as u64).to_le_bytes());
     }
@@ -196,6 +223,8 @@ pub fn build(entries: &[(Cow<'_, str>, Range)], display: &[u32], fingerprint: &s
     for v in &display {
         out.extend_from_slice(&v.to_le_bytes());
     }
+    out.extend_from_slice(name.as_bytes());
+    out.extend_from_slice(payload);
     out
 }
 
@@ -213,6 +242,8 @@ pub struct Index {
     range_off_at: usize,
     ranges_at: usize,
     display_at: usize,
+    name: std::ops::Range<usize>,
+    payload: std::ops::Range<usize>,
 }
 
 impl Index {
@@ -247,6 +278,10 @@ impl Index {
         let range_off_at = offset_le(raw, 52)?;
         let ranges_at = offset_le(raw, 60)?;
         let display_at = offset_le(raw, 68)?;
+        let name_at = offset_le(raw, 76)?;
+        let name_len = offset_le(raw, 84)?;
+        let payload_at = offset_le(raw, 92)?;
+        let payload_len = offset_le(raw, 100)?;
 
         // every section must lie inside the file: a truncated cache is rejected
         // here rather than read past its end later.
@@ -257,6 +292,8 @@ impl Index {
             (range_off_at, offsets),
             (ranges_at, n_ranges.checked_mul(12)?),
             (display_at, n_display.checked_mul(4)?),
+            (name_at, name_len),
+            (payload_at, payload_len),
         ] {
             if at.checked_add(len)? > raw.len() {
                 return None;
@@ -273,8 +310,22 @@ impl Index {
             range_off_at,
             ranges_at,
             display_at,
+            name: name_at..name_at + name_len,
+            payload: payload_at..payload_at + payload_len,
             bytes,
         })
+    }
+
+    /// the name the format found for itself while parsing, or empty when the
+    /// format reads its name from somewhere cheap (StarDict's `.ifo`).
+    pub fn name(&self) -> &str {
+        std::str::from_utf8(&self.bytes.as_slice()[self.name.clone()]).unwrap_or_default()
+    }
+
+    /// the bytes the ranges point into, for a format that stored them here. empty
+    /// when the format maps its own data file instead.
+    pub fn payload(&self) -> &[u8] {
+        &self.bytes.as_slice()[self.payload.clone()]
     }
 
     /// the display headwords, in display order — the one part a caller has to
@@ -492,6 +543,19 @@ mod tests {
         (entries, vec![0, 1, 2, 3])
     }
 
+    /// the cache image for a set of entries, with nothing in the optional
+    /// sections — what StarDict writes.
+    fn image_of(entries: &[(Cow<'_, str>, Range)], display: &[u32], fp: &str) -> Vec<u8> {
+        build(
+            Built {
+                entries,
+                display,
+                ..Default::default()
+            },
+            fp,
+        )
+    }
+
     fn index_of(image: Vec<u8>, fp: &str) -> Index {
         Index::open(DictBytes::Owned(image), fp).expect("image should validate")
     }
@@ -499,7 +563,7 @@ mod tests {
     #[test]
     fn round_trips_headwords_and_ranges() {
         let (entries, display) = sample();
-        let index = index_of(build(&entries, &display, "fp"), "fp");
+        let index = index_of(image_of(&entries, &display, "fp"), "fp");
 
         // display order preserved, duplicates collapsed.
         assert_eq!(index.headwords(), vec!["beta".to_string(), "alpha".into()]);
@@ -524,7 +588,7 @@ mod tests {
             (Cow::Borrowed("שלום"), (2, 2)),
             (Cow::Borrowed("zeta"), (3, 3)),
         ];
-        let index = index_of(build(&entries, &[0, 1, 2], "fp"), "fp");
+        let index = index_of(image_of(&entries, &[0, 1, 2], "fp"), "fp");
         assert_eq!(index.ranges("שלום").unwrap(), vec![(2, 2)]);
         assert_eq!(index.ranges("ἄλφα").unwrap(), vec![(1, 1)]);
         assert_eq!(index.ranges("zeta").unwrap(), vec![(3, 3)]);
@@ -533,14 +597,14 @@ mod tests {
     #[test]
     fn a_cache_of_other_sources_is_refused() {
         let (entries, display) = sample();
-        let image = build(&entries, &display, "fp-old");
+        let image = image_of(&entries, &display, "fp-old");
         assert!(Index::open(DictBytes::Owned(image), "fp-new").is_none());
     }
 
     #[test]
     fn a_corrupt_or_truncated_image_is_refused() {
         let (entries, display) = sample();
-        let image = build(&entries, &display, "fp");
+        let image = image_of(&entries, &display, "fp");
 
         // truncated anywhere past the header: sections no longer fit.
         let cut = image.len() - 4;
@@ -575,7 +639,7 @@ mod tests {
 
         // nothing cached yet.
         assert!(Index::load(&path, &fp).is_none());
-        let bytes = store(&path, &build(&entries, &display, &fp)).unwrap();
+        let bytes = store(&path, &image_of(&entries, &display, &fp)).unwrap();
         // no temp files left behind, and the mapped-back image is usable.
         assert!(matches!(bytes, DictBytes::Mapped(_)));
         let index = Index::load(&path, &fp).expect("a fresh cache is a hit");
