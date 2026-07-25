@@ -123,17 +123,6 @@ lost, the substance is not.
   (already in the tree as toml 0.8's own dependency) preserves comments and layout; the
   test that proves it has to round-trip a commented fixture, not a generated one.
 
-- **[ ] #13 DSL (ABBYY Lingvo) parser.**
-  the highest-value format still missing: six dictionaries in the collection are
-  `.dsl`/`.dsl.dz` and invisible to the app — Klein's Etymological Hebrew, Dodson Greek,
-  the full Liddell-Scott, HALOT, Larousse Chambers, Lexicon to Pindar. `Format::Dsl` is
-  already classified and `.dsl`/`.dsl.dz` pairs deduped (`src/config.rs`);
-  `is_supported()` returns false and `open_any` bails. the parser must convert dsl's own
-  markup to html to satisfy the `Dictionary::lookup` contract, and handle utf-16.
-- **[ ] #8 use `glib::clone!` weak refs in signal closures.**
-  handlers capture strong `Ui` clones (`src/main.rs`), which hold the window — a reference
-  cycle that keeps widgets alive after close. switch to `glib::clone!(#[weak] …)`.
-
 - **[ ] #12 unified search ui (results across dictionaries).**
   largely delivered by #11. what's left is presentation: a row shows the tag of only the
   *first* dictionary that had the word, even when the definition pane goes on to show
