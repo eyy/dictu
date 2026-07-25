@@ -8,15 +8,17 @@ built for classical-language work — inflected Latin, Greek, Hebrew lexica of a
 headwords — where the usual answer is a heavyweight app or a browser tab. dictu is a
 native gtk4 window, reads the files where they already sit, and never touches the network.
 
-status: **alpha**, and honestly so. it works daily; several rough edges and two unwritten
-format parsers are tracked in [`roadmap.md`](roadmap.md).
+status: **alpha**, and honestly so. it works daily; the rough edges are tracked in
+[`roadmap.md`](roadmap.md), and the next piece of work — fuzzy matching, typable greek and
+hebrew, and hiding inflections — is planned in
+[`docs/search-index-plan.md`](docs/search-index-plan.md).
 
 ```
 $ dictu search dacrima
-8 dicts, 4009914 headwords total
-  [bgl-Latin_English_Inflected] dacrima
+13 dicts, 1825792 headwords total
   [fulllatininflected[1]] dacrima
-  [stardic latin english inflected] dacrima
+  [fulllatininflected[1]] dacrimae
+  [fulllatininflected[1]] dacrimam
   ...
 ```
 
@@ -33,6 +35,13 @@ onto its own text styles, then renders those with `gtk::TextView` tags. every di
 own inline css, colours and classes are **ignored on purpose**, so a 19th-century lexicon
 and a modern glossary render in the same consistent look rather than a collage.
 
+**it starts in half a second.** the parsed index of every dictionary, and the merged order
+across all of them, are cached to `$XDG_CACHE_HOME/dictu/` and memory-mapped back. a first
+run over the collection here takes about 7 seconds; every run after that takes **0.53 s** and
+164 MB, against 10.2 s and 792 MB with no cache. the cache is keyed by the path, timestamp,
+size and sampled content of every file an index was built from, so a replaced or edited
+dictionary rebuilds rather than being answered from a stale index.
+
 **built for millions of headwords.** the index stores two `u32`s per headword, not the
 words themselves; prefix search is a binary search plus a walk of the matching run.
 `.dict` files are memory-mapped, so definitions are paged in by the kernel on demand
@@ -41,7 +50,7 @@ worker thread, so the window is up and responsive while it works.
 
 **single instance with a lookup hotkey.** `dictu --search WORD` forwards to the
 already-running window, focuses it and fills the search box. bound to a shell hotkey
-(`Super+\` → read the primary selection → `dictu --search "$word"`), it turns any selected
+(`Super+F2` → read the primary selection → `dictu --search "$word"`), it turns any selected
 word anywhere on the desktop into a lookup.
 
 **no-gui subcommands.** `dictu dump <file>` prints one dictionary's metadata and first
@@ -57,7 +66,7 @@ and search get verified.
 | StarDict | `.ifo` + `.idx` + `.dict`/`.dict.dz`, optional `.syn` synonyms | supported |
 | dictd | `.index` + `.dict`/`.dict.dz` | supported |
 | csv | tab-separated (the LSJ author/work abbreviation table) | supported |
-| ABBYY Lingvo DSL | `.dsl`, `.dsl.dz` | detected, not parsed yet — [roadmap #13](roadmap.md) |
+| ABBYY Lingvo DSL | `.dsl`, `.dsl.dz` (UTF-16 or UTF-8, plain or gzipped) | supported |
 | Babylon | `.bgl` | convert to StarDict with pyglossary first |
 
 gzip and dictzip (`.dz`) are read transparently, with a decompression cap as a zip-bomb
@@ -67,20 +76,23 @@ guard.
 
 | path | what it does |
 | --- | --- |
-| `src/main.rs` | the gtk4/libadwaita ui — sidebar search + wordlist, definition pane, the `TextTag` styling, the off-thread index load — plus argv handling and the `dump`/`search` subcommands |
+| `src/main.rs` | the gtk4/libadwaita ui — sidebar search + wordlist, definition pane, the `TextTag` styling, the off-thread index load — plus argv handling and the `dump`/`lookup`/`search` subcommands |
 | `src/config.rs` | `config.toml` (xdg), and the recursive directory scan that discovers dictionaries and classifies them by format |
 | `src/library.rs` | the whole collection: opens every dictionary, builds the merged sorted index, answers prefix searches and cross-dictionary lookups |
 | `src/dict/mod.rs` | the `Dictionary` trait every format implements, format classification, mmap and gzip plumbing |
 | `src/dict/stardict.rs` | StarDict reader — `.ifo` metadata, big-endian `.idx`, `sametypesequence`, `.syn` synonyms |
 | `src/dict/dictd.rs` | dictd reader — the tab-separated `.index` with dictd's own base-64 offset encoding |
 | `src/dict/csv.rs` | the tab-separated LSJ abbreviations table |
+| `src/dict/dsl.rs` | ABBYY Lingvo DSL reader — mixed UTF-16/UTF-8, multi-headword cards, its own bracket markup converted to html |
+| `src/index_cache.rs` | the on-disk index cache: each dictionary's parsed index and the merged order, mmapped back, keyed by the files they came from |
 | `src/dict/markup.rs` | html → styled text runs. ui-agnostic (no gtk), so it's unit-testable |
 | `sample/` | a small hand-built dictd fixture used by the smoke tests and ui e2e |
 | `hack/` | the feedback loop — `check.sh` (format, lint, test, smoke, e2e), `e2e.py` (drives the real ui over at-spi), `shot.sh` (screenshots it) |
 
 the data layer knows nothing about gtk, and the ui knows nothing about dictionary file
 layouts — `Dictionary` is the whole contract between them: a name, a list of headwords, and
-`lookup(headword) -> Option<html>`. adding a format means implementing that trait and
+`lookup(headword) -> Vec<html>` — every entry filed under that word. adding a format means
+implementing that trait and
 teaching `classify` its extension.
 
 ## configuration

@@ -21,11 +21,12 @@ the command line, then by driving the real ui. exit 0 means all of it passed.
 ```
 format        cargo fmt (in place; --ci fails instead of fixing)
 clippy        cargo clippy --all-targets -- -D warnings
-unit tests    cargo test — 36 tests, all in-tree, no external data
+unit tests    cargo test — 66 tests, all in-tree, no external data
 build         cargo build
-smoke: dump   reads sample/ end to end, asserts 6 headwords + real definition text
+smoke: dump   reads sample/ end to end, asserts 7 headwords + real definition text,
+              and that a closed pipe kills neither the output nor the process
 smoke: search the merged-index engine over sample/, asserts a prefix hit
-ui e2e        hack/e2e.py — the real widget tree, over at-spi
+ui e2e        hack/e2e.py — 29 checks against the real widget tree, over at-spi
 ```
 
 flags: `--fast` skips the ui stage (no display needed), `--ci` treats formatting as a
