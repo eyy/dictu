@@ -51,13 +51,17 @@ lost, the substance is not.
 
 ## later
 
-- **[ ] #42 fuzzy search, normalized keys, lemmas-only — see `docs/search-index-plan.md`.**
-  the plan of record for #33, #39, #12 and fuzzy matching. its claim is that none of them
-  need a new index structure or a database: normalization is a column on the existing sorted
-  index, lemmas-only is a bitset filtered in the same walk as the scope mask, attribution is
-  data `populate_results` already walks past, and fuzzy is a bounded scan run only when a
-  search finds nothing. `fst` and SQLite are recorded there as rejected-for-now with the
-  measurement that would reopen them. under independent review.
+- **[ ] #42 fuzzy search, typable greek and hebrew, lemmas-only — see
+  `docs/search-index-plan.md`.** the plan of record for #33, #39, #12 and fuzzy. no fst, no
+  database: a bounded scan measures **2.4 ms at 3 characters, 24 ms at 6, 57–67 ms worst
+  realistic case** over the real headwords in a release build, which is fast enough that
+  fuzzy needn't even be a fallback. independently reviewed, and the review overturned three
+  of the draft's premises against the actual files — worth reading before starting:
+  the byte-range lemma signal **does not exist** (100% singleton groups over 1,427,152 latin
+  `.idx` entries), NFC alone leaves **74,174 pointed hebrew headwords** untypable, and the
+  cheap-looking length filter passes 60% of the corpus at the modal query length. the signal
+  that does work — an inflection's entry opens with its lemma in bold — costs 333 ms and
+  turns `rex` from 27 rows into 1.
 
 
 
