@@ -19,8 +19,11 @@ pub struct Config {
     /// dictionaries; a path prefixed with `!` excludes anything under it (used
     /// to hide individual dicts the user removed from the panel). note this is
     /// the inverse of gitignore's `!` (which re-includes) — here `!` excludes.
-    /// exact string prefixes; paths aren't canonicalized, so keep includes and
-    /// excludes spelled the same way (no mixing a symlink with its target).
+    /// matching is by whole path components (`Path::starts_with`), **not** by
+    /// string prefix: excluding `.../Foo` does not exclude `.../Foo.dsl.dz`, so
+    /// name the file exactly when excluding one file out of a folder. paths
+    /// aren't canonicalized either, so keep includes and excludes spelled the
+    /// same way (no mixing a symlink with its target).
     #[serde(default)]
     pub dictionary_dirs: Vec<String>,
 }
@@ -560,5 +563,31 @@ theme = "dark"
             out, text,
             "a save rewrote the file it was meant to leave alone"
         );
+    }
+    /// the `!` rule matches whole path components, which is easy to get wrong when
+    /// excluding one file out of a folder — `Foo` does not exclude `Foo.dsl.dz`.
+    #[test]
+    fn an_exclude_matches_whole_components_not_string_prefixes() {
+        let root = std::env::temp_dir().join(format!("dictu-prefix-{}", std::process::id()));
+        let dir = root.join("lexicon");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("greek_or_1.ifo"), "").unwrap();
+        fs::write(dir.join("greek_or_2.ifo"), "").unwrap();
+
+        let root_s = root.to_string_lossy().into_owned();
+        let partial = format!("!{}", dir.join("greek_or_2").display());
+        assert_eq!(
+            scan(&[root_s.clone(), partial]).len(),
+            2,
+            "a partial file name excluded something"
+        );
+        let exact = format!("!{}", dir.join("greek_or_2.ifo").display());
+        assert_eq!(
+            scan(&[root_s, exact]).len(),
+            1,
+            "the exact file name did not"
+        );
+
+        fs::remove_dir_all(&root).ok();
     }
 }

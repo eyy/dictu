@@ -40,16 +40,6 @@ nothing open right now.
   written by the app — not by reordering `dictionary_dirs`, which is hand-written and
   commented, and which #38 deliberately only ever appends to.
 
-- **[ ] #44 better latin and greek dictionaries.** the whole reason #33 exists is that
-  `latin infl+lewis` is inflection-exploded: 1,427,152 entries for 1,223,585 headwords, each
-  inflection carrying its own copy of the definition, which is what makes `rex` return 27
-  rows. a lemma-keyed Lewis & Short would delete that problem rather than filter it. wanted:
-  the full LSJ, the Middle Liddell, a proper Lewis & Short — and, since both of those books
-  are 19th-century, whatever modern lexica (Cambridge Greek Lexicon, Montanari, OLD, TLL,
-  Gaffiot…) can be had legitimately offline. Whitaker's is not wanted at all once a real
-  Latin dictionary is in. **research is out; the choice is yours** — it comes back as a
-  comparison of concrete downloads with formats, entry counts, licences and effort.
-
 - **[ ] #33 wordlist: tell lemmas from inflections** (the other half of #15).
   **hold until #44 is decided.** phase D is worth 333 ms of index time to rescue an
   inflection-exploded dictionary; it is worth much less if that dictionary is replaced by a
@@ -58,11 +48,14 @@ nothing open right now.
   the noise is easy to see: `dictu search rex` returns 27 results, 26 of them inflections of
   one lemma. differentiate them in the row, and add a config option to hide inflections /
   search lemmas only.
-  **the `.syn` hypothesis is dead for the dictionary we kept** — measured while doing #19:
-  the Whitaker copies stored 34,443 lemmas in `.idx` and ~1.19M inflections in a 22 MB
-  `.syn`, which would have been a clean signal, but `latin infl+lewis` has no `.syn` at all
-  and puts all 1,223,585 forms directly in `.idx`. two signals survive, both worth a spike
-  before any ui work:
+  **the `.syn` hypothesis is alive again, and it is now the cheap answer** — #44 swapped the
+  dictionary that killed it. `latin infl+lewis` had no `.syn` and put all 1,223,585 forms
+  directly in `.idx`, which is what left only expensive signals; the Whitaker copy now
+  loaded stores 37,777 lemmas in `.idx` and 1.18M inflected forms in a 22 MB `.syn`. a
+  headword that came from a `.syn` alias *is* an inflection by construction, so "search
+  lemmas only" is a boolean per headword, decided at index time for free, instead of the
+  333 ms bold-lemma text pass. Lewis & Short beside it is one entry per lemma with no
+  inflections at all, so it needs no filtering. the two older signals, for the record:
   1. **shared byte ranges** — an inflection's `.idx` entry points at the *same* range as its
      lemma, so headwords can be grouped by range and the shortest of each group taken as the
      lemma (`amo` over `amare`/`amavi`; `dacrima` over `dacrimae`). costs a pass over ~1.2M
@@ -194,6 +187,8 @@ these are blocked on a decision or an action only you can take. nothing else wai
      though the unpointed one is what the query matched; the bare form is a search key, not
      a headword the user wants to read.
 
+  neither is a dictionary problem: #44 removed the duplicate LSJ build and `λόγος` still
+  shows two rows, because the remaining four dictionaries split 2/2 over oxia and tonos.
   both predate #12, which only made the first legible by putting a count on each half. the
   fix is one key: rows keyed on the **bare key** from #39, so every spelling of a lemma
   lands in one row, with the most-marked spelling winning the display. `lookup_all` has to
@@ -205,6 +200,37 @@ these are blocked on a decision or an action only you can take. nothing else wai
   already decides exactly that for search, and it is the same question here.
 
 ## done
+
+- **[x] #44 the collection, chosen.** researched, measured against what was already on
+  disk, and applied. **greek needed nothing bought**: the Liddell-Scott.dsl already here is
+  130,454 headwords against the best free LSJ build's 127,868, and the Middle Liddell here
+  is the only one that exists in dictionary form anywhere — Jacob Rosen's 2015 Perseus
+  build, unimproved in eleven years. what the collection did have was **two of everything**:
+  `Grc-Eng_L&S_..._or_2` is the same LSJ with the accents stripped from its headwords
+  (λόγος is 43,307 bytes there against 43,288 in the accented build — the same book), so it
+  answered every greek word a second time. excluded.
+  **latin was the whole problem.** `latin infl+lewis` filed 1,223,585 headwords for ~37,000
+  words, a copy of the definition pasted onto every inflected form. replaced by two files
+  that carry the same information without the duplication: **Lewis & Short 1879**
+  (latin-dict release v1.3, StarDict, 49,983 lemmas, CC BY-SA — `rex` is one entry of 5 KB
+  of real L&S prose with live citations) and **one of the two excluded Whitaker copies**,
+  re-included for its `.syn`: 1.18M inflected forms mapped onto 37,777 lemmas, so a form met
+  in a text still finds its word (`rexit` → 1 row, `dacrimarum` → 1 row).
+  added for the french side: **Bailly 2020** (Gréco/Charbonnet, 110,646 headwords, built
+  2025-11-03) — the best-edited free greek lexicon in existence and the only genuinely
+  modern one obtainable at all.
+  measured, whole collection: **1,825,792 headwords → 1,869,179** across 14 dictionaries,
+  warm start **0.44 s → 0.39 s**, peak RSS **335 MB → 326 MB**.
+  **`rex` still returns 27 rows** — say it plainly, since fixing it was the point. the 26
+  extra rows are `rexeram`, `rexerat`, `rexerint`…, real perfect-tense forms of *rego* that
+  genuinely begin with those three letters. no dictionary swap can hide them; only a lemma
+  filter can, which is #33 — and see there for why this swap is what makes #33 cheap.
+  **on modern lexica**, since it was asked: the intersection of "post-1950 scholarly
+  lexicon" and "file you can own" is Bailly 2020 and Gaffiot 2016, and nothing else. OLD,
+  TLL-as-data, BDAG, the Cambridge Greek Lexicon, Montanari, DGE, Niermeyer and de Vaan are
+  subscription or DRM'd app modules; Cambridge is not on Logeion at all and Logeion's
+  Montanari is letter λ only; the 1996 LSJ Supplement exists in one ~$101 Logos module; the
+  TLL's open access is real but PDF-with-OCR, not a dictionary file.
 
 - **[x] #38 saving `config.toml` keeps its comments.** `Config::save` rewrote the file
   through serde, which would have deleted the notes saying *why* the #19 Latin duplicates
