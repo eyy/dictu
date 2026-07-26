@@ -179,8 +179,9 @@ pub struct Built<'a> {
     pub name: &'a str,
     pub payload: &'a [u8],
     /// where a format's *aliases* begin in `entries` — StarDict appends its
-    /// `.syn` records after the `.idx` ones, and those records are the inflection
-    /// table (Whitaker files 1.18M forms that way). `None` means every entry is a
+    /// `.syn` records after the `.idx` ones, and those records are where a
+    /// dictionary files its inflected forms (Whitaker: 1.18M latin forms; 
+    /// a hebrew-hebrew dictionary: hebrew plurals and construct forms). `None` means every entry is a
     /// headword in its own right, which is true of every other format here.
     pub aliases_from: Option<usize>,
 }
@@ -407,9 +408,9 @@ impl Index {
     }
 
     /// whether the display headword at `index` is an alias the dictionary points
-    /// at one of its own entries — an inflection, in the one collection that has
-    /// any: Whitaker files 1.18M of them in a `.syn`. aliases sit after the
-    /// dictionary's own headwords in display order, so this is a comparison.
+    /// at one of its own entries — an inflected form, in the three dictionaries
+    /// here that ship a `.syn`. they sit after the dictionary's own headwords in
+    /// display order, so this is a comparison rather than a lookup.
     pub fn is_alias(&self, index: usize) -> bool {
         index >= self.n_lemmas
     }

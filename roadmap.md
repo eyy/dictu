@@ -197,6 +197,12 @@ these are blocked on a decision or an action only you can take. nothing else wai
   measured on the collection, rows before → after: `rex` **28 → 3**, `esse` **201 → 25**,
   `amo` **200 → 79**, `sam` **204 → 74**, `regis` **20 → 7**, and an inflection searched on
   its own (`dacrimarum`) **1 → 0**.
+  **it turns out to be a hebrew feature too**, which was not the plan — a review pointed out
+  that *three* loaded dictionaries ship a `.syn`, not one. a hebrew-hebrew dictionary files 2.9 MB of
+  plurals, construct forms and unpointed spellings that way (`כאבים` resolves to `כאב`'s
+  entry and says so: `מן כאב`), so: `כאב` **28 → 13**, `מלך` **29 → 19**, `אב` **252 → 215**.
+  greek is untouched — LSJ, Bailly, Dodson, Pindar and the Middle Liddell ship no `.syn`
+  between them, so `λόγος` reads the same either way.
   **it cost one number.** the plan budgeted 333 ms of index-time text analysis to find the
   lemmas, and #44 made that unnecessary: StarDict appends `.syn` records after the `.idx`
   ones, so a dictionary's own headwords and the forms it points at them are already

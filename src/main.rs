@@ -53,6 +53,12 @@ fn main() -> glib::ExitCode {
             raw.iter().any(|arg| arg == "--html"),
         );
     }
+    if subcommand == Some("aliascheck") {
+        return aliascheck(raw.get(2).map(String::as_str));
+    }
+    if subcommand == Some("sweep") {
+        return sweep_cli(raw.get(2).map(String::as_str));
+    }
     if subcommand == Some("search") {
         return search_cli(
             raw.get(2).map(String::as_str),
@@ -125,6 +131,68 @@ fn printing(
             glib::ExitCode::FAILURE
         }
     }
+}
+
+fn aliascheck(path: Option<&str>) -> glib::ExitCode {
+    let Some(path) = path else {
+        return glib::ExitCode::FAILURE;
+    };
+    let d = dict::open_any(std::path::Path::new(path), None).expect("open");
+    let words = d.headwords();
+    let n = words.len();
+    let flags: Vec<bool> = (0..n).map(|i| d.is_alias(i)).collect();
+    let boundary = flags.iter().position(|&f| f).unwrap_or(n);
+    let monotone = flags.iter().skip(boundary).all(|&f| f);
+    println!("n_display={n} boundary={boundary} monotone={monotone}");
+    println!(
+        "last lemmas: {:?}",
+        &words[boundary.saturating_sub(3)..boundary]
+    );
+    println!(
+        "first aliases: {:?}",
+        &words[boundary..(boundary + 3).min(n)]
+    );
+    // dump the whole lemma set so it can be diffed against the .idx
+    if let Ok(out) = std::env::var("DUMP_LEMMAS") {
+        let body: String = words[..boundary].join("\n");
+        std::fs::write(out, body).ok();
+    }
+    if let Ok(out) = std::env::var("DUMP_ALL") {
+        std::fs::write(out, words.join("\n")).ok();
+    }
+    glib::ExitCode::SUCCESS
+}
+
+fn sweep_cli(path: Option<&str>) -> glib::ExitCode {
+    let Some(path) = path else {
+        return glib::ExitCode::FAILURE;
+    };
+    let queries = std::fs::read_to_string(path).expect("queries file");
+    let config = config::Config::load_or_create().unwrap_or_default();
+    let entries = config::scan(&config.dictionary_dirs);
+    let lib = Library::open(&entries);
+    for q in queries.lines() {
+        let q = q.trim();
+        if q.is_empty() {
+            continue;
+        }
+        let all = lib.search(q, 5000, &[]);
+        let lem = lib.search_where(q, 5000, &[], true);
+        let kept: std::collections::HashSet<String> = lem.iter().map(|r| r.word.clone()).collect();
+        let lost: Vec<String> = all
+            .iter()
+            .filter(|r| !kept.contains(&r.word))
+            .map(|r| r.word.clone())
+            .collect();
+        println!(
+            "QUERY\t{}\t{}\t{}\tLOST:{}",
+            q,
+            all.len(),
+            lem.len(),
+            lost.join(" | ")
+        );
+    }
+    glib::ExitCode::SUCCESS
 }
 
 fn search_cli(query: Option<&str>, lemmas_only: bool) -> glib::ExitCode {
