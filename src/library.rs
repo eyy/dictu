@@ -381,7 +381,6 @@ mod tests {
         )
     }
 
-
     fn labelled(label: &str, internal: &str, words: &[&str]) -> Loaded {
         Loaded {
             label: label.into(),
