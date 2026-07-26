@@ -50,6 +50,19 @@ nothing open right now.
   that, not after: what the modules are, what each one owns, and which of today's `pub`
   surface is only public because everything lives in one file. the test for a good split
   here is whether the ui can be described without naming a dictionary format.
+  **do it by building a proper cli** (your idea, and the right one). the boundary is hard to
+  argue about in the abstract and trivial to see through a command line: whatever the cli
+  cannot reach is entangled with the ui, and whatever it can reach is the api the ui should
+  have been using. today's `dump` / `lookup <file> <word>` / `search <query>` are dev
+  affordances that take a *file* and bypass the collection entirely; a real one is
+  collection-shaped and mirrors what the app does — search returning rows with their
+  attribution, a word's definitions per dictionary, the scope listed and toggled, the index
+  built and inspected — with a machine-readable output mode beside the human one.
+  it pays for itself twice: the e2e harness currently drives at-spi for everything, at
+  ~40 s a run on a private display, because there is no other way to ask the app a
+  question. most of those checks are really about the search, not the widgets, and would
+  become fast, displayless assertions over cli output — leaving at-spi for the handful of
+  things that genuinely are about the ui.
 
 - **[ ] #45 let the user order the dictionaries, and sort results by that order.**
   the scope panel lists dictionaries in scan order (`config::scan` sorts by label) and the
