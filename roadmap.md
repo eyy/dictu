@@ -350,11 +350,9 @@ these are blocked on a decision or an action only you can take. nothing else wai
   **nothing is persisted, deliberately.** `Config::exclude` would have to `save`, and save
   rewrites `config.toml` through serde, discarding the comments that explain the #19/#34
   exclusions — see #38. permanent removal stays a hand edit; this panel is per-session.
-  **known limit:** the mask scopes the *wordlist*, not the definition pane —
-  `Library::lookup_all` still answers from every dictionary, so a word selected while a
-  dictionary is out of scope can still show that dictionary's definition. arguably right
-  (you asked for that word), but if it should follow the scope, that is a one-line change
-  where the pane is built.
+  the mask scopes the definition pane too, not just the wordlist: a dictionary that is out
+  of scope does not get to answer, and does not get named in the fold strip either. that
+  was not the original plan — see the review note below, which is where it came from.
 
   reviewed by two independent passes before merging, which between them found more than
   the feature: a library with **no** dictionaries was being reported as "0 dictionaries
