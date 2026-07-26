@@ -107,7 +107,11 @@ fn sample_hash(path: &Path, len: u64) -> String {
     };
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     let mut buf = vec![0u8; WINDOW as usize];
-    for start in [0, len.saturating_sub(WINDOW) / 2, len.saturating_sub(WINDOW)] {
+    for start in [
+        0,
+        len.saturating_sub(WINDOW) / 2,
+        len.saturating_sub(WINDOW),
+    ] {
         if file.seek(SeekFrom::Start(start)).is_err() {
             continue;
         }
