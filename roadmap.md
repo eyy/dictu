@@ -104,8 +104,8 @@ these are blocked on a decision or an action only you can take. nothing else wai
   cheap-looking length filter passes 60% of the corpus at the modal query length. the signal
   that does work — an inflection's entry opens with its lemma in bold — costs 333 ms and
   turns `rex` from 27 rows into 1.
-  **phase A (normalized keys) has landed** — see #39. what remains is B (attribution, #12,
-  part-built on `eyy/dict-attribution`), C (the fuzzy scan) and D (lemma detection, #33).
+  **phases A (normalized keys, #39) and B (attribution, #12) have landed.** what remains is
+  C (the fuzzy scan) and D (lemma detection, #33).
 
 
 
@@ -192,15 +192,38 @@ these are blocked on a decision or an action only you can take. nothing else wai
   (already in the tree as toml 0.8's own dependency) preserves comments and layout; the
   test that proves it has to round-trip a commented fixture, not a generated one.
 
-- **[ ] #12 unified search ui (results across dictionaries).**
-  largely delivered by #11. what's left is presentation: a row shows the tag of only the
-  *first* dictionary that had the word, even when the definition pane goes on to show
-  several — the row should say when more than one dictionary answers. (this was visible as
-  `rex` reading `FR`; excluding that dictionary in #34 hid the symptom, not the cause.) and
-  deduping the same headword across dictionaries more intelligently than the current
-  lowercase `HashSet`.
+- **[ ] #43 spellings of one lemma should be one row.** two shapes of the same bug, because
+  the wordlist dedups on the raw lowercased word and so never lets variants meet:
+  1. **invisible duplicates.** `λόγος` returns **two** rows that read identically, each
+     tagged `·2`: Liddell&Scott and Pindar spell it one way, Dodson and Middle Liddell the
+     other (oxia vs tonos, NFC vs NFD). nothing on screen distinguishes them.
+  2. **pointed and unpointed side by side** (your report). `כאב` lists both `כְּאֵב לֵב` and
+     `כאב לב` — one lemma, written twice. **the pointed spelling is the one to show**, even
+     though the unpointed one is what the query matched; the bare form is a search key, not
+     a headword the user wants to read.
+
+  both predate #12, which only made the first legible by putting a count on each half. the
+  fix is one key: rows keyed on the **bare key** from #39, so every spelling of a lemma
+  lands in one row, with the most-marked spelling winning the display. `lookup_all` has to
+  follow in the same change, because it matches the exact spelling today and that is
+  precisely what keeps a row's count honest — a merged row over today's lookup would claim
+  four dictionaries and then show two. "most marked wins" needs a rule for ties (two
+  differently-pointed spellings, `מֶלֶךְ` vs `מָלָךְ`, are *not* one lemma and must stay
+  apart), so the merge is by identical bare key **and** compatible marks — `keys::marks_allow`
+  already decides exactly that for search, and it is the same question here.
 
 ## done
+
+- **[x] #12 say which dictionaries answer.** a wordlist row used to wear the tag of the
+  first dictionary that had the word and silently drop the rest; it now counts them —
+  `GRC ·4` — and names them in its tooltip. the trap was in the search, not the ui:
+  `prefix_search`'s limit counted index *entries*, so a dense prefix could cut a word in
+  half and leave a row claiming two dictionaries when three define it. the limit now counts
+  rows and stops only at a key boundary, which costs nothing because entries sharing a key
+  are contiguous. a row counts only the dictionaries that have the spelling it *shows*,
+  because selecting it looks that spelling up — a count the pane then contradicts would be
+  worse than no count. verified against the real collection: four truncating prefixes,
+  601 rows, every row's list identical to `lookup_all`'s (see #43 for what is left).
 
 - **[x] #13 DSL (ABBYY Lingvo) reader.** `src/dict/dsl.rs`. the collection's nine `.dsl` /
   `.dsl.dz` files load — 471,446 headwords, a third more than the app could read before —

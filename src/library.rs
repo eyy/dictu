@@ -13,6 +13,7 @@
 //! so it is persisted too, and mapped straight back when the collection hasn't
 //! changed (`index_cache::Order`, roadmap #7).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::config::DictEntry;
@@ -112,10 +113,16 @@ impl Library {
         self.sorted.count()
     }
 
-    /// fast prefix search over the merged index: up to `limit` hits, O(log n) to
-    /// locate each run + O(limit) to collect. `active` scopes the search — a hit
-    /// is skipped when `active[dict]` is false (missing/short `active` =
-    /// included, so `&[]` means "all dicts").
+    /// fast prefix search over the merged index: O(log n) to locate the run +
+    /// O(limit) to collect. `active` scopes the search — a hit is skipped when
+    /// `active[dict]` is false (missing/short `active` = included, so `&[]` means
+    /// "all dicts").
+    ///
+    /// **`limit` counts rows, not hits, and bounds neither exactly.** the walk
+    /// stops at the first key boundary past `limit` distinct words, so it returns
+    /// one hit per dictionary holding each word, and up to one extra row for every
+    /// other word sharing that last key. the overshoot is the point: stopping mid-key
+    /// would hand back a word whose dictionaries had not all been seen.
     ///
     /// the search is **asymmetric in how specific the query is**. it runs on the
     /// bare key, which ignores every diacritic on both sides, so `מלך` reaches
@@ -151,9 +158,23 @@ impl Library {
         }
 
         let mut hits = Vec::new();
+        // the limit counts rows, not index entries: the wordlist shows one row per
+        // word and names every dictionary that has it (#12), so a walk that cut off
+        // mid-word would let a row claim two dictionaries when three define it.
+        // entries sharing a key are contiguous and a word has only one key, so
+        // stopping at a key boundary leaves no row half-attributed.
+        let mut rows: HashSet<String> = HashSet::new();
+        let mut run: &[u8] = &[];
         for i in lo..self.sorted.count() {
-            if !self.sorted.key(i).starts_with(needle) {
+            let key = self.sorted.key(i);
+            if !key.starts_with(needle) {
                 break; // sorted, so the prefix run has ended.
+            }
+            if key != run {
+                if rows.len() >= limit {
+                    break;
+                }
+                run = key;
             }
             let Some((d, h)) = self.locate(self.sorted.slot(i)) else {
                 continue; // a corrupt order names no dictionary; skip it.
@@ -165,13 +186,13 @@ impl Library {
             if marked && !keys::marks_allow(&fold, word) {
                 continue; // the headword contradicts a diacritic the query typed.
             }
+            // lowercased to match the wordlist's own dedup, so the count the ui
+            // shows and the limit the walk enforces are the same number.
+            rows.insert(word.to_lowercase());
             hits.push(Hit {
                 word: word.to_string(),
                 dict: d as usize,
             });
-            if hits.len() >= limit {
-                break;
-            }
         }
         hits
     }
@@ -439,7 +460,9 @@ mod tests {
     #[test]
     fn prefix_search_respects_limit_and_empty() {
         assert!(lib().prefix_search("", 10, &[]).is_empty());
-        assert_eq!(lib().prefix_search("ap", 2, &[]).len(), 2);
+        // the limit counts rows, and "Apple"/"apple" share one bare key, so a limit
+        // of 2 admits that whole run plus "apricot" — three entries, two rows.
+        assert_eq!(lib().prefix_search("ap", 2, &[]).len(), 3);
         assert!(lib().prefix_search("zzz", 10, &[]).is_empty());
         // a query of nothing but combining marks bares down to an empty key,
         // which must not read as "every word".
@@ -502,6 +525,56 @@ mod tests {
         assert_eq!(words_of(&library, "λόγος"), ["λόγος"]);
         // and a headword is never listed twice for matching in several ways.
         assert_eq!(words_of(&library, "λόγοσ"), ["λόγος"]);
+    }
+
+    /// roadmap #12: a row names every dictionary that has its word, so the limit
+    /// may never cut a word in half. the case that matters is one *spelling* held
+    /// by two dictionaries — that is the row whose count would be wrong — so this
+    /// fixture files `logos` identically in both, which `lib()` does not.
+    #[test]
+    fn the_limit_never_truncates_a_word_mid_way() {
+        let shared = Library::from_loaded(
+            vec![
+                Loaded {
+                    label: "A".into(),
+                    dict: Box::new(Mock {
+                        internal: "mock".into(),
+                        words: vec!["logos".into(), "logotype".into()],
+                    }),
+                },
+                Loaded {
+                    label: "B".into(),
+                    dict: Box::new(Mock {
+                        internal: "mock".into(),
+                        words: vec!["logos".into()],
+                    }),
+                },
+            ],
+            &[],
+            None,
+        );
+
+        // one row's worth of limit, and the row is the last thing the walk sees:
+        // both dictionaries' entries for it still have to come back.
+        let hits = shared.prefix_search("log", 1, &[]);
+        let words: Vec<&str> = hits.iter().map(|h| h.word.as_str()).collect();
+        assert_eq!(words, ["logos", "logos"], "the shared spelling, twice");
+        let mut dicts: Vec<usize> = hits.iter().map(|h| h.dict).collect();
+        dicts.sort_unstable();
+        assert_eq!(dicts, [0, 1], "both dictionaries answer for the one row");
+        // and the run it stopped in is complete, not spilled into the next word.
+        assert!(!words.contains(&"logotype"));
+    }
+
+    /// the case-variant rule, which is the other half of #12 and not the same
+    /// thing: `Apple` and `apple` share a key and a row, but a row is attributed
+    /// by the spelling it shows, so the ui counts one dictionary for it, not two.
+    #[test]
+    fn a_key_run_can_hold_two_spellings() {
+        let hits = lib().prefix_search("ap", 1, &[]);
+        let words: Vec<&str> = hits.iter().map(|h| h.word.as_str()).collect();
+        assert_eq!(words, ["Apple", "apple"], "one key run, two spellings");
+        assert_ne!(hits[0].dict, hits[1].dict);
     }
 
     #[test]

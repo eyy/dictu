@@ -611,6 +611,33 @@ def main():
             f"expected ['sample'], got {fallback}",
         )
 
+        # roadmap #12: a row names every dictionary that has its word, not just the
+        # first one found. "byte" is in both fixtures — and filed twice in the dictd
+        # one, which must still count as one dictionary answering.
+        # wait for the row itself before reading its tag: the search entry debounces,
+        # so a tag read straight after `forward` can still be the last query's.
+        app_proc.forward("--search", "byte")
+        wait_for(lambda: [w for w in widgets.row_words() if w] == ["byte"] or None, 10, "the byte row")
+        both = widgets.row_tags()
+        r.check(
+            "a row counts every dictionary that has the word",
+            both == ["·2"],
+            f"expected ['·2'], got {both}",
+        )
+        # and a word only one dictionary has says nothing about a count.
+        app_proc.forward("--search", "aardvark")
+        wait_for(
+            lambda: [w for w in widgets.row_words() if w] == ["aardvark"] or None,
+            10,
+            "the aardvark row",
+        )
+        alone = widgets.row_tags()
+        r.check(
+            "one dictionary is left uncounted",
+            alone == ["sample"],
+            f"expected ['sample'], got {alone}",
+        )
+
         # roadmap #36: a search arriving from outside (the global hotkey's
         # `--search`) selects its first result by itself, so the window shows a
         # definition rather than a list to click. focus must stay in the search box.
@@ -685,6 +712,34 @@ def main():
             rows == [("links", "6 headwords"), ("sample", "7 headwords")],
             f"panel rows read {rows}",
         )
+
+        # roadmap #12: deselecting a dictionary while its definition is on screen has
+        # to take that definition off the screen too. the row's count updates either
+        # way, so a pane left behind would contradict the number beside it.
+        close_scope(node)
+        app_proc.forward("--search", "byte")  # in both fixtures, and auto-selected
+        wait_for(
+            lambda: "Sense 1" in widgets.definition_text() or None,
+            10,
+            "both dictionaries' definitions of byte",
+        )
+        open_scope(node)
+        toggle_scope(app_proc, node, "links")
+        pane = wait_for(
+            lambda: widgets.definition_text()
+            if "Sense 1" not in widgets.definition_text()
+            else None,
+            10,
+            "the deselected dictionary to leave the definition pane",
+        )
+        r.check(
+            "deselecting a dictionary clears its definition from the pane",
+            "eight bits" in pane and widgets.row_tags() == ["sample"],
+            f"pane={pane[:80]!r}, tags={widgets.row_tags()}",
+        )
+        toggle_scope(app_proc, node, "links")
+        app_proc.forward("--search", "")
+        wait_for(lambda: widgets.status_line() == IDLE_STATUS or None, 10, "the idle status line")
 
         toggle_scope(app_proc, node, "sample")
         narrowed = wait_for(
