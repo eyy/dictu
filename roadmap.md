@@ -70,15 +70,20 @@ these are blocked on a decision or an action only you can take. nothing else wai
   cheap-looking length filter passes 60% of the corpus at the modal query length. the signal
   that does work — an inflection's entry opens with its lemma in bold — costs 333 ms and
   turns `rex` from 27 rows into 1.
+  **phase A (normalized keys) has landed** — see #39. what remains is B (attribution, #12,
+  part-built on `eyy/dict-attribution`), C (the fuzzy scan) and D (lemma detection, #33).
 
 
 
-- **[ ] #39 lookup matches exact bytes, so Greek can't be typed.** Dodson stores 4,686 of
-  its headwords in non-NFC form (`ό` as U+1F79 oxia), and every greek keyboard — and every
-  other greek dictionary here — produces U+03CC tonos, which finds nothing. HALOT adds 3,259
-  headwords with non-canonical hebrew mark order. app-wide, not DSL's doing: `lookup` is an
-  exact `HashMap` hit and `prefix_search` only lowercases. normalise both the index key and
-  the query to NFC in `Library`, where every format benefits at once.
+- **[x] #39 greek and hebrew are typable.** the index now sorts and searches on a bare key —
+  NFC, then full case folding, then combining marks dropped — so a tonos query reaches Dodson's
+  oxia headwords, a medial sigma reaches a final one, and an unpointed hebrew query reaches the
+  74,174 pointed headwords that have no unpointed spelling anywhere in the collection.
+  diacritics still mean something: a query that spells them out only matches headwords whose
+  marks are a superset of its own, so `מֶלֶךְ` no longer answers with `מָלָךְ` while `מֶלך`,
+  pointed half way, still reaches `מֶלֶךְ`. the same holds for greek accents and for latin
+  macrons. phase A of `docs/search-index-plan.md`; the cache format version is bumped, since a
+  warm start would otherwise binary-search an order sorted by the old key.
 
 - **[x] #40 two dictionaries can share one name.** labels come from the parent folder, and a
   folder can hold two dictionaries: Klein's lexicon sits beside its own abbreviations list, so
