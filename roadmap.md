@@ -110,9 +110,16 @@ nothing open right now.
 
 these are blocked on a decision or an action only you can take. nothing else waits on them.
 
-- **#37 Wiktionary, phase A** — the cheap path is dropping a prebuilt StarDict build of the
-  language pair you want into the collection, which needs (a) picking the languages and
-  (b) a download. both are yours; the app needs no change to read them.
+- **#37 Wiktionary, phase A** — **languages chosen: french, spanish, latin, ancient greek,
+  german** (all into english). the cheap path is dropping a prebuilt StarDict build of each
+  pair into the collection; the app needs no change to read them, so what remains is finding
+  builds worth having and downloading them. note two of those overlap with dictionaries you
+  now own — Gaffiot and Lewis & Short for latin, LSJ and Bailly for greek — so wiktionary
+  earns its place there only for coverage those miss (late, medieval and technical words),
+  while for french, spanish and german it is the whole offering. scale check from the plan:
+  french-from-english alone is 388,993 forms, so five pairs is roughly +1.2M headwords on
+  top of today's 1.94M — worth measuring against the fuzzy budget in #42 before adding all
+  five at once.
 - **a look at the real window.** the harness screenshots on a private display with the cairo
   renderer, so it cannot show a wayland client-side-decoration or gl-renderer problem. if
   something looks wrong on your actual desktop that the screenshots don't reproduce, that is
