@@ -13,6 +13,7 @@
 //! so it is persisted too, and mapped straight back when the collection hasn't
 //! changed (`index_cache::Order`, roadmap #7).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::config::DictEntry;
@@ -151,9 +152,23 @@ impl Library {
         }
 
         let mut hits = Vec::new();
+        // the limit counts rows, not index entries: the wordlist shows one row per
+        // word and names every dictionary that has it (#12), so a walk that cut off
+        // mid-word would let a row claim two dictionaries when three define it.
+        // entries sharing a key are contiguous and a word has only one key, so
+        // stopping at a key boundary leaves no row half-attributed.
+        let mut rows: HashSet<String> = HashSet::new();
+        let mut run: &[u8] = &[];
         for i in lo..self.sorted.count() {
-            if !self.sorted.key(i).starts_with(needle) {
+            let key = self.sorted.key(i);
+            if !key.starts_with(needle) {
                 break; // sorted, so the prefix run has ended.
+            }
+            if key != run {
+                if rows.len() >= limit {
+                    break;
+                }
+                run = key;
             }
             let Some((d, h)) = self.locate(self.sorted.slot(i)) else {
                 continue; // a corrupt order names no dictionary; skip it.
@@ -165,13 +180,13 @@ impl Library {
             if marked && !keys::marks_allow(&fold, word) {
                 continue; // the headword contradicts a diacritic the query typed.
             }
+            // lowercased to match the wordlist's own dedup, so the count the ui
+            // shows and the limit the walk enforces are the same number.
+            rows.insert(word.to_lowercase());
             hits.push(Hit {
                 word: word.to_string(),
                 dict: d as usize,
             });
-            if hits.len() >= limit {
-                break;
-            }
         }
         hits
     }
@@ -439,7 +454,9 @@ mod tests {
     #[test]
     fn prefix_search_respects_limit_and_empty() {
         assert!(lib().prefix_search("", 10, &[]).is_empty());
-        assert_eq!(lib().prefix_search("ap", 2, &[]).len(), 2);
+        // the limit counts rows: "Apple"/"apple" are one row from two dicts, so a
+        // limit of 2 admits them plus "apricot" — three entries, two rows.
+        assert_eq!(lib().prefix_search("ap", 2, &[]).len(), 3);
         assert!(lib().prefix_search("zzz", 10, &[]).is_empty());
         // a query of nothing but combining marks bares down to an empty key,
         // which must not read as "every word".
@@ -502,6 +519,19 @@ mod tests {
         assert_eq!(words_of(&library, "λόγος"), ["λόγος"]);
         // and a headword is never listed twice for matching in several ways.
         assert_eq!(words_of(&library, "λόγοσ"), ["λόγος"]);
+    }
+
+    /// roadmap #12: a row names every dictionary that has its word, so the limit
+    /// may never cut a word in half — one row's worth of limit still has to
+    /// return both dictionaries' entries for that row.
+    #[test]
+    fn the_limit_never_truncates_a_word_mid_way() {
+        let hits = lib().prefix_search("ap", 1, &[]);
+        let words: Vec<&str> = hits.iter().map(|h| h.word.as_str()).collect();
+        assert_eq!(words, ["Apple", "apple"]);
+        let mut dicts: Vec<usize> = hits.iter().map(|h| h.dict).collect();
+        dicts.sort_unstable();
+        assert_eq!(dicts, [0, 1], "both dictionaries answer for the one row");
     }
 
     #[test]

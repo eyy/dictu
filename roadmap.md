@@ -70,8 +70,8 @@ these are blocked on a decision or an action only you can take. nothing else wai
   cheap-looking length filter passes 60% of the corpus at the modal query length. the signal
   that does work — an inflection's entry opens with its lemma in bold — costs 333 ms and
   turns `rex` from 27 rows into 1.
-  **phase A (normalized keys) has landed** — see #39. what remains is B (attribution, #12,
-  part-built on `eyy/dict-attribution`), C (the fuzzy scan) and D (lemma detection, #33).
+  **phases A (normalized keys, #39) and B (attribution, #12) have landed.** what remains is
+  C (the fuzzy scan) and D (lemma detection, #33).
 
 
 
@@ -158,15 +158,27 @@ these are blocked on a decision or an action only you can take. nothing else wai
   (already in the tree as toml 0.8's own dependency) preserves comments and layout; the
   test that proves it has to round-trip a commented fixture, not a generated one.
 
-- **[ ] #12 unified search ui (results across dictionaries).**
-  largely delivered by #11. what's left is presentation: a row shows the tag of only the
-  *first* dictionary that had the word, even when the definition pane goes on to show
-  several — the row should say when more than one dictionary answers. (this was visible as
-  `rex` reading `FR`; excluding that dictionary in #34 hid the symptom, not the cause.) and
-  deduping the same headword across dictionaries more intelligently than the current
-  lowercase `HashSet`.
+- **[ ] #43 rows that differ only in normalization should be one row.** searching `λόγος`
+  returns **two** rows that read identically, each tagged `GRC ·2`: Liddell&Scott and Pindar
+  spell it one way, Dodson and Middle Liddell the other (oxia vs tonos, NFC vs NFD). the
+  wordlist dedups on the raw lowercased word, so the variants never meet. this predates #12,
+  which only made it legible by putting a count on each half. merging them means keying rows
+  on the bare key from #39 — and then `lookup_all` has to follow, because it matches the
+  exact spelling today and that is precisely what keeps each row's count honest. do both or
+  neither: a merged row over today's lookup would claim four dictionaries and then show two.
 
 ## done
+
+- **[x] #12 say which dictionaries answer.** a wordlist row used to wear the tag of the
+  first dictionary that had the word and silently drop the rest; it now counts them —
+  `GRC ·4` — and names them in its tooltip. the trap was in the search, not the ui:
+  `prefix_search`'s limit counted index *entries*, so a dense prefix could cut a word in
+  half and leave a row claiming two dictionaries when three define it. the limit now counts
+  rows and stops only at a key boundary, which costs nothing because entries sharing a key
+  are contiguous. a row counts only the dictionaries that have the spelling it *shows*,
+  because selecting it looks that spelling up — a count the pane then contradicts would be
+  worse than no count. verified against the real collection: four truncating prefixes,
+  601 rows, every row's list identical to `lookup_all`'s (see #43 for what is left).
 
 - **[x] #13 DSL (ABBYY Lingvo) reader.** `src/dict/dsl.rs`. the collection's nine `.dsl` /
   `.dsl.dz` files load — 471,446 headwords, a third more than the app could read before —

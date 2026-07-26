@@ -184,8 +184,14 @@ counting the limit in distinct words.
   `VERSION` leaves the mapped merged order sorted by the old key and binary-searched with
   the new one, which is wrong results for anyone with a warm cache and green CI for everyone
   else.
-- **B — attribution (#12).** gate: a fixture headword both fixtures define reports both,
-  *and* a dense prefix past the 500-entry limit still reports correctly.
+- **B — attribution (#12). done.** the limit counts rows and stops only at a key boundary,
+  so no row is half-attributed; a row counts the dictionaries that have the spelling it
+  shows, matching what selecting it looks up. gate met both ways: the fixtures' shared
+  "byte" reports two dictionaries (filed twice in one of them, counted once), and over the
+  real collection four truncating prefixes returned 601 rows whose dictionary lists were
+  identical to `lookup_all`'s. one thing the gate exposed: `λόγος` is two
+  visually identical rows, tagged `GRC ·2` each — normalization variants that the wordlist
+  never merged. pre-existing, now legible, tracked as roadmap #43.
 - **C — fuzzy.** gate: the four measurements above reproduced in a release build on this
   collection; the scan runs off the main thread; a newer query cancels an in-flight one; a
   one-character typo finds the word.

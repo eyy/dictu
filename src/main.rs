@@ -6,7 +6,8 @@
 // at once; a result shows its definition from each dict that has it.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::io::{self, Write};
 use std::path::Path;
 use std::rc::{Rc, Weak};
@@ -303,20 +304,44 @@ impl UiInner {
         }
 
         let hits = library.prefix_search(query, SEARCH_LIMIT, &self.scope.borrow());
-        let mut seen = HashSet::new();
-        self.words.borrow_mut().clear();
+        // one row per word, naming every dictionary that has it (#12). the search
+        // stops only at a word boundary, so no row here is missing a dictionary
+        // that the walk simply never reached.
+        let mut rows: Vec<(&str, Vec<usize>)> = Vec::new();
+        let mut at: HashMap<String, usize> = HashMap::new();
         for hit in &hits {
-            if !seen.insert(hit.word.to_lowercase()) {
-                continue;
+            match at.entry(hit.word.to_lowercase()) {
+                Entry::Vacant(slot) => {
+                    slot.insert(rows.len());
+                    rows.push((&hit.word, vec![hit.dict]));
+                }
+                Entry::Occupied(slot) => {
+                    let (word, dicts) = &mut rows[*slot.get()];
+                    // rows dedup case-insensitively, but selecting one looks up the
+                    // spelling it shows — so a dictionary that files "ab" is not an
+                    // answer for a row reading "AB", and counting it here would
+                    // promise a definition the pane then doesn't show.
+                    // a dictionary that files one word twice still answers once.
+                    if hit.word == *word && !dicts.contains(&hit.dict) {
+                        dicts.push(hit.dict);
+                    }
+                }
             }
-            let dict_name = library.dict_label(hit.dict).unwrap_or("");
-            self.words.borrow_mut().push(hit.word.clone());
-            self.results.append(&word_row(&hit.word, dict_name));
+        }
+
+        self.words.borrow_mut().clear();
+        for (word, dicts) in &rows {
+            let names: Vec<&str> = dicts
+                .iter()
+                .map(|&d| library.dict_label(d).unwrap_or(""))
+                .collect();
+            self.words.borrow_mut().push((*word).to_string());
+            self.results.append(&word_row(word, &names));
             // name the row after its word: the row is a box of two labels now, so
             // without this a screen reader (and the e2e harness) would read the
             // language tag as part of the entry.
             if let Some(row) = self.results.last_child().and_downcast::<gtk::ListBoxRow>() {
-                row.update_property(&[gtk::accessible::Property::Label(&hit.word)]);
+                row.update_property(&[gtk::accessible::Property::Label(word)]);
             }
         }
 
@@ -325,16 +350,15 @@ impl UiInner {
             self.show_library_size();
             return;
         }
-        if seen.is_empty() {
+        if rows.is_empty() {
             self.set_message(&format!("No matches for “{query}”."));
         }
-        // count what the list actually shows (deduped), not index entries. the
-        // search stops at SEARCH_LIMIT, so say "500+" instead of pretending 500
-        // is the whole truth.
-        let counted = if hits.len() >= SEARCH_LIMIT {
-            format!("{}+ results", thousands(seen.len()))
+        // the search counts rows too, so hitting the limit is the same number the
+        // list shows: say "500+" rather than pretending 500 is the whole truth.
+        let counted = if rows.len() >= SEARCH_LIMIT {
+            format!("{}+ results", thousands(rows.len()))
         } else {
-            quantity(seen.len(), "result", "results")
+            quantity(rows.len(), "result", "results")
         };
         // and name the scope when it isn't the whole library, so the count can't be
         // read as "this is all your dictionaries have".
@@ -1171,7 +1195,10 @@ fn toolbar_with(header: &adw::HeaderBar, content: &impl IsA<gtk::Widget>) -> adw
 
 /// one wordlist row: the word, and a dim tag saying which language it is — or which
 /// dictionary, when the language can't be named (see `language::tag`).
-fn word_row(word: &str, dict_name: &str) -> gtk::Box {
+/// a wordlist row: the word, and a dim tag naming its language (or, when the script
+/// names none, the dictionary). `dicts` is every dictionary that has the word, in
+/// index order; the tag counts them and the tooltip names them.
+fn word_row(word: &str, dicts: &[&str]) -> gtk::Box {
     let label = gtk::Label::builder()
         .label(word)
         .xalign(0.0)
@@ -1180,11 +1207,18 @@ fn word_row(word: &str, dict_name: &str) -> gtk::Box {
         .hexpand(true)
         .build();
 
+    let first = dicts.first().copied().unwrap_or("");
+    let named = language::tag(word, first).unwrap_or(first);
+    // the count rather than the names: a word the collection covers well is answered
+    // by five dictionaries whose names would not fit, and the tooltip has them.
     let tag = gtk::Label::builder()
-        .label(language::tag(word, dict_name).unwrap_or(dict_name))
+        .label(match dicts.len() {
+            0 | 1 => named.to_string(),
+            n => format!("{named} ·{n}"),
+        })
         .xalign(1.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
-        .tooltip_text(dict_name)
+        .tooltip_text(dicts.join("\n"))
         .max_width_chars(12)
         .build();
     tag.add_css_class("dim-label");

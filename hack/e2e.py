@@ -611,6 +611,25 @@ def main():
             f"expected ['sample'], got {fallback}",
         )
 
+        # roadmap #12: a row names every dictionary that has its word, not just the
+        # first one found. "byte" is in both fixtures — and filed twice in the dictd
+        # one, which must still count as one dictionary answering.
+        app_proc.forward("--search", "byte")
+        both = wait_for(lambda: widgets.row_tags() or None, 10, "the attribution tag")
+        r.check(
+            "a row counts every dictionary that has the word",
+            len(both) == 1 and both[0].endswith("·2"),
+            f"expected one tag ending in '·2', got {both}",
+        )
+        # and a word only one dictionary has says nothing about a count.
+        app_proc.forward("--search", "aardvark")
+        alone = wait_for(lambda: widgets.row_tags() or None, 10, "the single-dict tag")
+        r.check(
+            "one dictionary is left uncounted",
+            alone == ["sample"],
+            f"expected ['sample'], got {alone}",
+        )
+
         # roadmap #36: a search arriving from outside (the global hotkey's
         # `--search`) selects its first result by itself, so the window shows a
         # definition rather than a list to click. focus must stay in the search box.
