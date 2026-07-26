@@ -186,6 +186,12 @@ these are blocked on a decision or an action only you can take. nothing else wai
      `כאב לב` — one lemma, written twice. **the pointed spelling is the one to show**, even
      though the unpointed one is what the query matched; the bare form is a search key, not
      a headword the user wants to read.
+  3. **homograph suffixes baked into a headword.** Gaffiot 2016 files 7,023 of its 72,165
+     keys as `rex (1)`, `Rex (2)`, `a (1)`, so `rex` now returns a `rex` row *and* a
+     `rex (1)` row and a `Rex (2)` row. prefix search reaches them, which is why the
+     dictionary is usable at all, but they read as three words when they are one. stripping
+     a trailing ` (n)` for the row key is a normalization like any other — it just isn't a
+     unicode one.
 
   neither is a dictionary problem: #44 removed the duplicate LSJ build and `λόγος` still
   shows two rows, because the remaining four dictionaries split 2/2 over oxia and tonos.
@@ -216,10 +222,17 @@ these are blocked on a decision or an action only you can take. nothing else wai
   of real L&S prose with live citations) and **one of the two excluded Whitaker copies**,
   re-included for its `.syn`: 1.18M inflected forms mapped onto 37,777 lemmas, so a form met
   in a text still finds its word (`rexit` → 1 row, `dacrimarum` → 1 row).
-  added for the french side: **Bailly 2020** (Gréco/Charbonnet, 110,646 headwords, built
-  2025-11-03) — the best-edited free greek lexicon in existence and the only genuinely
-  modern one obtainable at all.
-  measured, whole collection: **1,825,792 headwords → 1,869,179** across 14 dictionaries,
+  added for the french side, both modern re-editions and the only two post-1950 lexica that
+  exist as files at all: **Bailly 2020** (Gréco/Charbonnet, 110,646 headwords, built
+  2025-11-03, the best-edited free greek lexicon there is) and **Gaffiot 2016** (72,165
+  entries, revised vowel quantities and corrected references). Gaffiot is only obtainable
+  from the internet archive — canadienfrancais.org rebuilt its site and dropped the whole
+  uploads tree, while Gréco's own page still points at the dead link — so the file is the
+  publisher's original bytes served by
+  `web.archive.org/web/20180831042849id_/…/Gaffiot2016Stardict-v1.3-Desktop.zip`
+  (6,398,397 B, CC BY-NC-ND, fine for private use). no newer StarDict build exists; Gréco's
+  current formats are Epwing, Dictan and PDF, none of which we read.
+  measured, whole collection: **1,825,792 headwords → 1,941,344** across 15 dictionaries,
   warm start **0.44 s → 0.39 s**, peak RSS **335 MB → 326 MB**.
   **`rex` still returns 27 rows** — say it plainly, since fixing it was the point. the 26
   extra rows are `rexeram`, `rexerat`, `rexerint`…, real perfect-tense forms of *rego* that
