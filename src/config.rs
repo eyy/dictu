@@ -103,41 +103,87 @@ impl Config {
             .context("dictionary_dirs is in the config but is not an array")?;
 
         // whether the file writes one entry per line. keep whichever it chose —
-        // reflowing an inline array is a change nobody asked for — and note it
+        // reflowing an inline array is a change nobody asked for — and read it
         // before editing, since the entry that proves it may be the one removed.
-        let broke_lines = array.iter().any(|v| {
-            v.decor()
-                .prefix()
-                .and_then(|p| p.as_str())
-                .is_some_and(|p| p.contains('\n'))
-        });
+        let mut lines = array.iter().any(|value| prefix_of(value).contains('\n'))
+            || array.trailing().as_str().is_some_and(|t| t.contains('\n'));
+        lines |= existing.is_none() && self.dictionary_dirs.len() > 1;
 
-        // keep the entries that are still wanted, in the file's own order, with
-        // their comments; drop the rest; append what is new. a value we can't read
-        // as a string is left alone rather than dropped: we don't know what it is,
-        // and deleting it is the one thing this function exists not to do.
-        rescue_trailing_comments(array, |s| self.has_dir(s));
-        array.retain(|value| value.as_str().is_none_or(|s| self.has_dir(s)));
-        let present: Vec<String> = array
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_owned))
-            .collect();
+        // take the entries out: from here the layout is ours to write back.
+        let mut items: Vec<Value> = array.iter().cloned().collect();
+        let mut trailing = array.trailing().as_str().unwrap_or("").to_owned();
+        let indent = indent_of(&items);
+        // every comment above the entry it is about, so that removing an entry
+        // removes its comments and only its comments.
+        let header = hoist_comments(&mut items, &mut trailing, &indent);
+
+        // rebuild in the order `self` asks for, each surviving entry keeping the
+        // decor — its comments — it came with. rebuilding rather than filtering is
+        // what makes the file follow a reordered list, and collapses a duplicate
+        // the file happened to hold twice.
+        let mut taken = vec![false; items.len()];
+        let mut wanted: Vec<Value> = Vec::new();
         for dir in &self.dictionary_dirs {
-            if !present.contains(dir) {
-                array.push(dir.as_str());
+            let found = items
+                .iter()
+                .position(|value| value.as_str() == Some(dir.as_str()));
+            match found.filter(|i| !taken[*i]) {
+                Some(i) => {
+                    taken[i] = true;
+                    wanted.push(items[i].clone());
+                }
+                None => wanted.push(Value::from(dir.as_str())),
+            }
+        }
+        // a value we can't read as a string stays: we don't know what it is, and
+        // deleting what it doesn't understand is the one thing this must not do.
+        for (i, item) in items.iter().enumerate() {
+            if !taken[i] && item.as_str().is_none() {
+                wanted.push(item.clone());
             }
         }
 
-        // a file we are writing for the first time gets the readable layout; an
-        // existing one keeps its own.
-        if broke_lines || (existing.is_none() && array.len() > 1) {
-            format_one_per_line(array);
+        array.clear();
+        for (i, mut value) in wanted.into_iter().enumerate() {
+            let prefix = prefix_of(&value);
+            let prefix = match (lines, prefix.contains('\n'), i) {
+                // an entry that already sits on its own line keeps its exact decor.
+                (true, true, _) => prefix,
+                (true, false, _) => format!("\n{indent}"),
+                (false, _, 0) => String::new(),
+                (false, _, _) => " ".to_owned(),
+            };
+            let decor = value.decor_mut();
+            decor.set_prefix(prefix);
+            // the newline before `]` belongs to the array's trailing text; left on
+            // the last entry it would be emitted before the comma.
+            decor.set_suffix("");
+            array.push_formatted(value);
+        }
+
+        // the comment on the `[` line is about the key, not about whichever entry
+        // happened to be written first, so it goes back where it was.
+        if let Some(comment) = header
+            && let Some(first) = array.get_mut(0)
+        {
+            let decor = first.decor_mut();
+            let prefix = decor.prefix().and_then(|p| p.as_str()).unwrap_or("");
+            decor.set_prefix(format!(" {comment}{prefix}"));
+        }
+
+        array.set_trailing_comma(lines && !array.is_empty());
+        if lines {
+            // whatever else was written before the bracket (a comment on its own
+            // line) is kept; a bare newline is the minimum.
+            array.set_trailing(if trailing.contains('\n') {
+                trailing
+            } else {
+                "\n".to_owned()
+            });
+        } else {
+            array.set_trailing(trailing.trim_end().to_owned());
         }
         Ok(doc.to_string())
-    }
-
-    fn has_dir(&self, dir: &str) -> bool {
-        self.dictionary_dirs.iter().any(|d| d == dir)
     }
 
     /// exclude a path (gitignore-style `!` prefix) and persist — a permanent
@@ -314,76 +360,89 @@ fn config_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// move a comment written *after* an entry, on the same line, to the line above
-/// that entry — but only when the entry it is stored on is about to be removed.
-///
-/// toml_edit attaches `"a", # why a\n "b"` to **b**'s leading decor, not to a's,
-/// so dropping b would delete a comment explaining an entry that is staying. the
-/// comment cannot be left where it visually was (a comment before the comma would
-/// swallow it), so it goes above the entry it describes, which reads the same and
-/// is the style the rest of the file uses anyway.
-fn rescue_trailing_comments(array: &mut Array, keep: impl Fn(&str) -> bool) {
-    let doomed = |value: &Value| value.as_str().is_some_and(|s| !keep(s));
-    // the comment moves onto the previous surviving entry, so walk forwards and
-    // remember where that is.
-    let mut rescued: Vec<(usize, String)> = Vec::new();
-    let mut last_kept: Option<usize> = None;
-    for (i, value) in array.iter().enumerate() {
-        if !doomed(value) {
-            last_kept = Some(i);
-            continue;
-        }
-        let Some(host) = last_kept else {
-            continue; // nothing above it to carry the comment; leave it be.
-        };
-        let prefix = value
-            .decor()
-            .prefix()
-            .and_then(|p| p.as_str())
-            .unwrap_or("");
-        // only the first line: anything after the newline was written above this
-        // entry and is about this entry, so it leaves with it.
-        let head = prefix.split('\n').next().unwrap_or("").trim();
-        if head.starts_with('#') {
-            rescued.push((host, head.to_owned()));
-        }
-    }
-
-    for (host, comment) in rescued {
-        let Some(value) = array.get_mut(host) else {
-            continue;
-        };
-        let decor = value.decor_mut();
-        let prefix = decor
-            .prefix()
-            .and_then(|p| p.as_str())
-            .unwrap_or("")
-            .to_owned();
-        // the indent to repeat is whatever the host entry sits behind.
-        let indent = prefix.rsplit('\n').next().unwrap_or("").to_owned();
-        decor.set_prefix(format!("{prefix}{comment}\n{indent}"));
-    }
+/// an array entry's leading decor — the whitespace and comments written before it.
+fn prefix_of(value: &Value) -> String {
+    value
+        .decor()
+        .prefix()
+        .and_then(|p| p.as_str())
+        .unwrap_or("")
+        .to_owned()
 }
 
-/// lay an array out one entry per line. an entry that already carries its own
-/// leading text is left exactly as it is — that text is the file's indentation
-/// and, more to the point, its comments.
-fn format_one_per_line(array: &mut Array) {
-    for value in array.iter_mut() {
-        let own = value
-            .decor()
-            .prefix()
-            .and_then(|p| p.as_str())
-            .is_some_and(|p| p.contains('\n'));
-        if !own {
-            value.decor_mut().set_prefix("\n    ");
+/// the indentation the file puts before an entry, taken from the first entry that
+/// sits on its own line. four spaces when the file has nothing to say.
+fn indent_of(items: &[Value]) -> String {
+    items
+        .iter()
+        .map(prefix_of)
+        .find(|prefix| prefix.contains('\n'))
+        .and_then(|prefix| prefix.rsplit('\n').next().map(str::to_owned))
+        .filter(|indent| indent.chars().all(char::is_whitespace))
+        .unwrap_or_else(|| "    ".to_owned())
+}
+
+/// rewrite every same-line comment as a comment above the entry it is about, and
+/// return the one that belongs to the key rather than to any entry.
+///
+/// this is the whole trick. toml_edit stores decor *before* a value, so a comment
+/// written after entry X — `"/a", # why a` — is filed under X+1, and a comment on
+/// the `dictionary_dirs = [` line is filed under the first entry. left that way,
+/// removing an entry deletes a comment about the entry before it, and appending
+/// one steals the comment that trailed the last. moving each comment above its own
+/// entry first makes ownership match storage, and everything after this is a
+/// straightforward keep-or-drop.
+fn hoist_comments(items: &mut [Value], trailing: &mut String, indent: &str) -> Option<String> {
+    // the last entry's same-line comment is written after the final comma, which
+    // is the array's trailing text rather than any entry's decor.
+    if let (Some(last), Some(comment)) = (items.len().checked_sub(1), take_comment(trailing)) {
+        put_above(&mut items[last], &comment, indent);
+    }
+    for i in (1..items.len()).rev() {
+        let mut prefix = prefix_of(&items[i]);
+        if let Some(comment) = take_comment(&mut prefix) {
+            items[i].decor_mut().set_prefix(prefix);
+            put_above(&mut items[i - 1], &comment, indent);
         }
     }
-    array.set_trailing_comma(true);
-    let closed = array.trailing().as_str().is_some_and(|t| t.contains('\n'));
-    if !closed {
-        array.set_trailing("\n");
+    // what is left on the first entry's line was written beside the `[`.
+    let first = items.first_mut()?;
+    let mut prefix = prefix_of(first);
+    let comment = take_comment(&mut prefix)?;
+    first.decor_mut().set_prefix(prefix);
+    Some(comment)
+}
+
+/// take the comment from `text`'s first line, if that is what the line holds,
+/// leaving the rest of the text (and its newline) behind.
+fn take_comment(text: &mut String) -> Option<String> {
+    let head = text.split('\n').next().unwrap_or("");
+    let comment = head.trim();
+    if !comment.starts_with('#') {
+        return None;
     }
+    let comment = comment.to_owned();
+    let rest = text[head.len()..].to_owned();
+    *text = if rest.is_empty() {
+        "\n".to_owned()
+    } else {
+        rest
+    };
+    Some(comment)
+}
+
+/// write `comment` on its own line directly above `value`.
+fn put_above(value: &mut Value, comment: &str, indent: &str) {
+    let prefix = prefix_of(value);
+    let (prefix, indent) = match prefix.rsplit_once('\n') {
+        // the entry is on its own line: keep its decor and its indentation.
+        Some((_, own)) if own.chars().all(char::is_whitespace) => (prefix.clone(), own.to_owned()),
+        // it is not, so it is about to be — give it the file's indentation.
+        _ => (format!("\n{indent}"), indent.to_owned()),
+    };
+    value
+        .decor_mut()
+        .set_prefix(format!("{prefix}{comment}\n{indent}"));
 }
 
 #[cfg(test)]
@@ -567,5 +626,190 @@ theme = "dark"
             out.contains("42"),
             "dropped a value it could not read:\n{out}"
         );
+    }
+    fn config(dirs: &[&str]) -> Config {
+        Config {
+            dictionary_dirs: dirs.iter().map(|d| (*d).to_owned()).collect(),
+        }
+    }
+
+    /// appending must not walk the last entry's note down onto the new entry —
+    /// that comment lives after the final comma, in the array's trailing text.
+    #[test]
+    fn appending_does_not_steal_the_last_entrys_note() {
+        let text = "dictionary_dirs = [\n    \"/a\",\n    \"/b\", # why b is out\n]\n";
+        let out = config(&["/a", "/b", "/c"]).edited(Some(text)).unwrap();
+
+        let lines: Vec<&str> = out.lines().collect();
+        let note = lines
+            .iter()
+            .position(|l| l.contains("why b is out"))
+            .unwrap();
+        assert!(
+            lines[note + 1].contains("\"/b\""),
+            "the note left /b:\n{out}"
+        );
+        assert!(
+            !out.contains("\"/c\", # why b"),
+            "the note followed the new entry:\n{out}"
+        );
+    }
+
+    /// and a note about an entry that is going must not be left on one that stays:
+    /// a wrong reason is worse than no reason.
+    #[test]
+    fn a_removed_entrys_reason_does_not_land_on_a_survivor() {
+        let text = "dictionary_dirs = [\n    \"/a\", # about a\n    \"/b\", # about b\n    \"/c\", # about c\n]\n";
+        let out = config(&["/a", "/c"]).edited(Some(text)).unwrap();
+
+        assert!(
+            out.contains("# about a") && out.contains("# about c"),
+            "lost a survivor's note:\n{out}"
+        );
+        assert!(
+            !out.contains("# about b"),
+            "kept a dead entry's reason:\n{out}"
+        );
+        assert!(!out.contains("\"/b\""), "kept the entry itself:\n{out}");
+    }
+
+    /// a comment on the key's own line is about the key, and outlives any entry.
+    #[test]
+    fn the_comment_on_the_bracket_line_is_not_an_entrys_to_lose() {
+        let text = "dictionary_dirs = [ # every path we scan\n    \"/a\",\n    \"/b\",\n]\n";
+        let out = config(&["/b"]).edited(Some(text)).unwrap();
+
+        assert!(
+            out.contains("# every path we scan"),
+            "lost the key's own comment:\n{out}"
+        );
+        assert!(!out.contains("\"/a\""), "{out}");
+    }
+
+    /// the file follows the list it is given — order included, which is what a
+    /// reorderable dictionary list will need (#45).
+    #[test]
+    fn the_written_order_is_the_order_asked_for() {
+        let text = "dictionary_dirs = [\n    \"/a\", # about a\n    \"/b\",\n]\n";
+        let out = config(&["/b", "/a"]).edited(Some(text)).unwrap();
+        let back: Config = toml::from_str(&out).unwrap();
+
+        assert_eq!(
+            back.dictionary_dirs,
+            ["/b", "/a"],
+            "wrote a different order:\n{out}"
+        );
+        assert!(
+            out.contains("# about a"),
+            "reordering dropped a comment:\n{out}"
+        );
+    }
+
+    /// an entry the file holds twice collapses to the one the list asks for.
+    #[test]
+    fn a_duplicate_in_the_file_is_not_written_twice() {
+        let text = "dictionary_dirs = [\"/a\", \"/a\"]\n";
+        let out = config(&["/a"]).edited(Some(text)).unwrap();
+        let back: Config = toml::from_str(&out).unwrap();
+        assert_eq!(back.dictionary_dirs, ["/a"], "{out}");
+    }
+
+    /// the property the individual cases are examples of: whatever the file's
+    /// comment placement, every surviving entry keeps its own note, every removed
+    /// entry takes its note with it, and the result is the list we asked to write.
+    #[test]
+    fn comments_follow_their_own_entry_whatever_the_placement() {
+        // a small deterministic prng: this has to be reproducible, and one bad
+        // arrangement out of hundreds is exactly what the hand-written cases missed.
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut roll = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+
+        let names = ["/a", "/b", "/c", "/d", "/e"];
+        for case in 0..600 {
+            let count = 1 + roll(names.len() as u64) as usize;
+            let multiline = roll(2) == 0 || count > 1;
+            let header = roll(3) == 0 && multiline;
+
+            let mut text = String::from("dictionary_dirs = [");
+            if header {
+                text.push_str(" # the paths we scan");
+            }
+            for (i, name) in names.iter().take(count).enumerate() {
+                // 0: no comment, 1: above the entry, 2: after it on the same line
+                let placement = if multiline { roll(3) } else { 0 };
+                if multiline {
+                    text.push('\n');
+                    if placement == 1 {
+                        text.push_str(&format!("    # about {name}\n"));
+                    }
+                    text.push_str("    ");
+                } else if i > 0 {
+                    text.push(' ');
+                }
+                text.push_str(&format!("\"{name}\""));
+                if i + 1 < count || multiline {
+                    text.push(',');
+                }
+                if placement == 2 {
+                    text.push_str(&format!(" # about {name}"));
+                }
+            }
+            if multiline {
+                text.push('\n');
+            }
+            text.push_str("]\n");
+
+            // keep a random subset, in a random rotation, plus sometimes a new one
+            let mut wanted: Vec<String> = names
+                .iter()
+                .take(count)
+                .filter(|_| roll(3) > 0)
+                .map(|n| (*n).to_owned())
+                .collect();
+            if roll(3) == 0 {
+                wanted.push("/new".to_owned());
+            }
+            if wanted.len() > 1 && roll(2) == 0 {
+                wanted.rotate_left(1);
+            }
+
+            let config = Config {
+                dictionary_dirs: wanted.clone(),
+            };
+            let out = config
+                .edited(Some(&text))
+                .unwrap_or_else(|e| panic!("case {case} errored: {e}\n{text}"));
+            let back: Config = toml::from_str(&out).unwrap_or_else(|e| {
+                panic!("case {case} wrote invalid toml: {e}\n{text}\n---\n{out}")
+            });
+
+            assert_eq!(
+                back.dictionary_dirs, wanted,
+                "case {case} wrote the wrong list\n{text}\n---\n{out}"
+            );
+            for name in names.iter().take(count) {
+                let note = format!("# about {name}");
+                let kept = wanted.iter().any(|w| w == name);
+                // a note is only in the fixture when its entry drew placement 1 or 2
+                if text.contains(&note) {
+                    assert_eq!(
+                        out.contains(&note),
+                        kept,
+                        "case {case}: note for {name} (kept={kept}) went the wrong way\n{text}\n---\n{out}"
+                    );
+                }
+            }
+            if header && !wanted.is_empty() {
+                assert!(
+                    out.contains("# the paths we scan"),
+                    "case {case} lost the key's comment\n{text}\n---\n{out}"
+                );
+            }
+        }
     }
 }
