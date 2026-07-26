@@ -80,11 +80,19 @@ these are blocked on a decision or an action only you can take. nothing else wai
   exact `HashMap` hit and `prefix_search` only lowercases. normalise both the index key and
   the query to NFC in `Library`, where every format benefits at once.
 
-- **[ ] #40 two dictionaries can share one name.** labels come from the parent folder, and
-  the Liddell-Scott folder holds two *different* lexicons (115k unaccented, 130k accented)
-  that both display as "Greek-English Lexicon - Liddell & Scott"; Klein's two files collide
-  the same way. the scope panel (#14) shows them as two rows you can't tell apart, and the
-  definition pane names them identically. fall back to the file stem when a label repeats.
+- **[x] #40 two dictionaries can share one name.** labels come from the parent folder, and a
+  folder can hold two dictionaries: Klein's lexicon sits beside its own abbreviations list, so
+  the scope panel showed two identical rows differing only in their headword count. a
+  colliding label now falls back to what the dictionary calls itself — StarDict's `bookname`,
+  DSL's `#NAME` — giving `Comprehensive Etymological (Heb-Eng)` and `Etymological ABBRV
+  (Heb-Eng)`; if even those match, the file stem is appended. labels that were already unique
+  are untouched, verified against the whole collection.
+  **still open, and not a collision:** several unique labels are filesystem artifacts rather
+  than names — `dict` (that is `Ref_LSJ.csv` sitting in the collection root), plus
+  `fulllatininflected[1]`, `Grc-Eng_L&S_Greek-English Lexicon_or_2.dsl` and
+  `Middle_Liddell_stardict`. preferring the internal name for those too is a bigger judgement
+  call, since for the latin dictionary the folder name (`fulllatininflected[1]`) and the
+  internal one (`Dictionary latininfl -> english`) are both poor.
 
 - **[ ] #41 a headword whose only entry renders empty stays in the wordlist.** `lookup`
   drops entries that convert to nothing, but the headword was already filed — so a card that

@@ -73,6 +73,8 @@ impl Library {
     }
 
     fn from_loaded(dicts: Vec<Loaded>, sources: &[PathBuf], cache: Option<&Path>) -> Self {
+        let mut dicts = dicts;
+        disambiguate_labels(&mut dicts, sources);
         let base = slot_bases(&dicts);
         let total = *base.last().unwrap_or(&0) as usize;
         // the order is only this collection's while every dictionary is the file
@@ -257,6 +259,58 @@ fn word_at(dicts: &[Loaded], dict: u32, headword: u32) -> &str {
         .unwrap_or_default()
 }
 
+/// make every display label unique.
+///
+/// a label is its dictionary's parent folder, which is usually the friendly thing
+/// to show — but a folder can hold two dictionaries. Klein's lexicon sits beside
+/// its own abbreviations list, so both arrive as "Comprehensive Etymological
+/// Dictionary of the Hebrew Language by Ernest Klein (Heb-Eng)", and the scope
+/// panel offers two rows nobody can tell apart. a colliding label falls back to
+/// the name the dictionary calls itself (StarDict's `bookname`, DSL's `#NAME`),
+/// and to the file stem when even those match.
+///
+/// labels that are already unique are left exactly as they are: `hack/check.sh`
+/// greps them and the e2e fixtures are named for their folders.
+fn disambiguate_labels(dicts: &mut [Loaded], sources: &[PathBuf]) {
+    for _ in 0..2 {
+        let colliding = repeated_labels(dicts);
+        if colliding.is_empty() {
+            return;
+        }
+        for (index, loaded) in dicts.iter_mut().enumerate() {
+            if !colliding.contains(&loaded.label) {
+                continue;
+            }
+            let internal = loaded.dict.name().trim().to_string();
+            if !internal.is_empty() && internal != loaded.label {
+                loaded.label = internal;
+                continue;
+            }
+            // same folder, same internal name: the file is all that is left.
+            if let Some(stem) = sources
+                .get(index)
+                .and_then(|path| path.file_stem())
+                .and_then(|stem| stem.to_str())
+            {
+                loaded.label = format!("{} ({stem})", loaded.label);
+            }
+        }
+    }
+}
+
+/// the labels held by more than one dictionary.
+fn repeated_labels(dicts: &[Loaded]) -> std::collections::HashSet<String> {
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for loaded in dicts {
+        *counts.entry(loaded.label.as_str()).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, n)| *n > 1)
+        .map(|(label, _)| label.to_string())
+        .collect()
+}
+
 /// what makes a cached merged order this collection's: every dictionary's label,
 /// its source files' identity, and how many headwords it contributed — the pairs
 /// index into those headword lists, so a changed count invalidates them.
@@ -282,10 +336,12 @@ mod tests {
 
     struct Mock {
         words: Vec<String>,
+        /// what the dictionary calls itself, as `bookname`/`#NAME` would.
+        internal: String,
     }
     impl Dictionary for Mock {
         fn name(&self) -> &str {
-            "mock"
+            &self.internal
         }
         fn headwords(&self) -> &[String] {
             &self.words
@@ -308,12 +364,14 @@ mod tests {
                 Loaded {
                     label: "A".into(),
                     dict: Box::new(Mock {
+                        internal: "mock".into(),
                         words: vec!["Apple".into(), "apricot".into()],
                     }),
                 },
                 Loaded {
                     label: "B".into(),
                     dict: Box::new(Mock {
+                        internal: "mock".into(),
                         words: vec!["apple".into(), "grape".into()],
                     }),
                 },
@@ -321,6 +379,52 @@ mod tests {
             &[],
             None,
         )
+    }
+
+
+    fn labelled(label: &str, internal: &str, words: &[&str]) -> Loaded {
+        Loaded {
+            label: label.into(),
+            dict: Box::new(Mock {
+                internal: internal.into(),
+                words: words.iter().map(|w| (*w).to_string()).collect(),
+            }),
+        }
+    }
+
+    #[test]
+    fn colliding_labels_fall_back_to_what_the_dictionary_calls_itself() {
+        // the real case: Klein's lexicon and Klein's abbreviations list share a
+        // folder, so both arrive with the folder's name.
+        let folder = "Comprehensive Etymological Dictionary … Ernest Klein (Heb-Eng)";
+        let mut dicts = vec![
+            labelled(folder, "Comprehensive Etymological (Heb-Eng)", &["a"]),
+            labelled(folder, "Etymological ABBRV (Heb-Eng)", &["b"]),
+            labelled("Larousse Chambers français-anglais", "Larousse", &["c"]),
+        ];
+        let sources = vec![
+            PathBuf::from("/d/klein.dsl"),
+            PathBuf::from("/d/abbrv.dsl"),
+            PathBuf::from("/e/larousse.dsl"),
+        ];
+        disambiguate_labels(&mut dicts, &sources);
+
+        assert_eq!(dicts[0].label, "Comprehensive Etymological (Heb-Eng)");
+        assert_eq!(dicts[1].label, "Etymological ABBRV (Heb-Eng)");
+        // a label that was already unique is left alone, internal name or not.
+        assert_eq!(dicts[2].label, "Larousse Chambers français-anglais");
+    }
+
+    #[test]
+    fn labels_that_collide_even_internally_fall_back_to_the_file() {
+        let mut dicts = vec![
+            labelled("same", "same", &["a"]),
+            labelled("same", "same", &["b"]),
+        ];
+        let sources = vec![PathBuf::from("/d/one.ifo"), PathBuf::from("/d/two.ifo")];
+        disambiguate_labels(&mut dicts, &sources);
+        assert_eq!(dicts[0].label, "same (one)");
+        assert_eq!(dicts[1].label, "same (two)");
     }
 
     #[test]
@@ -350,6 +454,7 @@ mod tests {
             vec![Loaded {
                 label: "A".into(),
                 dict: Box::new(Mock {
+                    internal: "mock".into(),
                     words: vec!["מֶלֶךְ".into(), "מָלָךְ".into(), "מלך".into()],
                 }),
             }],
@@ -387,6 +492,7 @@ mod tests {
             vec![Loaded {
                 label: "A".into(),
                 dict: Box::new(Mock {
+                    internal: "mock".into(),
                     words: vec!["λόγος".into(), "λὸγος".into(), "λογος".into()],
                 }),
             }],
