@@ -835,9 +835,9 @@ def main():
             f"expected {IDLE_STATUS!r}, got {idle!r}",
         )
 
-        # roadmap #33: the wordlist can be asked for words rather than the forms a
-        # dictionary files as pointers at them. neither fixture has an alias table,
-        # so the list itself must not move — what must change is the status line,
+        # roadmap #33: the wordlist can be asked to show each definition once rather
+        # than once per form pointing at it. neither fixture has an alias table, so
+        # the list itself must not move — what must change is the status line,
         # because a list that quietly got shorter would be a mystery.
         app_proc.forward("--search", "byte")
         wait_for(
@@ -846,25 +846,25 @@ def main():
             "the byte row",
         )
         open_scope(node)
-        toggle_scope(app_proc, node, "Lemmas only")
+        toggle_scope(app_proc, node, "Fold repeated forms")
         noted = wait_for(
-            lambda: widgets.status_line() if "lemmas only" in widgets.status_line() else None,
+            lambda: widgets.status_line() if "folded" in widgets.status_line() else None,
             10,
-            "the lemmas-only note in the status line",
+            "the folded note in the status line",
         )
         r.check(
-            "the status line says when inflected forms are hidden",
-            noted == "1 result · lemmas only",
+            "the status line says when repeated forms are folded away",
+            noted == "1 result · forms folded",
             f"status={noted!r}",
         )
         r.check(
-            "a dictionary that files no aliases is unaffected by the toggle",
+            "a dictionary that files no pointers is unaffected by the toggle",
             [w for w in widgets.row_words() if w] == ["byte"],
             f"rows={widgets.row_words()}",
         )
-        toggle_scope(app_proc, node, "Lemmas only")
+        toggle_scope(app_proc, node, "Fold repeated forms")
         back = wait_for(
-            lambda: widgets.status_line() if "lemmas" not in widgets.status_line() else None,
+            lambda: widgets.status_line() if "folded" not in widgets.status_line() else None,
             10,
             "the status line to drop the note",
         )

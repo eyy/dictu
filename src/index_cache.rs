@@ -345,6 +345,11 @@ impl Index {
         let n_ranges = u32_le(raw, 16)? as usize;
         let n_display = u32_le(raw, 20)? as usize;
         let n_lemmas = u32_le(raw, 24)? as usize;
+        // a count that cannot be true of this file is refused here rather than
+        // quietly hiding a whole dictionary from the fold-forms filter.
+        if n_lemmas > n_display {
+            return None;
+        }
         let fp_len = u32_le(raw, 28)? as usize;
         if raw.get(INDEX_HEADER..INDEX_HEADER.checked_add(fp_len)?)? != fingerprint.as_bytes() {
             return None; // a cache of some other state of these files.

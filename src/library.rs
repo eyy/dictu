@@ -13,6 +13,7 @@
 //! so it is persisted too, and mapped straight back when the collection hasn't
 //! changed (`index_cache::Order`, roadmap #7).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::config::DictEntry;
@@ -153,16 +154,24 @@ impl Library {
         self.search_where(query, limit, active, false)
     }
 
-    /// as `search`, but `lemmas_only` drops every headword a dictionary files as
-    /// an alias of another — its inflections (#33). a row survives while any of
-    /// its spellings is a word in its own right, so `rex` stays and `rexerint`
-    /// goes.
+    /// as `search`, but `fold_forms` hides a row that only *repeats* a definition
+    /// already on screen (#33).
+    ///
+    /// the rule is deliberately narrow, because the obvious one is wrong. a
+    /// dictionary's `.syn` records look like an inflection table and are not always
+    /// one: Whitaker's really is (1.18M forms of 37,777 words), but a hebrew-hebrew dictionary
+    /// mixes plurals in with plene spellings, quoted forms and abbreviations, so
+    /// hiding "aliases" as such loses `עגבנייה` — an everyday word whose only
+    /// spelling in that dictionary is a `.syn` record. so a row goes only when
+    /// **every entry it points at is already shown by a row above it**: 25 of the
+    /// 26 forms of *rego* under `rex` repeat one definition and go, while a form
+    /// searched on its own is the only way to that definition and stays.
     pub fn search_where(
         &self,
         query: &str,
         limit: usize,
         active: &[bool],
-        lemmas_only: bool,
+        fold_forms: bool,
     ) -> Vec<Row> {
         let fold = keys::fold(query.trim());
         let needle = keys::bare(&fold);
@@ -190,11 +199,17 @@ impl Library {
         }
 
         let mut rows: Vec<Row> = Vec::new();
+        // the definitions already on screen, so a row that only repeats one can be
+        // told from a row that is the only way to reach it.
+        let mut shown: HashSet<(usize, u64)> = HashSet::new();
         // every entry sharing a key is one lemma's worth of spellings, and they are
         // contiguous — so a run is collected whole and grouped, and the limit is
         // only consulted between runs. stopping mid-run would split a lemma across
         // two rows, or leave one of them missing a dictionary.
-        let mut run: Vec<(usize, &str)> = Vec::new();
+        // the third field is whether the dictionary files this spelling as a
+        // pointer at one of its own entries, which is what makes a row a candidate
+        // for folding away.
+        let mut run: Vec<(usize, &str, bool)> = Vec::new();
         let mut run_key: &[u8] = &[];
         for i in lo..self.sorted.count() {
             let key = self.sorted.key(i);
@@ -202,7 +217,7 @@ impl Library {
                 break; // sorted, so the prefix run has ended.
             }
             if key != run_key {
-                rows.extend(group(&run));
+                self.keep(&mut rows, &mut shown, group(&run), fold_forms);
                 run.clear();
                 if rows.len() >= limit {
                     return rows;
@@ -215,17 +230,53 @@ impl Library {
             if !active.get(d as usize).copied().unwrap_or(true) {
                 continue; // dict deselected in the scope panel.
             }
-            if lemmas_only && self.is_alias(d, h) {
-                continue; // an inflection, and the reader asked for words.
-            }
             let word = self.word(d, h);
             if marked && !keys::marks_allow(&fold, word) {
                 continue; // the headword contradicts a diacritic the query typed.
             }
-            run.push((d as usize, word));
+            run.push((d as usize, word, self.is_alias(d, h)));
         }
-        rows.extend(group(&run));
+        self.keep(&mut rows, &mut shown, group(&run), fold_forms);
         rows
+    }
+
+    /// append the rows of one key, dropping any that only repeat a definition
+    /// `shown` already holds. only rows made entirely of aliases are candidates:
+    /// a headword a dictionary files itself is never hidden, however much its
+    /// entry looks like another's.
+    fn keep(
+        &self,
+        rows: &mut Vec<Row>,
+        shown: &mut HashSet<(usize, u64)>,
+        grouped: Vec<(Row, bool)>,
+        fold_forms: bool,
+    ) {
+        for (row, all_aliases) in grouped {
+            if !fold_forms {
+                rows.push(row);
+                continue;
+            }
+            let ids = self.entry_ids(&row);
+            if all_aliases && !ids.is_empty() && ids.iter().all(|id| shown.contains(id)) {
+                continue; // every definition here is already on screen.
+            }
+            shown.extend(ids);
+            rows.push(row);
+        }
+    }
+
+    /// the definitions a row points at, as (dictionary, position) pairs.
+    fn entry_ids(&self, row: &Row) -> Vec<(usize, u64)> {
+        row.members
+            .iter()
+            .flat_map(|(dict, spelling)| {
+                let ids = match self.dicts.get(*dict) {
+                    Some(loaded) => loaded.dict.entry_ids(spelling),
+                    None => Vec::new(),
+                };
+                ids.into_iter().map(move |id| (*dict, id))
+            })
+            .collect()
     }
 
     /// the row a spelling belongs to — what a link target needs, since the
@@ -300,12 +351,13 @@ impl Library {
 ///    `כְּאֵב לֵב`. but only when the pointed one is unambiguous — `מלך` could be
 ///    `מֶלֶךְ` or `מָלָךְ`, which are different words, so it stays a row of its own
 ///    rather than being filed under a guess.
-fn group(run: &[(usize, &str)]) -> Vec<Row> {
+fn group(run: &[(usize, &str, bool)]) -> Vec<(Row, bool)> {
     // one class per distinct fold key — minus the homograph number, which the
     // bare key already ignores and which is not a way of spelling anything.
     let mut folds: Vec<String> = Vec::new();
     let mut rows: Vec<Row> = Vec::new();
-    for &(dict, word) in run {
+    let mut all_aliases: Vec<bool> = Vec::new();
+    for &(dict, word, alias) in run {
         let fold = keys::without_homograph(&keys::fold(word)).to_owned();
         match folds.iter().position(|seen| *seen == fold) {
             Some(class) => {
@@ -317,9 +369,11 @@ fn group(run: &[(usize, &str)]) -> Vec<Row> {
                     rows[class].word = word.to_owned();
                 }
                 rows[class].members.push((dict, word.to_owned()));
+                all_aliases[class] &= alias;
             }
             None => {
                 folds.push(fold);
+                all_aliases.push(alias);
                 rows.push(Row {
                     word: word.to_owned(),
                     members: vec![(dict, word.to_owned())],
@@ -361,18 +415,22 @@ fn group(run: &[(usize, &str)]) -> Vec<Row> {
         };
         let members = std::mem::take(&mut rows[class].members);
         rows[host].members.extend(members);
+        // a host that absorbs a spelling the dictionary files itself is no longer
+        // made only of pointers.
+        all_aliases[host] &= all_aliases[class];
         absorbed[class] = true;
     }
 
-    let mut kept: Vec<Row> = rows
+    let mut kept: Vec<(Row, bool)> = rows
         .into_iter()
+        .zip(all_aliases)
         .zip(absorbed)
         .filter(|(_, absorbed)| !absorbed)
-        .map(|(row, _)| row)
+        .map(|((row, aliases), _)| (row, aliases))
         .collect();
     // one dictionary per row per spelling, in library order, so the count a row
     // shows and the sections the pane renders are in the same order.
-    for row in &mut kept {
+    for (row, _) in &mut kept {
         row.members.sort_by_key(|(dict, _)| *dict);
         row.members.dedup();
     }
@@ -517,6 +575,9 @@ mod tests {
         internal: String,
         /// where this dictionary's aliases begin, as a `.syn` would put them.
         aliases_from: usize,
+        /// which entry each headword resolves to — several spellings sharing one is
+        /// what a `.syn` record does, and what folding looks for.
+        entry_of: Vec<u64>,
     }
     impl Dictionary for Mock {
         fn name(&self) -> &str {
@@ -535,6 +596,14 @@ mod tests {
         fn is_alias(&self, index: usize) -> bool {
             index >= self.aliases_from
         }
+        fn entry_ids(&self, headword: &str) -> Vec<u64> {
+            self.words
+                .iter()
+                .position(|word| word == headword)
+                .and_then(|index| self.entry_of.get(index).copied())
+                .into_iter()
+                .collect()
+        }
     }
 
     /// two mock dicts, sorted in memory — `None` for the cache, so these tests
@@ -548,6 +617,7 @@ mod tests {
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         aliases_from: usize::MAX,
+                        entry_of: (0..64).collect(),
                         words: vec!["Apple".into(), "apricot".into()],
                     }),
                 },
@@ -556,6 +626,7 @@ mod tests {
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         aliases_from: usize::MAX,
+                        entry_of: (0..64).collect(),
                         words: vec!["apple".into(), "grape".into()],
                     }),
                 },
@@ -572,6 +643,7 @@ mod tests {
                 internal: internal.into(),
                 words: words.iter().map(|w| (*w).to_string()).collect(),
                 aliases_from: usize::MAX,
+                entry_of: (0..64).collect(),
             }),
         }
     }
@@ -641,6 +713,7 @@ mod tests {
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     aliases_from: usize::MAX,
+                    entry_of: (0..64).collect(),
                     words: vec!["מֶלֶךְ".into(), "מָלָךְ".into(), "מלך".into()],
                 }),
             }],
@@ -680,6 +753,7 @@ mod tests {
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     aliases_from: usize::MAX,
+                    entry_of: (0..64).collect(),
                     words: vec!["λόγος".into(), "λὸγος".into(), "λογος".into()],
                 }),
             }],
@@ -705,6 +779,7 @@ mod tests {
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         aliases_from: usize::MAX,
+                        entry_of: (0..64).collect(),
                         words: vec!["logos".into(), "logotype".into()],
                     }),
                 },
@@ -713,6 +788,7 @@ mod tests {
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         aliases_from: usize::MAX,
+                        entry_of: (0..64).collect(),
                         words: vec!["logos".into()],
                     }),
                 },
@@ -963,6 +1039,7 @@ mod tests {
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     aliases_from: usize::MAX,
+                    entry_of: (0..64).collect(),
                     words: vec!["כאב לב".into(), "כְּאֵב לֵב".into()],
                 }),
             }],
@@ -1005,6 +1082,7 @@ mod tests {
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         aliases_from: usize::MAX,
+                        entry_of: (0..64).collect(),
                         words: vec!["rex (1)".into(), "Rex (2)".into()],
                     }),
                 },
@@ -1013,6 +1091,7 @@ mod tests {
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         aliases_from: usize::MAX,
+                        entry_of: (0..64).collect(),
                         words: vec!["rex".into()],
                     }),
                 },
@@ -1045,6 +1124,7 @@ mod tests {
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     aliases_from: usize::MAX,
+                    entry_of: (0..64).collect(),
                     words: vec!["λ\u{1F79}γος".into()], // oxia
                 }),
             }],
@@ -1068,6 +1148,7 @@ mod tests {
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     aliases_from: usize::MAX,
+                    entry_of: (0..64).collect(),
                     words: vec!["mur".into(), "mûr".into()],
                 }),
             }],
@@ -1092,6 +1173,7 @@ mod tests {
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     aliases_from: usize::MAX,
+                    entry_of: (0..64).collect(),
                     words: vec!["εἰ".into(), "εἶ".into()],
                 }),
             }],
@@ -1125,16 +1207,16 @@ mod tests {
         );
         assert!(lib.resolve("apple", &[false, false]).is_none());
     }
-    /// roadmap #33: the wordlist can be asked for words rather than forms. a row
-    /// survives while any of its spellings is a headword in its own right.
+    /// roadmap #33: a row that only repeats a definition already on screen can be
+    /// folded away — and a row that is the only way to reach one never is, which is
+    /// the whole difference between this and hiding aliases as such.
     #[test]
-    fn lemmas_only_drops_the_forms_and_keeps_the_words() {
+    fn folding_drops_a_repeat_and_keeps_the_only_way_in() {
         let latin = Library::from_loaded(
             vec![Loaded {
                 label: "Whitaker".into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
-                    // two headwords, then the forms the dictionary points at them
                     words: vec![
                         "rego".into(),
                         "rexi".into(),
@@ -1142,6 +1224,8 @@ mod tests {
                         "rexerint".into(),
                     ],
                     aliases_from: 2,
+                    // the two forms answer with the lemma's entry, as a `.syn` does
+                    entry_of: vec![0, 1, 0, 0],
                 }),
             }],
             &[],
@@ -1155,28 +1239,39 @@ mod tests {
             .collect();
         assert_eq!(all, ["rexerint", "rexi", "rexit"]);
 
-        let lemmas: Vec<String> = latin
+        // folded: `rexi` is the dictionary's own word and stays; of the two forms
+        // repeating `rego`'s entry, the first stays and the second goes.
+        let folded: Vec<String> = latin
             .search_where("rex", 10, &[], true)
             .into_iter()
             .map(|row| row.word)
             .collect();
-        assert_eq!(lemmas, ["rexi"], "only the word it files itself");
-        // and a form on its own now finds nothing, rather than its lemma's entry
-        // under a form's heading.
-        assert!(latin.search_where("rexerint", 10, &[], true).is_empty());
+        assert_eq!(folded, ["rexerint", "rexi"]);
+
+        // and a form searched on its own is the only row reaching that entry, so it
+        // survives. this is the case hiding aliases got wrong, and it is why
+        // `עגבנייה` — a word a hebrew-hebrew dictionary only files as a `.syn` spelling — stays.
+        let alone: Vec<String> = latin
+            .search_where("rexit", 10, &[], true)
+            .into_iter()
+            .map(|row| row.word)
+            .collect();
+        assert_eq!(alone, ["rexit"]);
     }
 
-    /// a row whose spellings are part alias, part headword is a word, not a form.
+    /// a row is folded only when every one of its spellings is a pointer: a word one
+    /// dictionary files itself is never hidden because another points at the text.
     #[test]
-    fn a_row_survives_on_one_real_spelling() {
+    fn a_headword_a_dictionary_files_itself_is_never_folded() {
         let mixed = Library::from_loaded(
             vec![
                 Loaded {
                     label: "Forms".into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
-                        words: vec!["placeholder".into(), "rex".into()],
+                        words: vec!["rego".into(), "rex".into()],
                         aliases_from: 1, // "rex" here is only a pointer
+                        entry_of: vec![0, 0],
                     }),
                 },
                 Loaded {
@@ -1185,6 +1280,7 @@ mod tests {
                         internal: "mock".into(),
                         words: vec!["rex".into()], // and here it is the headword
                         aliases_from: usize::MAX,
+                        entry_of: vec![0],
                     }),
                 },
             ],
@@ -1195,8 +1291,8 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].dicts(),
-            [1],
-            "the alias member is gone, the word stays"
+            [0, 1],
+            "both spellings stay: one is a word"
         );
     }
 }

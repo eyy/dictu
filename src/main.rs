@@ -26,9 +26,10 @@ const APP_ID: &str = "io.github.eyy.Dictu";
 // cap search results shown (gtk::ListBox builds one widget per row).
 const SEARCH_LIMIT: usize = 500;
 
-// the cli prints rows rather than building widgets, so it can afford more of
-// them than the wordlist — enough to see a whole inflected paradigm at once.
-const CLI_ROWS: usize = 200;
+// the same limit the wordlist uses, so a count measured through the cli is the
+// count the app would show. the old 20 silently truncated every measurement taken
+// that way, which is how a "no change" reading got as far as a commit message.
+const CLI_ROWS: usize = SEARCH_LIMIT;
 
 /// the loaded index, shared across signal handlers. `None` until indexing
 /// finishes on the worker thread.
@@ -53,16 +54,10 @@ fn main() -> glib::ExitCode {
             raw.iter().any(|arg| arg == "--html"),
         );
     }
-    if subcommand == Some("aliascheck") {
-        return aliascheck(raw.get(2).map(String::as_str));
-    }
-    if subcommand == Some("sweep") {
-        return sweep_cli(raw.get(2).map(String::as_str));
-    }
     if subcommand == Some("search") {
         return search_cli(
             raw.get(2).map(String::as_str),
-            raw.iter().any(|arg| arg == "--lemmas"),
+            raw.iter().any(|arg| arg == "--fold-forms"),
         );
     }
 
@@ -133,84 +128,24 @@ fn printing(
     }
 }
 
-fn aliascheck(path: Option<&str>) -> glib::ExitCode {
-    let Some(path) = path else {
-        return glib::ExitCode::FAILURE;
-    };
-    let d = dict::open_any(std::path::Path::new(path), None).expect("open");
-    let words = d.headwords();
-    let n = words.len();
-    let flags: Vec<bool> = (0..n).map(|i| d.is_alias(i)).collect();
-    let boundary = flags.iter().position(|&f| f).unwrap_or(n);
-    let monotone = flags.iter().skip(boundary).all(|&f| f);
-    println!("n_display={n} boundary={boundary} monotone={monotone}");
-    println!(
-        "last lemmas: {:?}",
-        &words[boundary.saturating_sub(3)..boundary]
-    );
-    println!(
-        "first aliases: {:?}",
-        &words[boundary..(boundary + 3).min(n)]
-    );
-    // dump the whole lemma set so it can be diffed against the .idx
-    if let Ok(out) = std::env::var("DUMP_LEMMAS") {
-        let body: String = words[..boundary].join("\n");
-        std::fs::write(out, body).ok();
-    }
-    if let Ok(out) = std::env::var("DUMP_ALL") {
-        std::fs::write(out, words.join("\n")).ok();
-    }
-    glib::ExitCode::SUCCESS
-}
-
-fn sweep_cli(path: Option<&str>) -> glib::ExitCode {
-    let Some(path) = path else {
-        return glib::ExitCode::FAILURE;
-    };
-    let queries = std::fs::read_to_string(path).expect("queries file");
-    let config = config::Config::load_or_create().unwrap_or_default();
-    let entries = config::scan(&config.dictionary_dirs);
-    let lib = Library::open(&entries);
-    for q in queries.lines() {
-        let q = q.trim();
-        if q.is_empty() {
-            continue;
-        }
-        let all = lib.search(q, 5000, &[]);
-        let lem = lib.search_where(q, 5000, &[], true);
-        let kept: std::collections::HashSet<String> = lem.iter().map(|r| r.word.clone()).collect();
-        let lost: Vec<String> = all
-            .iter()
-            .filter(|r| !kept.contains(&r.word))
-            .map(|r| r.word.clone())
-            .collect();
-        println!(
-            "QUERY\t{}\t{}\t{}\tLOST:{}",
-            q,
-            all.len(),
-            lem.len(),
-            lost.join(" | ")
-        );
-    }
-    glib::ExitCode::SUCCESS
-}
-
-fn search_cli(query: Option<&str>, lemmas_only: bool) -> glib::ExitCode {
+fn search_cli(query: Option<&str>, fold_forms: bool) -> glib::ExitCode {
     let Some(query) = query else {
-        eprintln!("usage: dictu search <query> [--lemmas]");
+        eprintln!("usage: dictu search <query> [--fold-forms]");
         return glib::ExitCode::FAILURE;
     };
     let config = config::Config::load_or_create().unwrap_or_default();
     let entries = config::scan(&config.dictionary_dirs);
     let lib = library::Library::open(&entries);
+    let rows = lib.search_where(query, CLI_ROWS, &[], fold_forms);
     printing(|out| {
         writeln!(
             out,
-            "{} dicts, {} headwords total",
+            "{} dicts, {} headwords total, {} rows",
             lib.dict_count(),
-            lib.total_headwords()
+            lib.total_headwords(),
+            rows.len()
         )?;
-        for row in lib.search_where(query, CLI_ROWS, &[], lemmas_only) {
+        for row in &rows {
             // one line per dictionary, naming the spelling it files the row under
             // — the row's own spelling is the first of them.
             for (dict, spelling) in &row.members {
@@ -351,10 +286,9 @@ struct UiInner {
     /// timer because `SearchEntry` debounces `search-changed`, so there is no moment
     /// after `set_text` at which the rows are known to exist yet.
     auto_select: Rc<Cell<bool>>,
-    /// whether the wordlist is showing only words a dictionary files in its own
-    /// right, hiding the inflections it files as aliases (#33). session-only,
-    /// like the scope beside it.
-    lemmas_only: Rc<Cell<bool>>,
+    /// whether the wordlist shows each definition once rather than once per form
+    /// that points at it (#33). session-only, like the scope beside it.
+    fold_forms: Rc<Cell<bool>>,
     /// the search scope: one flag per dictionary, in library order, as
     /// `prefix_search` wants it. empty until indexing finishes (nothing to scope
     /// before then, and `&[]` already means "all dictionaries").
@@ -404,7 +338,7 @@ impl UiInner {
             query,
             SEARCH_LIMIT,
             &self.scope.borrow(),
-            self.lemmas_only.get(),
+            self.fold_forms.get(),
         );
         // recorded before the widgets exist: appending a row can select it, and
         // the handler reads this list by index.
@@ -428,6 +362,10 @@ impl UiInner {
         if query.is_empty() {
             self.set_message("Type to search all dictionaries.");
             self.show_library_size();
+            // the library size is a count like any other, and folding changes what
+            // it means; say so rather than advertising rows the setting hides.
+            let counted = self.status.text().to_string();
+            self.status.set_text(&self.noting_folded(&counted));
             return;
         }
         if rows.is_empty() {
@@ -446,12 +384,9 @@ impl UiInner {
             Some(note) => format!("{counted} · {note}"),
             None => counted,
         };
-        // and say when inflections are being hidden, so a short list is never a
+        // and say when forms are being folded away, so a short list is never a
         // mystery.
-        self.status.set_text(&match self.lemmas_only.get() {
-            true => format!("{counted} · lemmas only"),
-            false => counted,
-        });
+        self.status.set_text(&self.noting_folded(&counted));
 
         // a search fired from the hotkey should land on an answer, not on a list you
         // still have to click. consumed either way, so a later hand-typed search
@@ -561,6 +496,15 @@ impl UiInner {
     /// what the scope covers: how many dictionaries, and how many headwords they
     /// hold between them. an empty mask is "everything" (the panel isn't built
     /// until indexing finishes).
+    /// `line` with a note when repeated forms are being folded away — every count
+    /// the ui shows has to admit it, including the idle library size.
+    fn noting_folded(&self, line: &str) -> String {
+        match self.fold_forms.get() {
+            true => format!("{line} · forms folded"),
+            false => line.to_owned(),
+        }
+    }
+
     fn scope_size(&self, library: &Library) -> (usize, usize) {
         let scope = self.scope.borrow();
         if scope.is_empty() {
@@ -1119,28 +1063,27 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     scope_hint.add_css_class("dim-label");
     scope_hint.add_css_class("caption");
 
-    // roadmap #33. a dictionary that ships an inflection table files 1.18M forms
-    // as aliases of 37,777 words, and searching `rex` walks into 26 of them —
-    // so the wordlist can be told to show only words a dictionary files in its
-    // own right.
-    let lemmas_only = gtk::CheckButton::builder()
+    // roadmap #33. searching `rex` walked into 26 forms of *rego*, every one of
+    // them answering with the same definition, so the wordlist can be told to show
+    // each definition once rather than once per form that points at it.
+    let fold_forms = gtk::CheckButton::builder()
         .valign(gtk::Align::Center)
         .build();
-    lemmas_only.update_property(&[gtk::accessible::Property::Label("Lemmas only")]);
-    let lemmas_row = adw::ActionRow::builder()
-        .title("Lemmas only")
-        .subtitle("Hide the forms a dictionary files as pointers")
-        .activatable_widget(&lemmas_only)
+    fold_forms.update_property(&[gtk::accessible::Property::Label("Fold repeated forms")]);
+    let fold_row = adw::ActionRow::builder()
+        .title("Fold repeated forms")
+        .subtitle("One row per definition, not one per form pointing at it")
+        .activatable_widget(&fold_forms)
         .build();
-    lemmas_row.add_prefix(&lemmas_only);
+    fold_row.add_prefix(&fold_forms);
     // its own list rather than a bare check box: the same shape as the dictionary
     // rows above, which is what makes it reachable to a screen reader (and to the
     // harness, which aims at a check box's own extents).
-    let lemmas_list = gtk::ListBox::new();
-    lemmas_list.set_selection_mode(gtk::SelectionMode::None);
-    lemmas_list.add_css_class("boxed-list");
-    lemmas_list.update_property(&[gtk::accessible::Property::Label("Search options")]);
-    lemmas_list.append(&lemmas_row);
+    let options_list = gtk::ListBox::new();
+    options_list.set_selection_mode(gtk::SelectionMode::None);
+    options_list.add_css_class("boxed-list");
+    options_list.update_property(&[gtk::accessible::Property::Label("Search options")]);
+    options_list.append(&fold_row);
 
     let scope_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
     scope_box.set_margin_top(6);
@@ -1150,7 +1093,7 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     scope_box.append(&scope_title);
     scope_box.append(&scope_hint);
     scope_box.append(&scope_list);
-    scope_box.append(&lemmas_list);
+    scope_box.append(&options_list);
 
     let scope_button = gtk::MenuButton::builder()
         .icon_name("view-list-symbolic")
@@ -1184,7 +1127,7 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         words: Rc::new(RefCell::new(Vec::new())),
         shown: Rc::new(RefCell::new(None)),
         auto_select: Rc::new(Cell::new(false)),
-        lemmas_only: Rc::new(Cell::new(false)),
+        fold_forms: Rc::new(Cell::new(false)),
         scope: Rc::new(RefCell::new(Vec::new())),
         scope_list,
         scope_button,
@@ -1219,12 +1162,20 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         }
     ));
 
-    lemmas_only.connect_toggled(glib::clone!(
+    fold_forms.connect_toggled(glib::clone!(
         #[weak]
         ui,
         move |toggle| {
-            ui.lemmas_only.set(toggle.is_active());
+            ui.fold_forms.set(toggle.is_active());
             ui.populate_results(&ui.search.text());
+            // and render the open definition again under the new setting, for the
+            // same reason a scope change does: the rebuilt wordlist drops the
+            // selection silently, and a pane left behind would describe a row that
+            // is no longer beside it.
+            let shown = ui.shown.borrow().clone();
+            if let Some(word) = shown {
+                ui.show_word(&word);
+            }
         }
     ));
 

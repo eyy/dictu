@@ -190,65 +190,35 @@ these are blocked on a decision or an action only you can take. nothing else wai
 
 ## done
 
-- **[x] #33 the wordlist can be asked for words, not forms.** searching `rex` walked into 26
-  perfect-tense forms of *rego*; `esse` and `amo` filled the list entirely. the scope panel
-  now carries a **Lemmas only** switch, and the status line says when it is on, so a short
-  list is never a mystery.
-  measured on the collection, rows before → after: `rex` **28 → 3**, `esse` **201 → 25**,
-  `amo` **200 → 79**, `sam` **204 → 74**, `regis` **20 → 7**, and an inflection searched on
-  its own (`dacrimarum`) **1 → 0**.
-  **it turns out to be a hebrew feature too**, which was not the plan — a review pointed out
-  that *three* loaded dictionaries ship a `.syn`, not one. a hebrew-hebrew dictionary files 2.9 MB of
-  plurals, construct forms and unpointed spellings that way (`כאבים` resolves to `כאב`'s
-  entry and says so: `מן כאב`), so: `כאב` **28 → 13**, `מלך` **29 → 19**, `אב` **252 → 215**.
-  greek is untouched — LSJ, Bailly, Dodson, Pindar and the Middle Liddell ship no `.syn`
-  between them, so `λόγος` reads the same either way.
-  **it cost one number.** the plan budgeted 333 ms of index-time text analysis to find the
-  lemmas, and #44 made that unnecessary: StarDict appends `.syn` records after the `.idx`
-  ones, so a dictionary's own headwords and the forms it points at them are already
-  *partitioned* in display order. the cache stores where the aliases begin (one `u32`,
-  VERSION 5) and `is_alias` is a comparison. no pass, no heuristic, no text read.
-  a row survives while any of its spellings is a headword in its own right, so a word that
-  one dictionary files properly and another files as a form is still a word. formats with no
-  such notion answer `false`: a dsl card's spelling variants are ways of writing the
-  headword, not pointers at it, and #43 already merges those into its row.
-  the setting is session-only, like the scope beside it — #45 is where preferences start
-  persisting.
-  the old evidence, kept because it is the measurement that justified the whole line of
-  work: `latin infl+lewis` filed 1,427,152 entries for 1,223,585 headwords, and its worst
-  offenders were *auxiliary* forms attached to every verb that uses them — `esse` and `eris`
-  in 100 entries each, `sum` in 73, `sam` in 71.
-
-- **[x] #43 spellings of one lemma are one row.** three shapes of one bug, all gone:
-  `כאב` listed `כְּאֵב לֵב` and `כאב לב` as separate rows (**29 rows → 18**, and every
-  remaining pair differs in *letters* — plene `רואש` against defective `ראש` — not in
-  pointing, which is a different question and rightly still two rows); `λόγος` showed two
-  rows that read identically, oxia against tonos (**2 → 1**, now one row of five
-  dictionaries); and Gaffiot's `rex (1)` / `Rex (2)` sat beside Lewis & Short's `rex`
-  (**one row of three dictionaries**, and `rex` is 29 rows → 27 — the other 26 are real
-  perfect-tense forms of *rego*, which is #33's job, not this one).
-  the rule, in the order it is applied: entries sharing a **bare key** are one lemma's
-  spellings; within those, a **fold key** (case, canonical form, oxia-vs-tonos, and the
-  homograph number `keys::bare` now strips) says which are literally the same spelling; and
-  then a spelling that merely *says less* joins the one it can only be — `כאב לב` into
-  `כְּאֵב לֵב` — showing the most fully marked spelling, because that is the headword a
-  reader wants and the bare one is a search key that happens to be written down.
-  **that last step is only for marks a writer may leave off**, which is the correction two
-  reviews forced and the most important line in this entry. hebrew niqqud and arabic
-  harakat annotate a spelling that is already complete; a latin, french or greek accent
-  *is* the spelling. the first draft absorbed on marks alone and merged 41,906 classes,
-  including `mur` (a wall) into `mûr` (ripe), `ou` into `où`, `cote`+`côte`+`coté` into
-  `côté`, and — worse, because they are two of the commonest words in greek — `εἰ` ("if")
-  into `εἶ` ("you are") and `ὁ` (the article) into `ὅ` (the relative). the ambiguity guard
-  did not catch them: it only fires when *two* marked spellings compete, and french
-  normally has one. `keys::only_optional_marks` now draws the line by script.
-  even within hebrew the guard still matters: `מלך` fits both `מֶלֶךְ` and `מָלָךְ`, which
-  are different words, so it stays a row of its own rather than being filed under a guess.
-  **`lookup_all` is gone**, and with it the bug that made this more than cosmetic. a row now
-  carries the spelling *each* dictionary files it under, so the pane asks each one for its
-  own spelling instead of matching a single string against all of them — which is why
-  Bailly (97,717 oxia keys, no tonos) now answers for a word typed with tonos. `resolve`
-  does the same for a link target, which is the other caller that had no row to start from.
+- **[x] #33 each definition once, not once per form pointing at it.** searching `rex` walked
+  into 26 perfect-tense forms of *rego* — every one of them answering with the same
+  definition — and `esse` filled 473 rows with verbs that merely take the auxiliary. the
+  scope panel now carries **Fold repeated forms**, and every count the ui shows says when it
+  is on.
+  **the obvious rule was wrong, and two reviews caught it.** StarDict appends `.syn` records
+  after the `.idx` ones, so aliases are cheap to identify — one `u32` in the cache header
+  (VERSION 5), no index-time pass, which is what made this look free after #44. the first
+  attempt therefore hid aliases as such. but a `.syn` is only *sometimes* an inflection
+  table: Whitaker's is, while **a hebrew-hebrew dictionary files the modern plene spelling of tens of
+  thousands of its own lemmas that way** — 105,660 of its alias keys share a bare key with
+  no headword it files itself. so hiding aliases made everyday words unfindable at the only
+  spelling a modern reader types: `עגבנייה` (tomato), `תחבושת`, `חוסר`, `מישפט`, `סיפור`,
+  `מילחמה` all returned **nothing**. 280 of 300 sampled plene spellings did.
+  the rule that shipped instead never hides the only way to a definition: **a row goes only
+  when every entry it points at is already shown by a row above it**, and only when every
+  one of its spellings is a pointer, so a word a dictionary files itself is never folded.
+  25 of the 26 forms of *rego* repeat one definition and go; a form searched on its own is
+  the only row reaching that definition and stays.
+  measured at the wordlist's own limit of 500 rows, before → after: `rex` **27 → 3**,
+  `esse` **473 → 32**, `amo` **500+ → 91**, `sam` **215 → 78**, `regis` **19 → 7**,
+  `כאב` **18 → 13**, and the words above all still return their rows. `מלך` is **17 → 17** —
+  its rows are all headwords in their own right, which is the rule declining to do anything.
+  greek is untouched: LSJ, Bailly, Dodson, Pindar and the Middle Liddell ship no `.syn`
+  between them.
+  the setting is session-only, like the scope beside it (#45 is where preferences persist).
+  the cli's `--fold-forms` drives the same code, and its row limit is now the wordlist's:
+  the old 20 silently truncated every measurement taken through it, which is how a wrong
+  set of numbers reached a commit message.
 
 - **[x] #44 the collection, chosen.** researched, measured against what was already on
   disk, and applied. **greek needed nothing bought**: the Liddell-Scott.dsl already here is

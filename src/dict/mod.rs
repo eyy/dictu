@@ -148,6 +148,15 @@ pub trait Dictionary: Send {
     fn is_alias(&self, _index: usize) -> bool {
         false
     }
+
+    /// where in the file the entries under `headword` live — an identity for the
+    /// *definition*, not the word. two spellings that answer with the same bytes
+    /// share these, which is how a second way of reaching one entry is told from a
+    /// genuinely different entry. empty means "no identity to offer", and nothing
+    /// is deduplicated on it.
+    fn entry_ids(&self, _headword: &str) -> Vec<u64> {
+        Vec::new()
+    }
 }
 
 /// the dictionary file formats dictu knows about.

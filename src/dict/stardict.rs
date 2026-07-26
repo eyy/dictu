@@ -213,6 +213,15 @@ impl Dictionary for StarDict {
     fn is_alias(&self, index: usize) -> bool {
         self.index.is_alias(index)
     }
+
+    fn entry_ids(&self, headword: &str) -> Vec<u64> {
+        self.index
+            .ranges(headword)
+            .into_iter()
+            .flatten()
+            .map(|(offset, _)| offset)
+            .collect()
+    }
 }
 
 // -- .ifo ------------------------------------------------------------------
@@ -290,6 +299,11 @@ fn apply_syn<'a>(syn: &'a [u8], entries: &mut Entries<'a>, display: &mut Vec<u32
             continue; // out of range: a corrupt .syn record, skipped.
         }
         let range = entries[entry_index].1;
+        // note a shape that does not occur in any dictionary here (checked: none of
+        // the three `.syn` files has a `##` entry at all): a record pointing *at*
+        // metadata would make the alias the only listed way to reach that entry, so
+        // anything treating aliases as skippable would lose it rather than lose a
+        // duplicate of it.
         if !word.starts_with("##") {
             display.push(entries.len() as u32);
         }
@@ -592,8 +606,10 @@ mod tests {
         assert_eq!(map.get("sametypesequence").unwrap(), "h");
         assert!(!map.contains_key("StarDict's dict ifo file"));
     }
-    /// roadmap #33: a `.syn` record is a pointer at another entry, and in the one
-    /// dictionary here that ships them, every one is an inflected form.
+    /// roadmap #33: a `.syn` record is a pointer at another entry. what kind of
+    /// pointer is the dictionary's business — Whitaker's are inflected forms, 
+    /// a hebrew-hebrew dictionary's mix those with plene spellings and abbreviations — so the reader
+    /// only reports *that* it is one.
     #[test]
     fn syn_words_are_aliases_and_idx_words_are_not() {
         let dir = temp_dir("alias");
