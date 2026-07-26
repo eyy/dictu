@@ -19,6 +19,28 @@ nothing open right now.
 
 ## next — 2026-07-24 feedback
 
+- **[ ] #47 resolve a citation where it is written.** LSJ's prose is mostly references —
+  `Cic. Rep. 2, 30`, `Hdt. 2, 35`, `Alex.Aphr. in Metaph.` — and the collection already
+  holds the key that decodes them: `LSJ sources`, 2,042 entries mapping each abbreviation to
+  its author and work (`Alexander Aphrodisiensis Philosophus, in Aristotelis Metaphysica`).
+  today that is a second search you have to run by hand, in a wordlist that also has to show
+  you the citation rows. resolving them in place — a hover, or the underline treatment #20
+  already built for links — turns a wall of abbreviations into readable prose.
+  the interesting parts, none of which are the tooltip:
+  1. **finding them in rendered text.** matching has to be longest-first (`Cic. Rep.` before
+     `Cic.`), tolerant of the spacing the two sides disagree on (the key is `Alex. Aphr.`,
+     LSJ writes `Alex.Aphr.`), and conservative — a rule that fires on `a` or `id.` makes
+     the pane unreadable in the other direction. require a dot and a minimum length.
+  2. **which dictionary's abbreviations.** this key is LSJ's. Bailly and Gaffiot cite in
+     french with their own lists, and Lewis & Short has a third. the map has to be chosen
+     per dictionary section, not applied globally, or Gaffiot's `Pl.` (Plaute) will be
+     resolved with LSJ's `Pl.` (Plato).
+  3. **whether `LSJ sources` should still be a dictionary.** it is one today, so searching
+     `Cic` returns seven citation rows before any word. once its content is reachable inside
+     definitions, the honest answer may be that it belongs in the index but not the
+     wordlist — which is a new idea for the app (a dictionary that answers but does not
+     list) and worth deciding deliberately.
+
 - **[ ] #46 architectural review: draw the module boundaries properly.** the parts that were
   extracted are clean — `dict/` (four readers behind one trait), `keys`, `index_cache`,
   `language`, `config` — but `main.rs` is now ~1,400 lines holding four unrelated jobs: the
