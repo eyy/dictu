@@ -19,7 +19,31 @@ nothing open right now.
 
 ## next — 2026-07-24 feedback
 
+- **[ ] #45 let the user order the dictionaries, and sort results by that order.**
+  the scope panel lists dictionaries in scan order (`config::scan` sorts by label) and the
+  wordlist inherits whatever the merged index hands back, so which dictionary answers first
+  is an accident. it should be a preference: drag the list into the order you trust, and
+  have both the rows and the definition pane's sections follow it. two parts — a reorderable
+  list in the panel, and an ordering the search respects — and the second is the one with
+  teeth: results are ordered by key today, and dictionary rank has to sort *within* a word
+  without breaking #12's attribution or the row limit. the order is a real setting, so it
+  persists — which #38 has just made safe to write.
+
+- **[ ] #44 better latin and greek dictionaries.** the whole reason #33 exists is that
+  `latin infl+lewis` is inflection-exploded: 1,427,152 entries for 1,223,585 headwords, each
+  inflection carrying its own copy of the definition, which is what makes `rex` return 27
+  rows. a lemma-keyed Lewis & Short would delete that problem rather than filter it. wanted:
+  the full LSJ, the Middle Liddell, a proper Lewis & Short — and, since both of those books
+  are 19th-century, whatever modern lexica (Cambridge Greek Lexicon, Montanari, OLD, TLL,
+  Gaffiot…) can be had legitimately offline. Whitaker's is not wanted at all once a real
+  Latin dictionary is in. **research is out; the choice is yours** — it comes back as a
+  comparison of concrete downloads with formats, entry counts, licences and effort.
+
 - **[ ] #33 wordlist: tell lemmas from inflections** (the other half of #15).
+  **hold until #44 is decided.** phase D is worth 333 ms of index time to rescue an
+  inflection-exploded dictionary; it is worth much less if that dictionary is replaced by a
+  lemma-keyed one. the work is real either way — Liddell&Scott files inflections too — but
+  how much of it, and against which file, depends on what lands.
   the noise is easy to see: `dictu search rex` returns 27 results, 26 of them inflections of
   one lemma. differentiate them in the row, and add a config option to hide inflections /
   search lemmas only.
