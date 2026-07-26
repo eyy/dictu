@@ -58,6 +58,7 @@ pub fn fold(word: &str) -> Cow<'_, str> {
 /// the bare key, derived from a *fold* key — never from the raw word, so the two
 /// keys agree about case and canonical form and differ only in the marks.
 pub fn bare(fold: &str) -> Cow<'_, str> {
+    let fold = without_homograph(fold);
     if fold.is_ascii() {
         return Cow::Borrowed(fold); // nothing ascii decomposes.
     }
@@ -69,6 +70,25 @@ pub fn bare(fold: &str) -> Cow<'_, str> {
     match stripped == fold {
         true => Cow::Borrowed(fold),
         false => Cow::Owned(stripped),
+    }
+}
+
+/// a headword without the number a dictionary hangs off it to tell homographs
+/// apart. Gaffiot files `rex (1)` and `Rex (2)` — 7,023 of its 72,165 keys carry
+/// one — and a reader typing `rex` means both. it is bookkeeping, not spelling,
+/// so it comes off the key exactly as a diacritic does; unlike a diacritic, no
+/// amount of unicode normalization would have removed it.
+pub fn without_homograph(word: &str) -> &str {
+    let Some(open) = word
+        .strip_suffix(')')
+        .and_then(|without_close| without_close.rfind(" ("))
+    else {
+        return word;
+    };
+    let number = &word[open + 2..word.len() - 1];
+    match !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) {
+        true => &word[..open],
+        false => word,
     }
 }
 

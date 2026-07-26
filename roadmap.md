@@ -199,35 +199,29 @@ these are blocked on a decision or an action only you can take. nothing else wai
   2022 paper be cited. the per-dictionary heading already shown above each definition is the
   natural place to carry that attribution.
 
-- **[ ] #43 spellings of one lemma should be one row.** two shapes of the same bug, because
-  the wordlist dedups on the raw lowercased word and so never lets variants meet:
-  1. **invisible duplicates.** `λόγος` returns **two** rows that read identically, each
-     tagged `·2`: Liddell&Scott and Pindar spell it one way, Dodson and Middle Liddell the
-     other (oxia vs tonos, NFC vs NFD). nothing on screen distinguishes them.
-  2. **pointed and unpointed side by side** (your report). `כאב` lists both `כְּאֵב לֵב` and
-     `כאב לב` — one lemma, written twice. **the pointed spelling is the one to show**, even
-     though the unpointed one is what the query matched; the bare form is a search key, not
-     a headword the user wants to read.
-  3. **homograph suffixes baked into a headword.** Gaffiot 2016 files 7,023 of its 72,165
-     keys as `rex (1)`, `Rex (2)`, `a (1)`, so `rex` now returns a `rex` row *and* a
-     `rex (1)` row and a `Rex (2)` row. prefix search reaches them, which is why the
-     dictionary is usable at all, but they read as three words when they are one. stripping
-     a trailing ` (n)` for the row key is a normalization like any other — it just isn't a
-     unicode one.
-
-  neither is a dictionary problem: #44 removed the duplicate LSJ build and `λόγος` still
-  shows two rows, because the remaining four dictionaries split 2/2 over oxia and tonos.
-  both predate #12, which only made the first legible by putting a count on each half. the
-  fix is one key: rows keyed on the **bare key** from #39, so every spelling of a lemma
-  lands in one row, with the most-marked spelling winning the display. `lookup_all` has to
-  follow in the same change, because it matches the exact spelling today and that is
-  precisely what keeps a row's count honest — a merged row over today's lookup would claim
-  four dictionaries and then show two. "most marked wins" needs a rule for ties (two
-  differently-pointed spellings, `מֶלֶךְ` vs `מָלָךְ`, are *not* one lemma and must stay
-  apart), so the merge is by identical bare key **and** compatible marks — `keys::marks_allow`
-  already decides exactly that for search, and it is the same question here.
-
 ## done
+
+- **[x] #43 spellings of one lemma are one row.** three shapes of one bug, all gone:
+  `כאב` listed `כְּאֵב לֵב` and `כאב לב` as separate rows (**29 rows → 18**, and every
+  remaining pair differs in *letters* — plene `רואש` against defective `ראש` — not in
+  pointing, which is a different question and rightly still two rows); `λόγος` showed two
+  rows that read identically, oxia against tonos (**2 → 1**, now one row of five
+  dictionaries); and Gaffiot's `rex (1)` / `Rex (2)` sat beside Lewis & Short's `rex`
+  (**one row of three dictionaries**, and `rex` is 29 rows → 27 — the other 26 are real
+  perfect-tense forms of *rego*, which is #33's job, not this one).
+  the rule, in the order it is applied: entries sharing a **bare key** are one lemma's
+  spellings; within those, a **fold key** (case, canonical form, oxia-vs-tonos, and the
+  homograph number `keys::bare` now strips) says which are literally the same spelling; and
+  then a spelling that merely *says less* joins the one it can only be — `כאב לב` into
+  `כְּאֵב לֵב`. only when unambiguous: `מלך` fits both `מֶלֶךְ` and `מָלָךְ`, which are
+  different words, so it stays a row of its own rather than being filed under a guess.
+  the row shows the most fully marked spelling, because that is the headword a reader wants
+  and the bare one is a search key that happens to be written down.
+  **`lookup_all` is gone**, and with it the bug that made this more than cosmetic. a row now
+  carries the spelling *each* dictionary files it under, so the pane asks each one for its
+  own spelling instead of matching a single string against all of them — which is why
+  Bailly (97,717 oxia keys, no tonos) now answers for a word typed with tonos. `resolve`
+  does the same for a link target, which is the other caller that had no row to start from.
 
 - **[x] #44 the collection, chosen.** researched, measured against what was already on
   disk, and applied. **greek needed nothing bought**: the Liddell-Scott.dsl already here is

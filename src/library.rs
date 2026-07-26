@@ -7,13 +7,12 @@
 //! greek final sigma and every combining mark settled — so an unpointed hebrew
 //! query reaches the pointed headwords it should. a query that does spell out
 //! its diacritics is honored by filtering the run it lands on; see
-//! `prefix_search`.
+//! `search`.
 //!
 //! that sort is the second half of startup's cost — 4.4 s over 1.47M headwords —
 //! so it is persisted too, and mapped straight back when the collection hasn't
 //! changed (`index_cache::Order`, roadmap #7).
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::config::DictEntry;
@@ -27,10 +26,28 @@ struct Loaded {
     dict: Box<dyn Dictionary>,
 }
 
-/// a single search result: a headword and which dictionary it came from.
-pub struct Hit {
+/// one wordlist row: a lemma, however the dictionaries spell it. `כאב לב` and
+/// `כְּאֵב לֵב` are one row, as are the oxia and tonos spellings of `λόγος` and
+/// Gaffiot's `rex (1)` beside Lewis & Short's `rex`.
+#[derive(Clone, Debug)]
+pub struct Row {
+    /// the spelling to show: the most fully marked in the group, because the
+    /// pointed form is the headword a reader wants and the bare one is a search
+    /// key that happens to be written down.
     pub word: String,
-    pub dict: usize,
+    /// every dictionary that has this lemma, with the spelling it files it under
+    /// — which is how the definition pane finds the entries again without
+    /// guessing at anyone's normalization.
+    pub members: Vec<(usize, String)>,
+}
+
+impl Row {
+    /// the dictionaries answering for this row, in library order, each once.
+    pub fn dicts(&self) -> Vec<usize> {
+        let mut dicts: Vec<usize> = self.members.iter().map(|(dict, _)| *dict).collect();
+        dicts.dedup();
+        dicts
+    }
 }
 
 pub struct Library {
@@ -132,7 +149,7 @@ impl Library {
     /// headword must carry every mark the query typed (`keys::marks_allow`), so
     /// `מֶלֶךְ` no longer answers with `מָלָךְ` while `מֶלך`, pointed half way,
     /// still reaches `מֶלֶךְ`.
-    pub fn prefix_search(&self, query: &str, limit: usize, active: &[bool]) -> Vec<Hit> {
+    pub fn search(&self, query: &str, limit: usize, active: &[bool]) -> Vec<Row> {
         let fold = keys::fold(query.trim());
         let needle = keys::bare(&fold);
         // an empty needle is every word: a query of nothing, or of nothing but
@@ -157,24 +174,25 @@ impl Library {
             }
         }
 
-        let mut hits = Vec::new();
-        // the limit counts rows, not index entries: the wordlist shows one row per
-        // word and names every dictionary that has it (#12), so a walk that cut off
-        // mid-word would let a row claim two dictionaries when three define it.
-        // entries sharing a key are contiguous and a word has only one key, so
-        // stopping at a key boundary leaves no row half-attributed.
-        let mut rows: HashSet<String> = HashSet::new();
-        let mut run: &[u8] = &[];
+        let mut rows: Vec<Row> = Vec::new();
+        // every entry sharing a key is one lemma's worth of spellings, and they are
+        // contiguous — so a run is collected whole and grouped, and the limit is
+        // only consulted between runs. stopping mid-run would split a lemma across
+        // two rows, or leave one of them missing a dictionary.
+        let mut run: Vec<(usize, &str)> = Vec::new();
+        let mut run_key: &[u8] = &[];
         for i in lo..self.sorted.count() {
             let key = self.sorted.key(i);
             if !key.starts_with(needle) {
                 break; // sorted, so the prefix run has ended.
             }
-            if key != run {
+            if key != run_key {
+                rows.extend(group(&run));
+                run.clear();
                 if rows.len() >= limit {
-                    break;
+                    return rows;
                 }
-                run = key;
+                run_key = key;
             }
             let Some((d, h)) = self.locate(self.sorted.slot(i)) else {
                 continue; // a corrupt order names no dictionary; skip it.
@@ -186,27 +204,41 @@ impl Library {
             if marked && !keys::marks_allow(&fold, word) {
                 continue; // the headword contradicts a diacritic the query typed.
             }
-            // lowercased to match the wordlist's own dedup, so the count the ui
-            // shows and the limit the walk enforces are the same number.
-            rows.insert(word.to_lowercase());
-            hits.push(Hit {
-                word: word.to_string(),
-                dict: d as usize,
-            });
+            run.push((d as usize, word));
         }
-        hits
+        rows.extend(group(&run));
+        rows
     }
 
-    /// every dictionary that defines an exact headword, with all of its entries for
-    /// that word — a headword can be filed under many (see `Dictionary::lookup`).
-    /// dictionaries with nothing to say are left out.
-    pub fn lookup_all(&self, word: &str) -> Vec<(usize, Vec<String>)> {
-        self.dicts
+    /// the row a spelling belongs to — what a link target needs, since the
+    /// dictionary that has the word may spell it with marks the link does not
+    /// (Bailly stores 97,717 greek keys with oxia and none with tonos, so an
+    /// exact-match lookup of a word typed on a greek keyboard finds nothing).
+    pub fn resolve(&self, word: &str) -> Option<Row> {
+        let fold = keys::fold(word);
+        let mut rows = self.search(word, 8, &[]);
+        let found = rows
             .iter()
-            .enumerate()
-            .map(|(index, loaded)| (index, loaded.dict.lookup(word)))
-            .filter(|(_, entries)| !entries.is_empty())
-            .collect()
+            .position(|row| {
+                row.word == word || row.members.iter().any(|(_, spelling)| spelling == word)
+            })
+            .or_else(|| rows.iter().position(|row| keys::fold(&row.word) == fold));
+        match found {
+            Some(row) => Some(rows.swap_remove(row)),
+            // the spelling is not in the collection under any of its own marks;
+            // the nearest row on the same letters is still the right answer.
+            None => rows.into_iter().next(),
+        }
+    }
+
+    /// one dictionary's entries for the exact headword it files them under. the
+    /// spelling comes from a `Row`, so it is the dictionary's own and needs no
+    /// normalizing.
+    pub fn entries(&self, dict: usize, word: &str) -> Vec<String> {
+        self.dicts
+            .get(dict)
+            .map(|loaded| loaded.dict.lookup(word))
+            .unwrap_or_default()
     }
 
     fn word(&self, dict: u32, headword: u32) -> &str {
@@ -225,6 +257,92 @@ impl Library {
 
 /// where each dictionary's headwords begin once the lists are laid end to end,
 /// with the total last — the slot numbering the merged order is written in.
+/// group one key's worth of entries into rows.
+///
+/// every entry here shares a bare key, so they are spellings of the same letters
+/// and differ only in marks (and in the homograph numbers `keys::bare` strips).
+/// two questions decide the rows:
+///
+/// 1. **is it even a different spelling?** case, canonical form and greek
+///    oxia-vs-tonos are settled by the fold key, so entries agreeing there are one
+///    spelling by any reading — that alone merges the two `λόγος` rows.
+/// 2. **does one spelling merely say less than another?** an unpointed spelling is
+///    a less specific way of writing a pointed one, so it joins it: `כאב לב` into
+///    `כְּאֵב לֵב`. but only when the pointed one is unambiguous — `מלך` could be
+///    `מֶלֶךְ` or `מָלָךְ`, which are different words, so it stays a row of its own
+///    rather than being filed under a guess.
+fn group(run: &[(usize, &str)]) -> Vec<Row> {
+    // one class per distinct fold key — minus the homograph number, which the
+    // bare key already ignores and which is not a way of spelling anything.
+    let mut folds: Vec<String> = Vec::new();
+    let mut rows: Vec<Row> = Vec::new();
+    for &(dict, word) in run {
+        let fold = keys::without_homograph(&keys::fold(word)).to_owned();
+        match folds.iter().position(|seen| *seen == fold) {
+            Some(class) => {
+                // a spelling with nothing hanging off it is the one to show:
+                // `rex`, not the `rex (1)` that happened to sort first.
+                if keys::without_homograph(word) == word
+                    && keys::without_homograph(&rows[class].word) != rows[class].word
+                {
+                    rows[class].word = word.to_owned();
+                }
+                rows[class].members.push((dict, word.to_owned()));
+            }
+            None => {
+                folds.push(fold);
+                rows.push(Row {
+                    word: word.to_owned(),
+                    members: vec![(dict, word.to_owned())],
+                });
+            }
+        }
+    }
+
+    // a class is maximal when no other spells more marks than it does.
+    let maximal: Vec<bool> = folds
+        .iter()
+        .map(|fold| {
+            !folds
+                .iter()
+                .any(|other| other != fold && keys::marks_allow(fold, other))
+        })
+        .collect();
+
+    // fold each remaining class into the one spelling it can only be — where it
+    // could be two, it keeps its own row.
+    let mut absorbed = vec![false; rows.len()];
+    for class in 0..rows.len() {
+        if maximal[class] {
+            continue;
+        }
+        let mut into = folds
+            .iter()
+            .enumerate()
+            .filter(|(other, fold)| maximal[*other] && keys::marks_allow(&folds[class], fold));
+        let (Some((host, _)), None) = (into.next(), into.next()) else {
+            continue; // ambiguous: `מלך` under both `מֶלֶךְ` and `מָלָךְ`.
+        };
+        let members = std::mem::take(&mut rows[class].members);
+        rows[host].members.extend(members);
+        absorbed[class] = true;
+    }
+
+    let mut kept: Vec<Row> = rows
+        .into_iter()
+        .zip(absorbed)
+        .filter(|(_, absorbed)| !absorbed)
+        .map(|(row, _)| row)
+        .collect();
+    // one dictionary per row per spelling, in library order, so the count a row
+    // shows and the sections the pane renders are in the same order.
+    for row in &mut kept {
+        row.members.sort_by_key(|(dict, _)| *dict);
+        row.members.dedup();
+    }
+    kept
+}
+
 fn slot_bases(dicts: &[Loaded]) -> Vec<u32> {
     std::iter::once(0)
         .chain(dicts.iter().scan(0u32, |at, loaded| {
@@ -448,25 +566,24 @@ mod tests {
     }
 
     #[test]
-    fn prefix_search_is_case_insensitive_and_sorted() {
-        let hits = lib().prefix_search("ap", 10, &[]);
-        // "Apple", "apple", "apricot" all prefix-match "ap" (case-insensitive);
-        // "grape" does not (prefix, not substring). sorted order.
-        let words: Vec<&str> = hits.iter().map(|h| h.word.as_str()).collect();
-        assert!(words.contains(&"Apple") && words.contains(&"apple") && words.contains(&"apricot"));
-        assert!(!words.contains(&"grape"));
+    fn search_is_case_insensitive_and_sorted() {
+        let rows = lib().search("ap", 10, &[]);
+        // "Apple"/"apple" prefix-match "ap" and are one row (case is not a
+        // spelling); "apricot" is a second; "grape" is a prefix miss, not a
+        // substring one.
+        let words: Vec<&str> = rows.iter().map(|row| row.word.as_str()).collect();
+        assert_eq!(words, ["Apple", "apricot"]);
     }
 
     #[test]
-    fn prefix_search_respects_limit_and_empty() {
-        assert!(lib().prefix_search("", 10, &[]).is_empty());
-        // the limit counts rows, and "Apple"/"apple" share one bare key, so a limit
-        // of 2 admits that whole run plus "apricot" — three entries, two rows.
-        assert_eq!(lib().prefix_search("ap", 2, &[]).len(), 3);
-        assert!(lib().prefix_search("zzz", 10, &[]).is_empty());
+    fn search_respects_limit_and_empty() {
+        assert!(lib().search("", 10, &[]).is_empty());
+        // the limit counts rows: "Apple"/"apple" are one, "apricot" the second.
+        assert_eq!(lib().search("ap", 2, &[]).len(), 2);
+        assert!(lib().search("zzz", 10, &[]).is_empty());
         // a query of nothing but combining marks bares down to an empty key,
         // which must not read as "every word".
-        assert!(lib().prefix_search("\u{5b0}", 10, &[]).is_empty());
+        assert!(lib().search("\u{5b0}", 10, &[]).is_empty());
     }
 
     /// one dictionary of real hebrew headwords, three ways of pointing the same
@@ -556,14 +673,16 @@ mod tests {
 
         // one row's worth of limit, and the row is the last thing the walk sees:
         // both dictionaries' entries for it still have to come back.
-        let hits = shared.prefix_search("log", 1, &[]);
-        let words: Vec<&str> = hits.iter().map(|h| h.word.as_str()).collect();
-        assert_eq!(words, ["logos", "logos"], "the shared spelling, twice");
-        let mut dicts: Vec<usize> = hits.iter().map(|h| h.dict).collect();
-        dicts.sort_unstable();
-        assert_eq!(dicts, [0, 1], "both dictionaries answer for the one row");
+        let rows = shared.search("log", 1, &[]);
+        assert_eq!(rows.len(), 1, "one row asked for, one row back");
+        assert_eq!(rows[0].word, "logos");
+        assert_eq!(
+            rows[0].dicts(),
+            [0, 1],
+            "both dictionaries answer for the row"
+        );
         // and the run it stopped in is complete, not spilled into the next word.
-        assert!(!words.contains(&"logotype"));
+        assert!(rows.iter().all(|row| row.word != "logotype"));
     }
 
     /// the case-variant rule, which is the other half of #12 and not the same
@@ -571,30 +690,43 @@ mod tests {
     /// by the spelling it shows, so the ui counts one dictionary for it, not two.
     #[test]
     fn a_key_run_can_hold_two_spellings() {
-        let hits = lib().prefix_search("ap", 1, &[]);
-        let words: Vec<&str> = hits.iter().map(|h| h.word.as_str()).collect();
-        assert_eq!(words, ["Apple", "apple"], "one key run, two spellings");
-        assert_ne!(hits[0].dict, hits[1].dict);
+        let rows = lib().search("ap", 1, &[]);
+        assert_eq!(rows.len(), 1);
+        // one row, and it remembers that the two dictionaries spell it differently.
+        assert_eq!(
+            rows[0].members,
+            [(0, "Apple".to_owned()), (1, "apple".to_owned())]
+        );
     }
 
     #[test]
-    fn prefix_search_honors_the_active_scope() {
+    fn search_honors_the_active_scope() {
         // dict A holds "Apple"/"apricot", dict B "apple"/"grape".
-        let only_b = lib().prefix_search("ap", 10, &[false, true]);
+        let only_b = lib().search("ap", 10, &[false, true]);
         assert_eq!(only_b.len(), 1);
         assert_eq!(only_b[0].word, "apple");
         // a short mask leaves later dicts included, so this still sees dict B.
-        assert_eq!(lib().prefix_search("ap", 10, &[false]).len(), 1);
-        assert!(lib().prefix_search("ap", 10, &[false, false]).is_empty());
+        assert_eq!(lib().search("ap", 10, &[false]).len(), 1);
+        assert!(lib().search("ap", 10, &[false, false]).is_empty());
     }
 
     #[test]
-    fn lookup_all_spans_dicts() {
-        let defs = lib().lookup_all("apple");
-        // "apple" exact in dict B; dict A has "Apple" (different case) -> lookup
-        // is exact/case-sensitive, so only B matches here.
-        assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].0, 1);
+    fn a_row_carries_the_spelling_each_dictionary_uses() {
+        // "Apple" in dict A and "apple" in dict B are one row now, and each
+        // dictionary is remembered with its own spelling — which is what lets the
+        // pane ask for entries without any dictionary agreeing on case.
+        let lib = lib();
+        let row = lib.resolve("apple").expect("a row for apple");
+        assert_eq!(
+            row.members,
+            [(0, "Apple".to_owned()), (1, "apple".to_owned())]
+        );
+        assert_eq!(row.dicts(), [0, 1]);
+        assert!(!lib.entries(0, "Apple").is_empty());
+        assert!(!lib.entries(1, "apple").is_empty());
+        // and asking a dictionary for a spelling it does not file gets nothing,
+        // which is why the row remembers rather than guesses.
+        assert!(lib.entries(0, "apple").is_empty());
     }
 
     #[test]
@@ -637,9 +769,9 @@ mod tests {
 
     fn words_of(library: &Library, query: &str) -> Vec<String> {
         library
-            .prefix_search(query, 10, &[])
+            .search(query, 10, &[])
             .into_iter()
-            .map(|hit| hit.word)
+            .map(|row| row.word)
             .collect()
     }
 
@@ -741,8 +873,8 @@ mod tests {
         let entries = vec![a, b.clone()];
 
         let cold = Library::open_with_cache(&entries, Some(&cache));
-        // case-insensitive across dicts, ties by dictionary then stored order.
-        assert_eq!(words_of(&cold, "ap"), ["Apple", "apple", "apricot"]);
+        // case-insensitive across dicts, and "Apple"/"apple" are one row.
+        assert_eq!(words_of(&cold, "ap"), ["Apple", "apricot"]);
         assert_eq!(cold.total_headwords(), 4);
         let order_file = index_cache::order_path(&cache);
         let published = std::fs::metadata(&order_file).expect("an order file").ino();
@@ -750,9 +882,12 @@ mod tests {
         // second open: the very same answers, off the mapped file — a rebuild
         // would have published a new inode.
         let warm = Library::open_with_cache(&entries, Some(&cache));
-        assert_eq!(words_of(&warm, "ap"), ["Apple", "apple", "apricot"]);
+        assert_eq!(words_of(&warm, "ap"), ["Apple", "apricot"]);
         assert_eq!(words_of(&warm, "gr"), ["grape"]);
-        assert_eq!(warm.lookup_all("apple").len(), 1);
+        assert_eq!(
+            warm.resolve("apple").map(|row| row.dicts()),
+            Some(vec![0, 1])
+        );
         assert_eq!(warm.total_headwords(), 4);
         assert_eq!(std::fs::metadata(&order_file).unwrap().ino(), published);
 
@@ -760,13 +895,113 @@ mod tests {
         // so it has to be rebuilt rather than mapped.
         write_dict(&dir.join("b"), "b", &["apple", "grape", "azalea"]);
         let rebuilt = Library::open_with_cache(&entries, Some(&cache));
-        assert_eq!(
-            words_of(&rebuilt, "a"),
-            ["Apple", "apple", "apricot", "azalea"]
-        );
+        assert_eq!(words_of(&rebuilt, "a"), ["Apple", "apricot", "azalea"]);
         assert_eq!(rebuilt.total_headwords(), 5);
         assert_ne!(std::fs::metadata(&order_file).unwrap().ino(), published);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+    /// roadmap #43. one lemma, one row — but only where the spellings really are
+    /// one lemma.
+    #[test]
+    fn a_bare_spelling_joins_the_pointed_one_it_can_only_be() {
+        // one pointed form and its bare spelling: the same word written twice, so
+        // one row, showing the form a reader wants rather than the search key.
+        let one = Library::from_loaded(
+            vec![Loaded {
+                label: "A".into(),
+                dict: Box::new(Mock {
+                    internal: "mock".into(),
+                    words: vec!["כאב לב".into(), "כְּאֵב לֵב".into()],
+                }),
+            }],
+            &[],
+            None,
+        );
+        let rows = one.search("כאב", 10, &[]);
+        assert_eq!(rows.len(), 1, "two spellings of one lemma made two rows");
+        assert_eq!(rows[0].word, "כְּאֵב לֵב", "the bare spelling won the row");
+        assert_eq!(rows[0].members.len(), 2, "both spellings are in the row");
+    }
+
+    #[test]
+    fn a_bare_spelling_that_could_be_two_words_stays_its_own_row() {
+        // `מלך` is compatible with both `מֶלֶךְ` and `מָלָךְ`, which are different
+        // words. filing it under either would be a guess, so it stays a row.
+        let rows = hebrew().search("מלך", 10, &[]);
+        let words: Vec<&str> = rows.iter().map(|row| row.word.as_str()).collect();
+        assert_eq!(words.len(), 3, "expected three rows, got {words:?}");
+        assert!(words.contains(&"מלך") && words.contains(&"מֶלֶךְ") && words.contains(&"מָלָךְ"));
+    }
+
+    #[test]
+    fn a_pointed_query_still_rules_out_the_word_it_contradicts() {
+        // the #39 rule, unchanged by grouping: the marks a query spells out are
+        // a claim, and `מֶלֶךְ` may not be answered with `מָלָךְ`.
+        let rows = hebrew().search("מֶלֶךְ", 10, &[]);
+        let words: Vec<&str> = rows.iter().map(|row| row.word.as_str()).collect();
+        assert_eq!(words, ["מֶלֶךְ"], "got {words:?}");
+    }
+
+    #[test]
+    fn a_homograph_number_is_not_a_different_word() {
+        // Gaffiot files `rex (1)` and `Rex (2)`; Lewis & Short files `rex`. one
+        // lemma, three spellings, and the number is the dictionary's bookkeeping.
+        let latin = Library::from_loaded(
+            vec![
+                Loaded {
+                    label: "Gaffiot".into(),
+                    dict: Box::new(Mock {
+                        internal: "mock".into(),
+                        words: vec!["rex (1)".into(), "Rex (2)".into()],
+                    }),
+                },
+                Loaded {
+                    label: "L&S".into(),
+                    dict: Box::new(Mock {
+                        internal: "mock".into(),
+                        words: vec!["rex".into()],
+                    }),
+                },
+            ],
+            &[],
+            None,
+        );
+        let rows = latin.search("rex", 10, &[]);
+        assert_eq!(
+            rows.len(),
+            1,
+            "got {:?}",
+            rows.iter().map(|r| &r.word).collect::<Vec<_>>()
+        );
+        assert_eq!(rows[0].dicts(), [0, 1]);
+        // and each dictionary is remembered with the spelling it actually files,
+        // numbers included, so the pane can still find the entries.
+        let spellings: Vec<&str> = rows[0].members.iter().map(|(_, w)| w.as_str()).collect();
+        assert_eq!(spellings, ["rex (1)", "Rex (2)", "rex"]);
+    }
+
+    #[test]
+    fn a_link_resolves_to_the_row_however_it_is_spelled() {
+        // Bailly stores greek with oxia and none with tonos, so a link written
+        // with tonos has to find the oxia headword — the failure that made this
+        // more than cosmetic.
+        let greek = Library::from_loaded(
+            vec![Loaded {
+                label: "Bailly".into(),
+                dict: Box::new(Mock {
+                    internal: "mock".into(),
+                    words: vec!["λ\u{1F79}γος".into()], // oxia
+                }),
+            }],
+            &[],
+            None,
+        );
+        let row = greek.resolve("λόγος").expect("tonos should find oxia");
+        assert_eq!(row.members.len(), 1);
+        assert_eq!(
+            row.members[0].1, "λ\u{1F79}γος",
+            "kept the spelling it is filed under"
+        );
     }
 }
