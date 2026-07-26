@@ -78,9 +78,13 @@ impl Config {
     /// this config applied to `existing`, as text. a hand-written config.toml says
     /// *why* a dictionary is excluded, and serde round-tripping would drop every
     /// word of it — so the document is edited in place instead: entries that
-    /// survive keep their own comments, and everything the app doesn't own (other
-    /// keys, blank lines, the file's whole layout) is carried through untouched.
-    /// `None` means there is no file yet, so one is generated.
+    /// survive keep their own comments, and what the app doesn't own (other keys,
+    /// blank lines, the file's layout) is carried through. `None` means there is no
+    /// file yet, so one is generated.
+    ///
+    /// one thing does change that we did not ask to change: the parser normalizes
+    /// CRLF line endings to LF across the whole file. content is preserved, bytes
+    /// on untouched lines are not.
     ///
     /// pure, and separate from `save`, so a test can round-trip a commented
     /// fixture without a real config to overwrite.
@@ -109,8 +113,11 @@ impl Config {
         });
 
         // keep the entries that are still wanted, in the file's own order, with
-        // their comments; drop the rest; append what is new.
-        array.retain(|value| value.as_str().is_some_and(|s| self.has_dir(s)));
+        // their comments; drop the rest; append what is new. a value we can't read
+        // as a string is left alone rather than dropped: we don't know what it is,
+        // and deleting it is the one thing this function exists not to do.
+        rescue_trailing_comments(array, |s| self.has_dir(s));
+        array.retain(|value| value.as_str().is_none_or(|s| self.has_dir(s)));
         let present: Vec<String> = array
             .iter()
             .filter_map(|v| v.as_str().map(str::to_owned))
@@ -307,6 +314,57 @@ fn config_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// move a comment written *after* an entry, on the same line, to the line above
+/// that entry — but only when the entry it is stored on is about to be removed.
+///
+/// toml_edit attaches `"a", # why a\n "b"` to **b**'s leading decor, not to a's,
+/// so dropping b would delete a comment explaining an entry that is staying. the
+/// comment cannot be left where it visually was (a comment before the comma would
+/// swallow it), so it goes above the entry it describes, which reads the same and
+/// is the style the rest of the file uses anyway.
+fn rescue_trailing_comments(array: &mut Array, keep: impl Fn(&str) -> bool) {
+    let doomed = |value: &Value| value.as_str().is_some_and(|s| !keep(s));
+    // the comment moves onto the previous surviving entry, so walk forwards and
+    // remember where that is.
+    let mut rescued: Vec<(usize, String)> = Vec::new();
+    let mut last_kept: Option<usize> = None;
+    for (i, value) in array.iter().enumerate() {
+        if !doomed(value) {
+            last_kept = Some(i);
+            continue;
+        }
+        let Some(host) = last_kept else {
+            continue; // nothing above it to carry the comment; leave it be.
+        };
+        let prefix = value
+            .decor()
+            .prefix()
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
+        // only the first line: anything after the newline was written above this
+        // entry and is about this entry, so it leaves with it.
+        let head = prefix.split('\n').next().unwrap_or("").trim();
+        if head.starts_with('#') {
+            rescued.push((host, head.to_owned()));
+        }
+    }
+
+    for (host, comment) in rescued {
+        let Some(value) = array.get_mut(host) else {
+            continue;
+        };
+        let decor = value.decor_mut();
+        let prefix = decor
+            .prefix()
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_owned();
+        // the indent to repeat is whatever the host entry sits behind.
+        let indent = prefix.rsplit('\n').next().unwrap_or("").to_owned();
+        decor.set_prefix(format!("{prefix}{comment}\n{indent}"));
+    }
+}
+
 /// lay an array out one entry per line. an entry that already carries its own
 /// leading text is left exactly as it is — that text is the file's indentation
 /// and, more to the point, its comments.
@@ -473,5 +531,41 @@ theme = "dark"
         let out = config.edited(None).unwrap();
         let back: Config = toml::from_str(&out).unwrap();
         assert_eq!(back.dictionary_dirs, config.dictionary_dirs);
+    }
+    /// toml_edit files a same-line comment under the *next* entry, so removing that
+    /// next entry would delete a note about an entry that is staying.
+    #[test]
+    fn a_comment_after_an_entry_survives_its_neighbour_being_removed() {
+        let text = "dictionary_dirs = [\n    \"/a\", # the good one\n    \"/b\",\n]\n";
+        let config = Config {
+            dictionary_dirs: vec!["/a".into()],
+        };
+        let out = config.edited(Some(text)).unwrap();
+
+        assert!(
+            out.contains("# the good one"),
+            "lost the note about /a:\n{out}"
+        );
+        assert!(
+            !out.contains("/b"),
+            "kept the entry it was asked to drop:\n{out}"
+        );
+        let back: Config = toml::from_str(&out).unwrap();
+        assert_eq!(back.dictionary_dirs, ["/a"]);
+    }
+
+    /// we don't know what a non-string entry is, so we don't delete it — the whole
+    /// point of this function is to not lose what it doesn't understand.
+    #[test]
+    fn a_value_we_cannot_read_is_left_alone() {
+        let text = "dictionary_dirs = [\"/a\", 42]\n";
+        let config = Config {
+            dictionary_dirs: vec!["/a".into()],
+        };
+        let out = config.edited(Some(text)).unwrap();
+        assert!(
+            out.contains("42"),
+            "dropped a value it could not read:\n{out}"
+        );
     }
 }
