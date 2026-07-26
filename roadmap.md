@@ -183,15 +183,6 @@ these are blocked on a decision or an action only you can take. nothing else wai
   2022 paper be cited. the per-dictionary heading already shown above each definition is the
   natural place to carry that attribution.
 
-- **[ ] #38 saving `config.toml` destroys its comments.** `Config::save` (`src/config.rs`)
-  rewrites the whole file through serde, so the hand-written notes in the real config —
-  which say *why* the #19 Latin duplicates and the #34 French dictionary are excluded —
-  would be gone the first time anything persisted a change. that is why #14's scope panel
-  keeps its choice in memory and why `Config::exclude` is still unwired: a "remove this
-  dictionary for good" ui isn't possible until saving edits the file in place. `toml_edit`
-  (already in the tree as toml 0.8's own dependency) preserves comments and layout; the
-  test that proves it has to round-trip a commented fixture, not a generated one.
-
 - **[ ] #43 spellings of one lemma should be one row.** two shapes of the same bug, because
   the wordlist dedups on the raw lowercased word and so never lets variants meet:
   1. **invisible duplicates.** `λόγος` returns **two** rows that read identically, each
@@ -213,6 +204,27 @@ these are blocked on a decision or an action only you can take. nothing else wai
   already decides exactly that for search, and it is the same question here.
 
 ## done
+
+- **[x] #38 saving `config.toml` keeps its comments.** `Config::save` rewrote the file
+  through serde, which would have deleted the notes saying *why* the #19 Latin duplicates
+  and the #34 French dictionary are excluded — the first time anything persisted a change.
+  it now edits the document with `toml_edit` (the version `toml` already depends on, so no
+  second parser), through a pure text transform (`Config::edited`) that a test can drive
+  with a *commented* fixture rather than a generated one.
+  the hard part was not editing toml, it was **deciding who owns a comment**: toml_edit
+  stores decor before a value, so a note written after entry X is filed under X+1 and a
+  note after the last entry lives in the array's trailing text. the first attempt patched
+  those cases one at a time and got them wrong — an append walked the last note onto the
+  new entry, and a removal could leave a dead entry's reason sitting on one that stayed,
+  which states something false rather than merely losing something true. every comment is
+  now moved above the entry it is about *before* anything is added or removed, after which
+  keep-or-drop is trivial. the array is rebuilt from the list rather than filtered, so the
+  file follows a reordered list (#45 will want that) and a duplicate collapses.
+  the guard is a property test — 600 generated arrangements of comment placement, keep-sets,
+  reorderings and appends — not the handful of examples that let the first attempt pass.
+  measured on the real config: 13 lines, 7 of them comments, byte-identical after a save
+  that changes nothing. `Config::exclude` is still unwired: possible now, but a "remove for
+  good" ui is its own item, and the scope panel (#14) stays session-only.
 
 - **[x] #12 say which dictionaries answer.** a wordlist row used to wear the tag of the
   first dictionary that had the word and silently drop the rest; it now counts them —
