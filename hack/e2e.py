@@ -573,6 +573,36 @@ def main():
             greek == ["GRC"],
             f"expected ['GRC'], got {greek}",
         )
+
+        # roadmap #39: the index is keyed by a normalized form, so a query typed
+        # without the accent — and with a plain sigma, which lowercasing alone
+        # never folded — still finds the accented headword.
+        app_proc.forward("--search", "λογοσ")
+        unaccented = wait_for(
+            lambda: [w for w in widgets.row_words() if w] or None,
+            15,
+            "rows for the unaccented greek query",
+        )
+        r.check(
+            "an unaccented query finds an accented headword",
+            unaccented == ["λόγος"],
+            f"expected ['λόγος'], got {unaccented}",
+        )
+
+        # the other half of that rule: an accent the query spells out has to be
+        # honoured, so a grave is not answered with an acute.
+        app_proc.forward("--search", "λὸγος")
+        r.check(
+            "a query's own accent rules out a different one",
+            bool(
+                wait_for(
+                    lambda: not [w for w in widgets.row_words() if w] or None,
+                    15,
+                    "the wordlist to clear",
+                )
+            ),
+        )
+
         app_proc.forward("--search", "zeit")
         fallback = wait_for(lambda: widgets.row_tags() or None, 10, "the fallback tag")
         r.check(

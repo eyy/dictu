@@ -1,7 +1,13 @@
 //! the whole collection of loaded dictionaries, with unified search across all
 //! of them. each dict is opened once (its index mapped or parsed, its `.dict`
-//! mmapped — see `dict`), then a single case-insensitively-sorted index over
-//! every headword gives fast prefix search without rescanning millions of words.
+//! mmapped — see `dict`), then a sorted index over every headword gives fast
+//! prefix search without rescanning millions of words.
+//!
+//! the index is sorted by the **bare** key (`keys`) — case, canonical form,
+//! greek final sigma and every combining mark settled — so an unpointed hebrew
+//! query reaches the pointed headwords it should. a query that does spell out
+//! its diacritics is honored by filtering the run it lands on; see
+//! `prefix_search`.
 //!
 //! that sort is the second half of startup's cost — 4.4 s over 1.47M headwords —
 //! so it is persisted too, and mapped straight back when the collection hasn't
@@ -10,8 +16,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::DictEntry;
-use crate::dict::{self, Dictionary};
+use crate::dict::{self, DictBytes, Dictionary};
 use crate::index_cache::{self, Order};
+use crate::keys::{self, KeyTable};
 
 /// one opened dictionary plus its display label.
 struct Loaded {
@@ -27,10 +34,13 @@ pub struct Hit {
 
 pub struct Library {
     dicts: Vec<Loaded>,
-    /// `(dict index, headword index)` for every headword across all dicts,
-    /// sorted by the lowercased headword — the merged lemma index. holds only
-    /// two u32s per entry (the words themselves stay in each dict), and on a warm
-    /// start those u32s are read straight out of the mapped cache file.
+    /// where each dictionary's headwords start in slot space — the lists laid
+    /// end to end, which is what the merged order indexes. one longer than
+    /// `dicts`, so the last entry is the total.
+    base: Vec<u32>,
+    /// every headword's slot, sorted by its bare key, with the keys themselves —
+    /// the merged index. one u32 per headword plus its key (the words stay in
+    /// each dict), read straight out of the mapped cache file on a warm start.
     sorted: Order,
 }
 
@@ -63,40 +73,20 @@ impl Library {
     }
 
     fn from_loaded(dicts: Vec<Loaded>, sources: &[PathBuf], cache: Option<&Path>) -> Self {
-        let total: usize = dicts.iter().map(|d| d.dict.headwords().len()).sum();
+        let base = slot_bases(&dicts);
+        let total = *base.last().unwrap_or(&0) as usize;
         // the order is only this collection's while every dictionary is the file
         // it was, and still holds as many headwords as it did.
         let fingerprint = merged_fingerprint(&dicts, sources);
-        let cached = cache
+        let sorted = cache
             .map(index_cache::order_path)
             .and_then(|path| Order::load(&path, &fingerprint))
-            .filter(|order| order.count() == total);
-        if let Some(sorted) = cached {
-            return Self { dicts, sorted };
-        }
-
-        // one (dict, headword) pair per headword, sorted case-insensitively.
-        // sort_by_cached_key lowercases each key once (transient), not per compare.
-        let mut sorted: Vec<(u32, u32)> = dicts
-            .iter()
-            .enumerate()
-            .flat_map(|(di, loaded)| {
-                (0..loaded.dict.headwords().len()).map(move |hi| (di as u32, hi as u32))
-            })
-            .collect();
-        sorted.sort_by_cached_key(|&(d, h)| word_at(&dicts, d, h).to_lowercase());
-
-        // best effort — a cache we can't write costs the next launch time, not
-        // correctness.
-        if let Some(path) = cache.map(index_cache::order_path) {
-            let image = Order::image(&sorted, &fingerprint);
-            if let Err(err) = index_cache::store(&path, &image) {
-                eprintln!("dictu: not caching the merged index: {err:#}");
-            }
-        }
+            .filter(|order| order.count() == total)
+            .unwrap_or_else(|| build_order(&dicts, &fingerprint, cache));
         Self {
             dicts,
-            sorted: Order::Owned(sorted),
+            base,
+            sorted,
         }
     }
 
@@ -120,22 +110,38 @@ impl Library {
         self.sorted.count()
     }
 
-    /// fast prefix search over the merged index: case-insensitive, returns up to
-    /// `limit` hits in sorted order. O(log n) to locate + O(limit) to collect.
-    /// `active` scopes the search — a hit is skipped when `active[dict]` is
-    /// false (missing/short `active` = included, so `&[]` means "all dicts").
+    /// fast prefix search over the merged index: up to `limit` hits, O(log n) to
+    /// locate each run + O(limit) to collect. `active` scopes the search — a hit
+    /// is skipped when `active[dict]` is false (missing/short `active` =
+    /// included, so `&[]` means "all dicts").
+    ///
+    /// the search is **asymmetric in how specific the query is**. it runs on the
+    /// bare key, which ignores every diacritic on both sides, so `מלך` reaches
+    /// `מֶלֶךְ` and `מָלָךְ` alike — the case that matters, since 74,174 pointed
+    /// hebrew headwords have no unpointed spelling anywhere in the collection.
+    /// a query that *does* spell out diacritics then filters that run: a
+    /// headword must carry every mark the query typed (`keys::marks_allow`), so
+    /// `מֶלֶךְ` no longer answers with `מָלָךְ` while `מֶלך`, pointed half way,
+    /// still reaches `מֶלֶךְ`.
     pub fn prefix_search(&self, query: &str, limit: usize, active: &[bool]) -> Vec<Hit> {
-        let needle = query.trim().to_lowercase();
+        let fold = keys::fold(query.trim());
+        let needle = keys::bare(&fold);
+        // an empty needle is every word: a query of nothing, or of nothing but
+        // combining marks, which bare down to nothing at all.
         if needle.is_empty() {
             return Vec::new();
         }
-        // first index whose lowercased word is >= needle. hand-rolled rather than
-        // slice::partition_point because the order may be a mapped file, not a slice.
+        // a query whose bare key is its fold key spelled no diacritics, so there
+        // is nothing to hold candidates to.
+        let marked = needle != fold;
+        let needle = needle.as_bytes();
+
+        // first position whose key is >= needle. hand-rolled rather than
+        // slice::partition_point because the order is a mapped file, not a slice.
         let (mut lo, mut hi) = (0, self.sorted.count());
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            let (d, h) = self.sorted.pair(mid);
-            if self.lower_at(d, h) < needle {
+            if self.sorted.key(mid) < needle {
                 lo = mid + 1;
             } else {
                 hi = mid;
@@ -144,15 +150,21 @@ impl Library {
 
         let mut hits = Vec::new();
         for i in lo..self.sorted.count() {
-            let (d, h) = self.sorted.pair(i);
-            if !self.lower_at(d, h).starts_with(&needle) {
+            if !self.sorted.key(i).starts_with(needle) {
                 break; // sorted, so the prefix run has ended.
             }
+            let Some((d, h)) = self.locate(self.sorted.slot(i)) else {
+                continue; // a corrupt order names no dictionary; skip it.
+            };
             if !active.get(d as usize).copied().unwrap_or(true) {
                 continue; // dict deselected in the scope panel.
             }
+            let word = self.word(d, h);
+            if marked && !keys::marks_allow(&fold, word) {
+                continue; // the headword contradicts a diacritic the query typed.
+            }
             hits.push(Hit {
-                word: self.word(d, h).to_string(),
+                word: word.to_string(),
                 dict: d as usize,
             });
             if hits.len() >= limit {
@@ -178,9 +190,60 @@ impl Library {
         word_at(&self.dicts, dict, headword)
     }
 
-    fn lower_at(&self, dict: u32, headword: u32) -> String {
-        self.word(dict, headword).to_lowercase()
+    /// which dictionary and headword a slot names. the lists lie end to end, so
+    /// it is the last base not past the slot; `None` for a slot past the end,
+    /// which only a corrupt order produces.
+    fn locate(&self, slot: u32) -> Option<(u32, u32)> {
+        let dict = self.base.partition_point(|&b| b <= slot).checked_sub(1)?;
+        // the last base is the total, so it names no dictionary.
+        (dict + 1 < self.base.len()).then(|| (dict as u32, slot - self.base[dict]))
     }
+}
+
+/// where each dictionary's headwords begin once the lists are laid end to end,
+/// with the total last — the slot numbering the merged order is written in.
+fn slot_bases(dicts: &[Loaded]) -> Vec<u32> {
+    std::iter::once(0)
+        .chain(dicts.iter().scan(0u32, |at, loaded| {
+            *at += loaded.dict.headwords().len() as u32;
+            Some(*at)
+        }))
+        .collect()
+}
+
+/// the cold path: key every headword, sort by that key, and publish the two as
+/// the cache image.
+///
+/// the keys are materialized once here rather than derived per comparison — the
+/// sort this replaces called `to_lowercase()` inside the comparison, and
+/// normalizing there would cost far more (a fold is several passes over the
+/// string, and a binary search alone would do ~21 of them per keystroke).
+fn build_order(dicts: &[Loaded], fingerprint: &str, cache: Option<&Path>) -> Order {
+    let total: usize = dicts.iter().map(|d| d.dict.headwords().len()).sum();
+    let mut bare = KeyTable::with_capacity(total);
+    for word in dicts.iter().flat_map(|loaded| loaded.dict.headwords()) {
+        bare.push(&keys::bare(&keys::fold(word)));
+    }
+    let image = Order::image(&bare.order(), &bare, fingerprint);
+
+    // publish it and read the very same bytes back, so a cold start and a warm
+    // one answer off an identical structure. a cache we can't write (or can't
+    // map back, which two dictus racing on one directory could produce) costs
+    // the next launch time, not correctness: the image we hold is still good.
+    let published = cache
+        .map(index_cache::order_path)
+        .and_then(|path| match index_cache::store(&path, &image) {
+            Ok(bytes) => Some(bytes),
+            Err(err) => {
+                eprintln!("dictu: not caching the merged index: {err:#}");
+                None
+            }
+        })
+        .and_then(|bytes| Order::open(bytes, fingerprint));
+    published.unwrap_or_else(|| {
+        Order::open(DictBytes::Owned(image), fingerprint)
+            .expect("an order we just built must validate")
+    })
 }
 
 /// the headword a `(dict, headword)` pair names. bounds-checked rather than
@@ -275,6 +338,65 @@ mod tests {
         assert!(lib().prefix_search("", 10, &[]).is_empty());
         assert_eq!(lib().prefix_search("ap", 2, &[]).len(), 2);
         assert!(lib().prefix_search("zzz", 10, &[]).is_empty());
+        // a query of nothing but combining marks bares down to an empty key,
+        // which must not read as "every word".
+        assert!(lib().prefix_search("\u{5b0}", 10, &[]).is_empty());
+    }
+
+    /// one dictionary of real hebrew headwords, three ways of pointing the same
+    /// three letters (a hebrew-hebrew dictionary and Klein file all of these).
+    fn hebrew() -> Library {
+        Library::from_loaded(
+            vec![Loaded {
+                label: "A".into(),
+                dict: Box::new(Mock {
+                    words: vec!["מֶלֶךְ".into(), "מָלָךְ".into(), "מלך".into()],
+                }),
+            }],
+            &[],
+            None,
+        )
+    }
+
+    /// unpointed: the permissive direction, and the one that matters — 74,174
+    /// pointed headwords have no unpointed spelling to be found by.
+    #[test]
+    fn an_unpointed_query_finds_every_pointing() {
+        assert_eq!(words_of(&hebrew(), "מלך").len(), 3);
+    }
+
+    /// pointed: the query says how specific it is, and a headword that
+    /// contradicts it is not an answer.
+    #[test]
+    fn a_pointed_query_excludes_a_different_pointing() {
+        assert_eq!(words_of(&hebrew(), "מֶלֶךְ"), ["מֶלֶךְ"]);
+        assert_eq!(words_of(&hebrew(), "מָלָךְ"), ["מָלָךְ"]);
+    }
+
+    /// half-pointed: subset, not equality, or typing one vowel would find
+    /// nothing at all.
+    #[test]
+    fn a_partly_pointed_query_still_reaches_the_full_pointing() {
+        assert_eq!(words_of(&hebrew(), "מֶלך"), ["מֶלֶךְ"]);
+    }
+
+    /// the same rule in greek, where the accent rather than the vowel carries it.
+    #[test]
+    fn an_accented_greek_query_excludes_the_other_accent() {
+        let library = Library::from_loaded(
+            vec![Loaded {
+                label: "A".into(),
+                dict: Box::new(Mock {
+                    words: vec!["λόγος".into(), "λὸγος".into(), "λογος".into()],
+                }),
+            }],
+            &[],
+            None,
+        );
+        assert_eq!(words_of(&library, "λογος").len(), 3);
+        assert_eq!(words_of(&library, "λόγος"), ["λόγος"]);
+        // and a headword is never listed twice for matching in several ways.
+        assert_eq!(words_of(&library, "λόγοσ"), ["λόγος"]);
     }
 
     #[test]
@@ -341,6 +463,91 @@ mod tests {
             .into_iter()
             .map(|hit| hit.word)
             .collect()
+    }
+
+    /// the phase A gate, mechanized: a greek word typed with tonos finds the
+    /// oxia the dictionary stores, an unpointed hebrew query finds the pointed
+    /// headword, final sigma matches either way round — and all of it still
+    /// holds on the *second* open, off the cache file. that last clause is the
+    /// one that catches a merged order left sorted by a key nothing searches
+    /// with any more (see `index_cache::VERSION`).
+    #[test]
+    fn normalized_keys_hold_across_a_warm_cache() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = std::env::temp_dir().join(format!("dictu-keys-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let cache = dir.join("cache");
+        let entries = vec![write_dict(
+            &dir.join("d"),
+            "d",
+            &[
+                "λ\u{1f79}γος", // as Dodson files it: U+1F79 oxia.
+                "מֶ֫לֶךְ",          // as a hebrew-hebrew dictionary files it: with niqqud.
+                "מָלָךְ",          // the same letters, pointed differently.
+                "Ἀγαθός",       // capital, accented, final sigma.
+            ],
+        )];
+        let order_file = index_cache::order_path(&cache);
+
+        let mut published = None;
+        for run in ["cold", "warm"] {
+            let library = Library::open_with_cache(&entries, Some(&cache));
+            let inode = std::fs::metadata(&order_file).expect("an order file").ino();
+
+            // typed with tonos, stored with oxia.
+            assert_eq!(
+                words_of(&library, "λ\u{3cc}γος"),
+                ["λ\u{1f79}γος"],
+                "{run}: tonos must find oxia"
+            );
+            // typed unpointed, stored pointed — every pointing answers.
+            assert_eq!(
+                words_of(&library, "מלך").len(),
+                2,
+                "{run}: unpointed hebrew must find both pointings"
+            );
+            // typed pointed: the other pointing is not an answer.
+            assert_eq!(
+                words_of(&library, "מֶ֫לֶךְ"),
+                ["מֶ֫לֶךְ"],
+                "{run}: a pointed query must exclude a different pointing"
+            );
+            // typed half-pointed: still reaches the fully pointed headword.
+            assert_eq!(
+                words_of(&library, "מֶלך"),
+                ["מֶ֫לֶךְ"],
+                "{run}: partial niqqud must still reach the full spelling"
+            );
+            // final sigma either way round, and case-insensitively.
+            assert_eq!(
+                words_of(&library, "αγαθος"),
+                ["Ἀγαθός"],
+                "{run}: bare, lowercase, final sigma"
+            );
+            assert_eq!(
+                words_of(&library, "αγαθοσ"),
+                ["Ἀγαθός"],
+                "{run}: bare, lowercase, non-final sigma"
+            );
+            assert_eq!(
+                words_of(&library, "Ἀγαθοσ"),
+                ["Ἀγαθός"],
+                "{run}: accented, non-final sigma"
+            );
+
+            // the second run must answer off the mapped file, not a rebuild —
+            // a rebuild would have published a new inode.
+            match published {
+                None => published = Some(inode),
+                Some(cold) => assert_eq!(
+                    inode, cold,
+                    "the warm run rebuilt the cache instead of reading it"
+                ),
+            }
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
