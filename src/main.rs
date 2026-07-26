@@ -256,6 +256,10 @@ struct UiInner {
     /// the words in the wordlist, in row order — a row is now a box of two labels,
     /// so its word is looked up by index rather than read back out of a widget.
     words: Rc<RefCell<Vec<String>>>,
+    /// the word the definition pane is showing, so a scope change can render it
+    /// again under the new scope: rebuilding the wordlist deselects every row
+    /// without telling anyone which word the pane was left on.
+    shown: Rc<RefCell<Option<String>>>,
     /// set when a search arrived from outside (`--search`, i.e. the global hotkey):
     /// the next set of results selects its first row on its own. a flag rather than a
     /// timer because `SearchEntry` debounces `search-changed`, so there is no moment
@@ -544,6 +548,19 @@ impl UiInner {
             *flag = active;
         }
         self.populate_results(&self.search.text());
+        // and render the open definition again: rebuilding the wordlist drops the
+        // selection silently, so without this the pane keeps showing the dictionary
+        // just deselected — beside a row that has already stopped counting it.
+        // unless nothing is selected at all, which is a state `populate_results`
+        // has already written into the pane and is not ours to overwrite.
+        let scoped_out = {
+            let scope = self.scope.borrow();
+            !scope.is_empty() && !scope.iter().any(|active| *active)
+        };
+        let shown = self.shown.borrow().clone();
+        if let (false, Some(word)) = (scoped_out, shown) {
+            self.show_word(&word);
+        }
     }
 
     /// the link target under widget coordinates `(x, y)`, if any — read back off
@@ -577,6 +594,7 @@ impl UiInner {
         let Some(library) = borrow.as_ref() else {
             return;
         };
+        self.shown.replace(Some(word.to_owned()));
         // scoped, like the wordlist: a definition from a dictionary the user
         // deselected would contradict the status line, and the fold strip would go
         // further and advertise that dictionary by name.
@@ -1011,6 +1029,7 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         fold: fold.clone(),
         sections: Rc::new(RefCell::new(Vec::new())),
         words: Rc::new(RefCell::new(Vec::new())),
+        shown: Rc::new(RefCell::new(None)),
         auto_select: Rc::new(Cell::new(false)),
         scope: Rc::new(RefCell::new(Vec::new())),
         scope_list,
@@ -1193,11 +1212,10 @@ fn toolbar_with(header: &adw::HeaderBar, content: &impl IsA<gtk::Widget>) -> adw
     toolbar
 }
 
-/// one wordlist row: the word, and a dim tag saying which language it is — or which
-/// dictionary, when the language can't be named (see `language::tag`).
-/// a wordlist row: the word, and a dim tag naming its language (or, when the script
-/// names none, the dictionary). `dicts` is every dictionary that has the word, in
-/// index order; the tag counts them and the tooltip names them.
+/// one wordlist row: the word, a dim tag saying which language it is — or which
+/// dictionary, when the language can't be named (see `language::tag`) — and, when
+/// more than one dictionary has the word, how many. `dicts` is every dictionary
+/// that has it, in index order; the tooltip names them all.
 fn word_row(word: &str, dicts: &[&str]) -> gtk::Box {
     let label = gtk::Label::builder()
         .label(word)
@@ -1207,30 +1225,48 @@ fn word_row(word: &str, dicts: &[&str]) -> gtk::Box {
         .hexpand(true)
         .build();
 
-    let first = dicts.first().copied().unwrap_or("");
-    let named = language::tag(word, first).unwrap_or(first);
-    // the count rather than the names: a word the collection covers well is answered
-    // by five dictionaries whose names would not fit, and the tooltip has them.
-    let tag = gtk::Label::builder()
-        .label(match dicts.len() {
-            0 | 1 => named.to_string(),
-            n => format!("{named} ·{n}"),
-        })
-        .xalign(1.0)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .tooltip_text(dicts.join("\n"))
-        .max_width_chars(12)
-        .build();
-    tag.add_css_class("dim-label");
-    tag.add_css_class("caption");
-
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     row.set_margin_top(6);
     row.set_margin_bottom(6);
     row.set_margin_start(12);
     row.set_margin_end(12);
     row.append(&label);
-    row.append(&tag);
+
+    // the language, but only while every dictionary agrees on it: `LAT ·2` over a
+    // latin and a french dictionary reads as "two latin dictionaries", and the tag
+    // is derived from one dictionary while the count spans them all.
+    let named: Vec<&str> = dicts
+        .iter()
+        .map(|&d| language::tag(word, d).unwrap_or(d))
+        .collect();
+    if let Some(first) = named
+        .first()
+        .filter(|first| named.iter().all(|n| n == *first))
+    {
+        let tag = gtk::Label::builder()
+            .label(*first)
+            .xalign(1.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .tooltip_text(dicts.join("\n"))
+            .max_width_chars(12)
+            .build();
+        tag.add_css_class("dim-label");
+        tag.add_css_class("caption");
+        row.append(&tag);
+    }
+
+    // its own label, so a long dictionary name ellipsizing away cannot take the
+    // count with it — the count is the part that can't be guessed from the row.
+    if dicts.len() > 1 {
+        let count = gtk::Label::builder()
+            .label(format!("·{}", dicts.len()))
+            .xalign(1.0)
+            .tooltip_text(dicts.join("\n"))
+            .build();
+        count.add_css_class("dim-label");
+        count.add_css_class("caption");
+        row.append(&count);
+    }
     row
 }
 

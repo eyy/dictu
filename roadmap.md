@@ -158,14 +158,25 @@ these are blocked on a decision or an action only you can take. nothing else wai
   (already in the tree as toml 0.8's own dependency) preserves comments and layout; the
   test that proves it has to round-trip a commented fixture, not a generated one.
 
-- **[ ] #43 rows that differ only in normalization should be one row.** searching `λόγος`
-  returns **two** rows that read identically, each tagged `GRC ·2`: Liddell&Scott and Pindar
-  spell it one way, Dodson and Middle Liddell the other (oxia vs tonos, NFC vs NFD). the
-  wordlist dedups on the raw lowercased word, so the variants never meet. this predates #12,
-  which only made it legible by putting a count on each half. merging them means keying rows
-  on the bare key from #39 — and then `lookup_all` has to follow, because it matches the
-  exact spelling today and that is precisely what keeps each row's count honest. do both or
-  neither: a merged row over today's lookup would claim four dictionaries and then show two.
+- **[ ] #43 spellings of one lemma should be one row.** two shapes of the same bug, because
+  the wordlist dedups on the raw lowercased word and so never lets variants meet:
+  1. **invisible duplicates.** `λόγος` returns **two** rows that read identically, each
+     tagged `·2`: Liddell&Scott and Pindar spell it one way, Dodson and Middle Liddell the
+     other (oxia vs tonos, NFC vs NFD). nothing on screen distinguishes them.
+  2. **pointed and unpointed side by side** (your report). `כאב` lists both `כְּאֵב לֵב` and
+     `כאב לב` — one lemma, written twice. **the pointed spelling is the one to show**, even
+     though the unpointed one is what the query matched; the bare form is a search key, not
+     a headword the user wants to read.
+
+  both predate #12, which only made the first legible by putting a count on each half. the
+  fix is one key: rows keyed on the **bare key** from #39, so every spelling of a lemma
+  lands in one row, with the most-marked spelling winning the display. `lookup_all` has to
+  follow in the same change, because it matches the exact spelling today and that is
+  precisely what keeps a row's count honest — a merged row over today's lookup would claim
+  four dictionaries and then show two. "most marked wins" needs a rule for ties (two
+  differently-pointed spellings, `מֶלֶךְ` vs `מָלָךְ`, are *not* one lemma and must stay
+  apart), so the merge is by identical bare key **and** compatible marks — `keys::marks_allow`
+  already decides exactly that for search, and it is the same question here.
 
 ## done
 
