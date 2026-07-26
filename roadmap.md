@@ -19,6 +19,16 @@ nothing open right now.
 
 ## next — 2026-07-24 feedback
 
+- **[ ] #46 architectural review: draw the module boundaries properly.** the parts that were
+  extracted are clean — `dict/` (four readers behind one trait), `keys`, `index_cache`,
+  `language`, `config` — but `main.rs` is now ~1,400 lines holding four unrelated jobs: the
+  CLI subcommands, window construction, every signal handler, and the html-to-widget
+  rendering of a definition. `library` is likewise two things, the merged index and the
+  search over it, and #42's phases C and D will both land in it. worth a proper pass before
+  that, not after: what the modules are, what each one owns, and which of today's `pub`
+  surface is only public because everything lives in one file. the test for a good split
+  here is whether the ui can be described without naming a dictionary format.
+
 - **[ ] #45 let the user order the dictionaries, and sort results by that order.**
   the scope panel lists dictionaries in scan order (`config::scan` sorts by label) and the
   wordlist inherits whatever the merged index hands back, so which dictionary answers first
