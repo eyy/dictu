@@ -49,6 +49,10 @@ unicode-normalization = "0.1"
 # arrives with ICU data loading); pure rust, and it folds through our
 # unicode-normalization rather than shipping a second copy of the tables.
 caseless = "0.2"
+# saving has to preserve the comments a hand-edited config.toml carries, which
+# serde round-tripping cannot. this is the version `toml` already depends on — a
+# different major would ship a second copy of the same parser.
+toml_edit = "0.22"
 
 # lints. we deny unsafe everywhere except one documented mmap call (memmap2
 # requires it), and warn on all of clippy's default groups.

@@ -5,13 +5,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use toml_edit::{Array, DocumentMut, Item, Value};
 
 use crate::dict::{self, Format};
 
-/// the on-disk config. `#[derive(Serialize, Deserialize)]` lets serde/toml
-/// convert this struct to and from the toml text for us.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// the on-disk config. serde reads it; writing goes through `edited`, which
+/// edits the document rather than regenerating it, so hand-written comments
+/// survive a save.
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// a list of paths. a plain path is a directory scanned recursively for
     /// dictionaries; a path prefixed with `!` excludes anything under it (used
@@ -61,22 +63,90 @@ impl Config {
         }
     }
 
-    /// write the config back to disk as toml, creating the directory if needed.
+    /// write the config back to disk, creating the directory if needed. an
+    /// existing file is *edited*, not regenerated — see `edited`.
     fn save(&self) -> Result<()> {
         let path = Self::path();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
-        let text = toml::to_string_pretty(self).context("serializing config")?;
+        let existing = fs::read_to_string(&path).ok();
+        let text = self.edited(existing.as_deref())?;
         fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
+    }
+
+    /// this config applied to `existing`, as text: **entries this config has and
+    /// the file doesn't are appended, and nothing else is touched.** comments, key
+    /// order, foreign keys and layout survive because `toml_edit` never reprints
+    /// what it wasn't asked to change. `None` means there is no file yet, so one
+    /// is generated.
+    ///
+    /// appending is deliberately the only edit. removing an entry raises a question
+    /// toml cannot answer — a note written after an entry on the same line is
+    /// stored against the *next* one, so "delete this entry and its comment" needs
+    /// a convention about which comment belongs to whom, and getting that
+    /// convention wrong writes a *false* reason next to a dictionary that is still
+    /// loaded. permanently removing a dictionary stays a hand edit (see #38).
+    ///
+    /// pure, and separate from `save`, so a test can round-trip a commented fixture
+    /// without a real config to overwrite.
+    fn edited(&self, existing: Option<&str>) -> Result<String> {
+        let mut doc = match existing {
+            Some(text) => text
+                .parse::<DocumentMut>()
+                .context("parsing the existing config.toml")?,
+            None => DocumentMut::new(),
+        };
+
+        let array = doc
+            .entry("dictionary_dirs")
+            .or_insert(Item::Value(Value::Array(Array::new())))
+            .as_array_mut()
+            .context("dictionary_dirs is in the config but is not an array")?;
+
+        let present: Vec<String> = array
+            .iter()
+            .filter_map(|value| value.as_str().map(str::to_owned))
+            .collect();
+        // one entry per line if the file already does that, or if we are writing
+        // the file ourselves and it will hold more than one.
+        let lines = array.iter().any(|value| prefix_of(value).contains('\n'))
+            || (existing.is_none() && self.dictionary_dirs.len() > 1);
+        let indent = indent_of(array);
+
+        for dir in &self.dictionary_dirs {
+            if present.contains(dir) {
+                continue;
+            }
+            array.push_formatted(
+                Value::from(dir.as_str()).decorated(
+                    if lines {
+                        format!("\n{indent}")
+                    } else if array.is_empty() {
+                        String::new()
+                    } else {
+                        " ".to_owned()
+                    }
+                    .as_str(),
+                    "",
+                ),
+            );
+            if lines {
+                array.set_trailing_comma(true);
+                if !array.trailing().as_str().is_some_and(|t| t.contains('\n')) {
+                    array.set_trailing("\n");
+                }
+            }
+        }
+        Ok(doc.to_string())
     }
 
     /// exclude a path (gitignore-style `!` prefix) and persist — a permanent
     /// "never load this again", the counterpart to the session-only search scope.
-    // deliberately still unwired: the scope panel (roadmap #14) keeps its choice in
-    // memory, because `save` rewrites config.toml through serde and would drop the
-    // comments a hand-edited config has (the #19/#34 exclusions are commented).
-    // permanent removal stays a hand edit until save preserves comments.
+    // still unwired, but no longer unwirable: saving preserves comments now
+    // (roadmap #38), so a "remove this dictionary for good" ui is possible. the
+    // scope panel (#14) is deliberately session-only and stays that way until
+    // there is a ui that says it means forever.
     #[allow(dead_code)]
     pub fn exclude(&mut self, path: &Path) -> Result<()> {
         let entry = format!("!{}", path.display());
@@ -245,6 +315,28 @@ fn config_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// an array entry's leading decor — the whitespace and comments written before it.
+fn prefix_of(value: &Value) -> String {
+    value
+        .decor()
+        .prefix()
+        .and_then(|p| p.as_str())
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// the indentation the file puts before an entry, taken from the first entry that
+/// sits on its own line. four spaces when the file has nothing to say.
+fn indent_of(array: &Array) -> String {
+    array
+        .iter()
+        .map(prefix_of)
+        .find(|prefix| prefix.contains('\n'))
+        .and_then(|prefix| prefix.rsplit('\n').next().map(str::to_owned))
+        .filter(|indent| !indent.is_empty() && indent.chars().all(char::is_whitespace))
+        .unwrap_or_else(|| "    ".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,5 +399,166 @@ mod tests {
         assert!(filtered[0].path.starts_with(&a));
 
         fs::remove_dir_all(&root).ok();
+    }
+    /// the point of #38: a hand-written config says *why* a dictionary is
+    /// excluded, and a save must not eat a word of it.
+    const COMMENTED: &str = r#"# dictu configuration.
+# paths are scanned recursively; a "!" prefix excludes.
+
+dictionary_dirs = [
+    "/home/u/Dropbox/sys/dict",
+    # the same latin dictionary a second time (roadmap #19)
+    "!/home/u/Dropbox/sys/dict/latin-dup",
+    # eng>fr despite its title, so its lemmas tag wrong (roadmap #34)
+    "!/home/u/Dropbox/sys/dict/larousse",
+]
+
+# not a key we own; it has to survive untouched.
+theme = "dark"
+"#;
+
+    #[test]
+    fn saving_keeps_every_comment_and_foreign_key() {
+        let mut config: Config = toml::from_str(COMMENTED).unwrap();
+        config
+            .dictionary_dirs
+            .push("!/home/u/Dropbox/sys/dict/new".into());
+        let out = config.edited(Some(COMMENTED)).unwrap();
+
+        for comment in [
+            "# dictu configuration.",
+            "# paths are scanned recursively",
+            "# the same latin dictionary a second time (roadmap #19)",
+            "# eng>fr despite its title, so its lemmas tag wrong (roadmap #34)",
+            "# not a key we own; it has to survive untouched.",
+        ] {
+            assert!(out.contains(comment), "lost {comment:?}:\n{out}");
+        }
+        assert!(
+            out.contains(r#"theme = "dark""#),
+            "lost a foreign key:\n{out}"
+        );
+        // the new entry is there, on its own line like its neighbours.
+        assert!(
+            out.contains("\n    \"!/home/u/Dropbox/sys/dict/new\","),
+            "the appended entry broke the layout:\n{out}"
+        );
+        // and the file still reads back as the config we asked to write.
+        let back: Config = toml::from_str(&out).unwrap();
+        assert_eq!(back.dictionary_dirs, config.dictionary_dirs);
+    }
+
+    #[test]
+    fn an_inline_array_is_not_reflowed() {
+        let text = "dictionary_dirs = [\"/a\", \"/b\"]\n";
+        let mut config: Config = toml::from_str(text).unwrap();
+        config.dictionary_dirs.push("/c".into());
+        let out = config.edited(Some(text)).unwrap();
+        assert_eq!(out, "dictionary_dirs = [\"/a\", \"/b\", \"/c\"]\n");
+    }
+
+    /// we don't know what a non-string entry is, so we don't delete it — the whole
+    /// point of this function is to not lose what it doesn't understand.
+    #[test]
+    fn a_value_we_cannot_read_is_left_alone() {
+        let text = "dictionary_dirs = [\"/a\", 42]\n";
+        let config = Config {
+            dictionary_dirs: vec!["/a".into()],
+        };
+        let out = config.edited(Some(text)).unwrap();
+        assert!(
+            out.contains("42"),
+            "dropped a value it could not read:\n{out}"
+        );
+    }
+    fn config(dirs: &[&str]) -> Config {
+        Config {
+            dictionary_dirs: dirs.iter().map(|d| (*d).to_owned()).collect(),
+        }
+    }
+
+    /// the whole contract, over the shapes a hand-written file comes in: appending
+    /// adds what is missing and leaves every other byte where it was.
+    #[test]
+    fn appending_leaves_the_rest_of_the_file_alone() {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut roll = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+
+        for case in 0..400 {
+            let count = roll(4) as usize;
+            let lines = roll(2) == 0 || count > 1;
+            let comma = roll(4) > 0;
+            let mut text = String::from("# a config someone wrote by hand.\ndictionary_dirs = [");
+            for i in 0..count {
+                let name = format!("/d{i}");
+                if lines {
+                    text.push('\n');
+                    if roll(2) == 0 {
+                        text.push_str(&format!("    # about {name}\n"));
+                    }
+                    text.push_str("    ");
+                } else if i > 0 {
+                    text.push(' ');
+                }
+                text.push_str(&format!("\"{name}\""));
+                if i + 1 < count || (lines && comma) {
+                    text.push(',');
+                }
+            }
+            if lines {
+                text.push('\n');
+            }
+            text.push_str("]\ntheme = \"dark\"\n");
+
+            let mut dirs: Vec<String> = (0..count).map(|i| format!("/d{i}")).collect();
+            dirs.push("/new".to_owned());
+            let config = Config {
+                dictionary_dirs: dirs.clone(),
+            };
+            let out = config
+                .edited(Some(&text))
+                .unwrap_or_else(|e| panic!("case {case}: {e}\n{text}"));
+            let back: Config = toml::from_str(&out).unwrap_or_else(|e| {
+                panic!("case {case} wrote invalid toml: {e}\n{text}\n---\n{out}")
+            });
+
+            assert_eq!(
+                back.dictionary_dirs, dirs,
+                "case {case}\n{text}\n---\n{out}"
+            );
+            for line in text.lines().filter(|l| l.contains('#')) {
+                assert!(
+                    out.contains(line.trim()),
+                    "case {case} lost {line:?}\n{text}\n---\n{out}"
+                );
+            }
+            assert!(
+                out.contains("theme = \"dark\""),
+                "case {case} lost a foreign key\n{out}"
+            );
+            assert_eq!(
+                config.edited(Some(&out)).unwrap(),
+                out,
+                "case {case} is not idempotent\n{out}"
+            );
+        }
+    }
+
+    /// what the app cannot do, said out loud: dropping an entry from the list does
+    /// not drop it from the file. removing a dictionary for good is a hand edit,
+    /// because deciding which comment died with it is not toml's question to answer.
+    #[test]
+    fn removing_an_entry_is_not_something_saving_does() {
+        let text = "dictionary_dirs = [\n    \"/a\",\n    \"/b\",\n]\n";
+        let out = config(&["/a"]).edited(Some(text)).unwrap();
+        assert_eq!(
+            out, text,
+            "a save rewrote the file it was meant to leave alone"
+        );
     }
 }

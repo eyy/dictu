@@ -36,8 +36,9 @@ nothing open right now.
   have both the rows and the definition pane's sections follow it. two parts — a reorderable
   list in the panel, and an ordering the search respects — and the second is the one with
   teeth: results are ordered by key today, and dictionary rank has to sort *within* a word
-  without breaking #12's attribution or the row limit. the order is a real setting, so it
-  persists — which #38 has just made safe to write.
+  without breaking #12's attribution or the row limit. the order persists in **its own key**,
+  written by the app — not by reordering `dictionary_dirs`, which is hand-written and
+  commented, and which #38 deliberately only ever appends to.
 
 - **[ ] #44 better latin and greek dictionaries.** the whole reason #33 exists is that
   `latin infl+lewis` is inflection-exploded: 1,427,152 entries for 1,223,585 headwords, each
@@ -183,15 +184,6 @@ these are blocked on a decision or an action only you can take. nothing else wai
   2022 paper be cited. the per-dictionary heading already shown above each definition is the
   natural place to carry that attribution.
 
-- **[ ] #38 saving `config.toml` destroys its comments.** `Config::save` (`src/config.rs`)
-  rewrites the whole file through serde, so the hand-written notes in the real config —
-  which say *why* the #19 Latin duplicates and the #34 French dictionary are excluded —
-  would be gone the first time anything persisted a change. that is why #14's scope panel
-  keeps its choice in memory and why `Config::exclude` is still unwired: a "remove this
-  dictionary for good" ui isn't possible until saving edits the file in place. `toml_edit`
-  (already in the tree as toml 0.8's own dependency) preserves comments and layout; the
-  test that proves it has to round-trip a commented fixture, not a generated one.
-
 - **[ ] #43 spellings of one lemma should be one row.** two shapes of the same bug, because
   the wordlist dedups on the raw lowercased word and so never lets variants meet:
   1. **invisible duplicates.** `λόγος` returns **two** rows that read identically, each
@@ -213,6 +205,29 @@ these are blocked on a decision or an action only you can take. nothing else wai
   already decides exactly that for search, and it is the same question here.
 
 ## done
+
+- **[x] #38 saving `config.toml` keeps its comments.** `Config::save` rewrote the file
+  through serde, which would have deleted the notes saying *why* the #19 Latin duplicates
+  and the #34 French dictionary are excluded — the first time anything persisted a change.
+  it edits the document with `toml_edit` now (the version `toml` already depends on, so no
+  second parser), through a pure text transform (`Config::edited`) a test can drive with a
+  commented fixture. **saving only ever appends**: entries the config has and the file
+  doesn't are added, and nothing else is touched.
+  it took three review rounds to arrive at those four words, and the rounds are the point.
+  removing an entry sounds symmetrical and isn't: toml_edit stores decor *before* a value,
+  so a note written after entry X is filed under X+1 and a note after the last entry lives
+  in the array's trailing text — "delete this entry and its comment" needs a convention
+  about who owns which comment, and every attempt to encode that convention got it wrong in
+  a new way (an append walked the last note onto the newest entry; a removal left a dead
+  entry's reason sitting on one that stayed, which states something false rather than
+  merely losing something true). the machinery to do it correctly was ~150 lines of
+  ownership heuristics guarding an operation nothing calls. it was cut. **permanent
+  removal stays a hand edit**, as it already was.
+  known and accepted: a note written *after* the last entry on the same line ends up beside
+  the entry appended after it — comments belong above their entry. the real config writes
+  them that way, and is byte-identical after a save that changes nothing.
+  `Config::exclude` (append) is the only writer and is still unwired; the scope panel (#14)
+  stays session-only.
 
 - **[x] #12 say which dictionaries answer.** a wordlist row used to wear the tag of the
   first dictionary that had the word and silently drop the rest; it now counts them —
