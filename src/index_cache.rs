@@ -8,8 +8,11 @@
 //!   ranges` map and its display headword list. this is the expensive half —
 //!   parsing the 28 MB Latin `.idx` into a `HashMap<String, Vec<Range>>` cost
 //!   7.4 s of a 16 s startup, and 5.5 s of that was building the map itself.
-//! - one **merged order** file (`merged.dord`): the cross-dictionary
-//!   case-insensitive sort order (`library`), which cost a further 4.4 s.
+//! - one **merged order** file (`merged.dord`): the cross-dictionary sort order
+//!   (`library`), which cost a further 4.4 s. it now sorts by a normalized key
+//!   (`keys`) and carries that key beside the order, because deriving it per
+//!   comparison is what the old `to_lowercase()` sort did, and normalizing costs
+//!   far more than lowercasing (roadmap #39).
 //!
 //! an index can also carry a **payload**: the bytes its ranges point into, for a
 //! format whose data doesn't already sit on disk in a mappable shape. StarDict
@@ -29,8 +32,8 @@
 //! way (22.5 MB against 40.7 MB all told); it takes 1.30 s to build against
 //! 0.33 s; and 20k lookups cost the same (89 ms against 100 ms). its one real
 //! advantage, prefix search off the map, doesn't apply: dictu's prefix search is
-//! case-insensitive and spans dictionaries, so it runs on the merged order, never
-//! on one dictionary's exact-byte map. 18 MB of a memory-mapped cache file is not
+//! normalized and spans dictionaries, so it runs on the merged order, never on
+//! one dictionary's exact-byte map. 18 MB of a memory-mapped cache file is not
 //! worth a dependency and a 4x slower rebuild.
 
 use std::borrow::Cow;
@@ -42,18 +45,22 @@ use std::time::UNIX_EPOCH;
 use anyhow::{Context, Result};
 
 use crate::dict::{DictBytes, mmap_file};
+use crate::keys::KeyTable;
 
 /// a byte range `(offset, size)` into a dictionary's data.
 pub type Range = (u64, u32);
 
 /// bump on any layout change — old files then fail the header check and are
-/// rebuilt rather than misread.
-const VERSION: u32 = 2;
+/// rebuilt rather than misread. **3**: the merged order is sorted by the bare
+/// key and carries it (#39), so a v2 file is sorted by a key nothing searches
+/// with any more — the one kind of staleness a warm cache would answer wrongly
+/// rather than not at all.
+const VERSION: u32 = 3;
 
 const INDEX_MAGIC: &[u8; 8] = b"DICTUIDX";
 const INDEX_HEADER: usize = 108;
 const ORDER_MAGIC: &[u8; 8] = b"DICTUMRG";
-const ORDER_HEADER: usize = 20;
+const ORDER_HEADER: usize = 52;
 
 /// identity of the files an index was derived from: path, mtime and size of
 /// each. any of them changing (or vanishing) changes this string, which is what
@@ -446,82 +453,147 @@ impl Index {
 
 // -- merged cross-dictionary order -----------------------------------------
 
-/// the merged `(dict, headword)` order: sorted in memory on a cold start, mapped
-/// off the cache file on a warm one. an mmap can't be a `&[(u32, u32)]` without
-/// unsafe alignment games, so the pairs are read one at a time — a binary search
-/// touches ~21 of them, and a full walk is only done when building.
-pub enum Order {
-    Owned(Vec<(u32, u32)>),
-    Mapped {
-        bytes: DictBytes,
-        at: usize,
-        len: usize,
-    },
+/// the merged cross-dictionary order: every headword's **slot** — its position
+/// in the dictionaries' headword lists laid end to end — sorted by its bare key
+/// (`keys`), and the keys themselves.
+///
+/// only the bare key is stored. it is the one the binary search compares, and it
+/// is the permissive one: an unpointed query reaches every pointed spelling.
+/// telling those spellings apart again is `keys::marks_allow`, which runs over
+/// the candidates a prefix run turns up — a few hundred per keystroke — so the
+/// fold key it needs is derived there rather than carried here for 1.8M words.
+///
+/// the keys are stored **in sorted order**, not slot order, so a binary search
+/// reads position `mid`'s key straight out of the blob with no slot indirection,
+/// and the prefix walk that follows is sequential in the mapped file. everything
+/// is read a field at a time: an mmap can't be a `&[u32]` without unsafe
+/// alignment games, and a binary search only touches ~21 positions anyway.
+pub struct Order {
+    bytes: DictBytes,
+    n: usize,
+    order_at: usize,
+    off_at: usize,
+    blob_at: usize,
+    blob_len: usize,
 }
 
 impl Order {
     /// memory-map the merged order, if it is this collection's.
     pub fn load(path: &Path, fingerprint: &str) -> Option<Self> {
         let bytes = DictBytes::Mapped(mmap_file(path).ok()?);
+        Self::open(bytes, fingerprint)
+    }
+
+    /// adopt an image already in memory — the freshly built one, when writing it
+    /// out failed. the same validation runs, so both paths behave identically.
+    pub fn open(bytes: DictBytes, fingerprint: &str) -> Option<Self> {
         let raw = bytes.as_slice();
         if raw.len() < ORDER_HEADER || &raw[..8] != ORDER_MAGIC || u32_le(raw, 8)? != VERSION {
             return None;
         }
-        let len = u32_le(raw, 12)? as usize;
+        let n = u32_le(raw, 12)? as usize;
         let fp_len = u32_le(raw, 16)? as usize;
-        let at = ORDER_HEADER.checked_add(fp_len)?;
-        if raw.get(ORDER_HEADER..at)? != fingerprint.as_bytes() {
+        if raw.get(ORDER_HEADER..ORDER_HEADER.checked_add(fp_len)?)? != fingerprint.as_bytes() {
             return None;
         }
-        if at.checked_add(len.checked_mul(8)?)? > raw.len() {
-            return None;
+        let order_at = offset_le(raw, 20)?;
+        let off_at = offset_le(raw, 28)?;
+        let blob_at = offset_le(raw, 36)?;
+        let blob_len = offset_le(raw, 44)?;
+
+        // every section must lie inside the file, so a truncated order is
+        // refused here rather than read past its end later.
+        for (at, len) in [
+            (order_at, n.checked_mul(4)?),
+            (off_at, n.checked_add(1)?.checked_mul(4)?),
+            (blob_at, blob_len),
+        ] {
+            if at.checked_add(len)? > raw.len() {
+                return None;
+            }
         }
-        Some(Self::Mapped { bytes, at, len })
+        Some(Self {
+            bytes,
+            n,
+            order_at,
+            off_at,
+            blob_at,
+            blob_len,
+        })
     }
 
-    /// the bytes of a cache file holding `pairs`.
-    pub fn image(pairs: &[(u32, u32)], fingerprint: &str) -> Vec<u8> {
+    /// the bytes of a cache file holding one sorted order: `order` lists slot ids
+    /// sorted by their key, `keys` holds every slot's key.
+    pub fn image(order: &[u32], keys: &KeyTable, fingerprint: &str) -> Vec<u8> {
+        let n = order.len();
+        debug_assert_eq!(n, keys.count());
+
         let fp = fingerprint.as_bytes();
-        let mut out = Vec::with_capacity(ORDER_HEADER + fp.len() + pairs.len() * 8);
+        // the slot order, then the key offsets, then the keys themselves.
+        let order_at = ORDER_HEADER + fp.len();
+        let off_at = order_at + n * 4;
+        let blob_at = off_at + (n + 1) * 4;
+
+        let mut out = Vec::with_capacity(blob_at + keys.byte_len());
         out.extend_from_slice(ORDER_MAGIC);
         out.extend_from_slice(&VERSION.to_le_bytes());
-        out.extend_from_slice(&(pairs.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(n as u32).to_le_bytes());
         out.extend_from_slice(&(fp.len() as u32).to_le_bytes());
+        for at in [order_at, off_at, blob_at, keys.byte_len()] {
+            out.extend_from_slice(&(at as u64).to_le_bytes());
+        }
         debug_assert_eq!(out.len(), ORDER_HEADER);
         out.extend_from_slice(fp);
-        for &(dict, headword) in pairs {
-            out.extend_from_slice(&dict.to_le_bytes());
-            out.extend_from_slice(&headword.to_le_bytes());
+        for &slot in order {
+            out.extend_from_slice(&slot.to_le_bytes());
         }
+        // offsets into the blob, which is written in sorted order so a position
+        // — not a slot — indexes it.
+        let mut at: u32 = 0;
+        out.extend_from_slice(&at.to_le_bytes());
+        for &slot in order {
+            at += keys.get(slot).len() as u32;
+            out.extend_from_slice(&at.to_le_bytes());
+        }
+        for &slot in order {
+            out.extend_from_slice(keys.get(slot).as_bytes());
+        }
+        debug_assert_eq!(at as usize, keys.byte_len());
         out
     }
 
-    /// how many `(dict, headword)` pairs the order holds. deliberately not
-    /// `len()`, which would drag an unused `is_empty()` along to satisfy clippy.
+    /// how many headwords the order holds. deliberately not `len()`, which would
+    /// drag an unused `is_empty()` along to satisfy clippy.
     pub fn count(&self) -> usize {
-        match self {
-            Order::Owned(pairs) => pairs.len(),
-            Order::Mapped { len, .. } => *len,
-        }
+        self.n
     }
 
-    /// the `i`th `(dict, headword)` pair. `(0, 0)` for an out-of-range or
-    /// unreadable slot — a corrupt file then searches oddly, never panics.
-    pub fn pair(&self, i: usize) -> (u32, u32) {
-        match self {
-            Order::Owned(pairs) => pairs.get(i).copied().unwrap_or((0, 0)),
-            Order::Mapped { bytes, at, len } => {
-                if i >= *len {
-                    return (0, 0);
-                }
-                let raw = bytes.as_slice();
-                let at = at + i * 8;
-                (
-                    u32_le(raw, at).unwrap_or(0),
-                    u32_le(raw, at + 4).unwrap_or(0),
-                )
-            }
+    /// the slot at sorted position `i`. `0` for an out-of-range or unreadable
+    /// position — a corrupt file then searches oddly, never panics.
+    pub fn slot(&self, i: usize) -> u32 {
+        if i >= self.n {
+            return 0;
         }
+        u32_le(self.bytes.as_slice(), self.order_at + i * 4).unwrap_or(0)
+    }
+
+    /// the key at sorted position `i` — the thing the binary search compares.
+    /// empty for anything unreadable, as `Index::key` is.
+    pub fn key(&self, i: usize) -> &[u8] {
+        if i >= self.n {
+            return &[];
+        }
+        let raw = self.bytes.as_slice();
+        let bound = |i: usize| u32_le(raw, self.off_at + i * 4).map(|v| v as usize);
+        let (Some(from), Some(to)) = (bound(i), bound(i + 1)) else {
+            return &[];
+        };
+        // offsets come out of the file, so they are checked, not trusted.
+        if from > to || to > self.blob_len {
+            return &[];
+        }
+        raw.get(self.blob_at + from..self.blob_at + to)
+            .unwrap_or(&[])
     }
 }
 
@@ -718,10 +790,20 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// three headwords keyed for the index: one greek word whose accent the key
+    /// drops, and two plain ones.
+    fn bare_keys() -> KeyTable {
+        let mut keys = KeyTable::with_capacity(3);
+        for word in ["rex", "λόγος", "amo"] {
+            keys.push(&crate::keys::bare(&crate::keys::fold(word)));
+        }
+        keys
+    }
+
     #[test]
     fn order_round_trips_and_is_validated() {
-        let pairs = vec![(0, 7), (1, 0), (0, 3)];
-        let image = Order::image(&pairs, "fp");
+        let keys = bare_keys();
+        let image = Order::image(&keys.order(), &keys, "fp");
         let dir = std::env::temp_dir().join(format!("dictu-order-{}", std::process::id()));
         fs::remove_dir_all(&dir).ok();
         let path = order_path(&dir);
@@ -730,9 +812,28 @@ mod tests {
         store(&path, &image).unwrap();
         let order = Order::load(&path, "fp").unwrap();
         assert_eq!(order.count(), 3);
-        assert_eq!(order.pair(0), (0, 7));
-        assert_eq!(order.pair(2), (0, 3));
-        assert_eq!(order.pair(99), (0, 0)); // out of range, not a panic.
+
+        // sorted by the key, and each position's key is the key of the slot at
+        // that position. the accent is gone, the final sigma is folded.
+        let listed: Vec<(u32, String)> = (0..order.count())
+            .map(|i| {
+                (
+                    order.slot(i),
+                    String::from_utf8(order.key(i).to_vec()).unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                (2, "amo".to_string()),
+                (0, "rex".into()),
+                (1, "λογοσ".into())
+            ]
+        );
+        // out of range: empty and zero, not a panic.
+        assert_eq!(order.slot(99), 0);
+        assert!(order.key(99).is_empty());
 
         // a different collection, and a truncated file, are both misses.
         assert!(Order::load(&path, "other").is_none());
@@ -740,6 +841,30 @@ mod tests {
         assert!(Order::load(&path, "fp").is_none());
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_corrupt_order_is_refused_or_reads_empty() {
+        let keys = bare_keys();
+        let image = Order::image(&keys.order(), &keys, "fp");
+
+        // not ours, header-only, and the version this replaces.
+        assert!(Order::open(DictBytes::Owned(b"nope".to_vec()), "fp").is_none());
+        assert!(Order::open(DictBytes::Owned(image[..ORDER_HEADER].to_vec()), "fp").is_none());
+        let mut old = image.clone();
+        old[8..12].copy_from_slice(&(VERSION - 1).to_le_bytes());
+        assert!(
+            Order::open(DictBytes::Owned(old), "fp").is_none(),
+            "a v{} order is sorted by a key nothing searches with now",
+            VERSION - 1
+        );
+
+        // a garbled key-offset table reads empty rather than panicking.
+        let mut garbled = image.clone();
+        let table = ORDER_HEADER + 2 + 3 * 4; // inside the key offsets.
+        garbled[table..table + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let order = Order::open(DictBytes::Owned(garbled), "fp").unwrap();
+        assert!((0..order.count()).any(|i| order.key(i).is_empty()));
     }
 
     #[test]

@@ -17,6 +17,7 @@ use gtk::{gdk, gio, glib};
 mod config;
 mod dict;
 mod index_cache;
+mod keys;
 mod language;
 mod library;
 use library::Library;

@@ -35,6 +35,20 @@ memmap2 = "0.9"
 # main thread (paired with glib::spawn_future_local), so indexing doesn't block
 # the ui.
 async-channel = "2"
+# unicode-normalization: NFC and NFD (roadmap #39). NFC is what makes greek
+# typable — Dodson stores `ό` as U+1F79 oxia while every greek keyboard produces
+# U+03CC tonos, and NFC maps the one onto the other; NFD is how the bare key
+# reaches the combining marks it strips. pure rust, one tiny dep (tinyvec), and
+# it is what the rest of the ecosystem (idna, url) normalizes with.
+unicode-normalization = "0.1"
+# caseless: *full* case folding, which std has no equivalent of.
+# `to_lowercase()` leaves greek final sigma alone — `ς` lowercases to itself — so
+# `λόγος` and `λόγοσ` stay different words, and 139,079 headwords here carry one.
+# folding maps both to `σ`. picked over `unicase` (compares case-insensitively
+# but hands back no key we can sort a blob by) and `icu_casemap` (correct, but
+# arrives with ICU data loading); pure rust, and it folds through our
+# unicode-normalization rather than shipping a second copy of the tables.
+caseless = "0.2"
 
 # lints. we deny unsafe everywhere except one documented mmap call (memmap2
 # requires it), and warn on all of clippy's default groups.
