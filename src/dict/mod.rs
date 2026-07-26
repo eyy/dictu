@@ -135,6 +135,17 @@ pub trait Dictionary: Send {
     /// pre-joined so the ui can number them and set them apart, instead of showing a
     /// hundred entries as one run-together answer.
     fn lookup(&self, headword: &str) -> Vec<String>;
+
+    /// whether the headword at `index` (into `headwords`) is an **alias** this
+    /// dictionary points at one of its own entries, rather than a word it files
+    /// in its own right. StarDict `.syn` records are the only such thing in this
+    /// collection, and in the one dictionary that has them they are an inflection
+    /// table: 1.18M forms of 37,777 latin verbs and nouns. formats without that
+    /// notion answer `false`, which is the honest default — a spelling variant on
+    /// a dsl card is still a way of writing the headword, not a pointer at it.
+    fn is_alias(&self, _index: usize) -> bool {
+        false
+    }
 }
 
 /// the dictionary file formats dictu knows about.

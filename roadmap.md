@@ -75,37 +75,6 @@ nothing open right now.
   written by the app — not by reordering `dictionary_dirs`, which is hand-written and
   commented, and which #38 deliberately only ever appends to.
 
-- **[ ] #33 wordlist: tell lemmas from inflections** (the other half of #15).
-  **hold until #44 is decided.** phase D is worth 333 ms of index time to rescue an
-  inflection-exploded dictionary; it is worth much less if that dictionary is replaced by a
-  lemma-keyed one. the work is real either way — Liddell&Scott files inflections too — but
-  how much of it, and against which file, depends on what lands.
-  the noise is easy to see: `dictu search rex` returns 27 results, 26 of them inflections of
-  one lemma. differentiate them in the row, and add a config option to hide inflections /
-  search lemmas only.
-  **the `.syn` hypothesis is alive again, and it is now the cheap answer** — #44 swapped the
-  dictionary that killed it. `latin infl+lewis` had no `.syn` and put all 1,223,585 forms
-  directly in `.idx`, which is what left only expensive signals; the Whitaker copy now
-  loaded stores 37,777 lemmas in `.idx` and 1.18M inflected forms in a 22 MB `.syn`. a
-  headword that came from a `.syn` alias *is* an inflection by construction, so "search
-  lemmas only" is a boolean per headword, decided at index time for free, instead of the
-  333 ms bold-lemma text pass. Lewis & Short beside it is one entry per lemma with no
-  inflections at all, so it needs no filtering. the two older signals, for the record:
-  1. **shared byte ranges** — an inflection's `.idx` entry points at the *same* range as its
-     lemma, so headwords can be grouped by range and the shortest of each group taken as the
-     lemma (`amo` over `amare`/`amavi`; `dacrima` over `dacrimae`). costs a pass over ~1.2M
-     entries at index time, which #7 (already slow) has to absorb — measure it.
-  2. **the entry's opening words** — an inflection's definition opens with its lemma
-     (`dacrimarum` → an entry beginning "dacrima, dacrimae"). exact, but reading a definition
-     per row is too slow to do for 500 rows per keystroke unless only a prefix is read.
-
-  measured evidence for how bad the noise is, from the `.idx` of `latin infl+lewis`:
-  1,427,152 entries for 1,223,585 unique headwords, and the worst offenders are *auxiliary*
-  forms attached to every verb that uses them — `esse` and `eris` appear in 100 entries each,
-  `ero` and `isti` in 99, `sum` in 73, `sam` in 71. the dictionary's generator inflected the
-  auxiliary along with the verb, so searching a form of *esse* pulls up a hundred unrelated
-  verbs. treating these as inflections rather than headwords is what fixes it.
-
 ## deferred — needs you
 
 these are blocked on a decision or an action only you can take. nothing else waits on them.
@@ -220,6 +189,29 @@ these are blocked on a decision or an action only you can take. nothing else wai
   natural place to carry that attribution.
 
 ## done
+
+- **[x] #33 the wordlist can be asked for words, not forms.** searching `rex` walked into 26
+  perfect-tense forms of *rego*; `esse` and `amo` filled the list entirely. the scope panel
+  now carries a **Lemmas only** switch, and the status line says when it is on, so a short
+  list is never a mystery.
+  measured on the collection, rows before → after: `rex` **28 → 3**, `esse` **201 → 25**,
+  `amo` **200 → 79**, `sam` **204 → 74**, `regis` **20 → 7**, and an inflection searched on
+  its own (`dacrimarum`) **1 → 0**.
+  **it cost one number.** the plan budgeted 333 ms of index-time text analysis to find the
+  lemmas, and #44 made that unnecessary: StarDict appends `.syn` records after the `.idx`
+  ones, so a dictionary's own headwords and the forms it points at them are already
+  *partitioned* in display order. the cache stores where the aliases begin (one `u32`,
+  VERSION 5) and `is_alias` is a comparison. no pass, no heuristic, no text read.
+  a row survives while any of its spellings is a headword in its own right, so a word that
+  one dictionary files properly and another files as a form is still a word. formats with no
+  such notion answer `false`: a dsl card's spelling variants are ways of writing the
+  headword, not pointers at it, and #43 already merges those into its row.
+  the setting is session-only, like the scope beside it — #45 is where preferences start
+  persisting.
+  the old evidence, kept because it is the measurement that justified the whole line of
+  work: `latin infl+lewis` filed 1,427,152 entries for 1,223,585 headwords, and its worst
+  offenders were *auxiliary* forms attached to every verb that uses them — `esse` and `eris`
+  in 100 entries each, `sum` in 73, `sam` in 71.
 
 - **[x] #43 spellings of one lemma are one row.** three shapes of one bug, all gone:
   `כאב` listed `כְּאֵב לֵב` and `כאב לב` as separate rows (**29 rows → 18**, and every

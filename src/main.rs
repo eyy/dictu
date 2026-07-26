@@ -26,6 +26,10 @@ const APP_ID: &str = "io.github.eyy.Dictu";
 // cap search results shown (gtk::ListBox builds one widget per row).
 const SEARCH_LIMIT: usize = 500;
 
+// the cli prints rows rather than building widgets, so it can afford more of
+// them than the wordlist — enough to see a whole inflected paradigm at once.
+const CLI_ROWS: usize = 200;
+
 /// the loaded index, shared across signal handlers. `None` until indexing
 /// finishes on the worker thread.
 type SharedLibrary = Rc<RefCell<Option<Library>>>;
@@ -36,7 +40,8 @@ fn main() -> glib::ExitCode {
     // dev affordances (no gui): `dictu dump <file>` prints one dictionary's
     // stats; `dictu lookup <file> <word> [--html]` prints one entry, which is how
     // two dictionaries' coverage of the same word get compared; `dictu search
-    // <query>` runs unified search across all configured dicts and prints the hits.
+    // <query> [--lemmas]` runs unified search across all configured dicts and
+    // prints the rows, optionally skipping inflections.
     let subcommand = raw.get(1).map(String::as_str);
     if subcommand == Some("dump") {
         return dump(raw.get(2).map(String::as_str));
@@ -49,7 +54,10 @@ fn main() -> glib::ExitCode {
         );
     }
     if subcommand == Some("search") {
-        return search_cli(raw.get(2).map(String::as_str));
+        return search_cli(
+            raw.get(2).map(String::as_str),
+            raw.iter().any(|arg| arg == "--lemmas"),
+        );
     }
 
     // scan the configured directories for dictionaries once, up front.
@@ -119,9 +127,9 @@ fn printing(
     }
 }
 
-fn search_cli(query: Option<&str>) -> glib::ExitCode {
+fn search_cli(query: Option<&str>, lemmas_only: bool) -> glib::ExitCode {
     let Some(query) = query else {
-        eprintln!("usage: dictu search <query>");
+        eprintln!("usage: dictu search <query> [--lemmas]");
         return glib::ExitCode::FAILURE;
     };
     let config = config::Config::load_or_create().unwrap_or_default();
@@ -134,7 +142,7 @@ fn search_cli(query: Option<&str>) -> glib::ExitCode {
             lib.dict_count(),
             lib.total_headwords()
         )?;
-        for row in lib.search(query, 20, &[]) {
+        for row in lib.search_where(query, CLI_ROWS, &[], lemmas_only) {
             // one line per dictionary, naming the spelling it files the row under
             // — the row's own spelling is the first of them.
             for (dict, spelling) in &row.members {
@@ -275,6 +283,10 @@ struct UiInner {
     /// timer because `SearchEntry` debounces `search-changed`, so there is no moment
     /// after `set_text` at which the rows are known to exist yet.
     auto_select: Rc<Cell<bool>>,
+    /// whether the wordlist is showing only words a dictionary files in its own
+    /// right, hiding the inflections it files as aliases (#33). session-only,
+    /// like the scope beside it.
+    lemmas_only: Rc<Cell<bool>>,
     /// the search scope: one flag per dictionary, in library order, as
     /// `prefix_search` wants it. empty until indexing finishes (nothing to scope
     /// before then, and `&[]` already means "all dictionaries").
@@ -320,7 +332,12 @@ impl UiInner {
         // one row per lemma, however its dictionaries spell it (#43), naming every
         // dictionary that has it (#12). the grouping is the library's: it is the
         // only place that knows which spellings are the same word.
-        let rows = library.search(query, SEARCH_LIMIT, &self.scope.borrow());
+        let rows = library.search_where(
+            query,
+            SEARCH_LIMIT,
+            &self.scope.borrow(),
+            self.lemmas_only.get(),
+        );
         // recorded before the widgets exist: appending a row can select it, and
         // the handler reads this list by index.
         self.words.replace(rows.clone());
@@ -357,11 +374,16 @@ impl UiInner {
         };
         // and name the scope when it isn't the whole library, so the count can't be
         // read as "this is all your dictionaries have".
-        self.status
-            .set_text(&match scope_note(dicts, library.dict_count()) {
-                Some(note) => format!("{counted} · {note}"),
-                None => counted,
-            });
+        let counted = match scope_note(dicts, library.dict_count()) {
+            Some(note) => format!("{counted} · {note}"),
+            None => counted,
+        };
+        // and say when inflections are being hidden, so a short list is never a
+        // mystery.
+        self.status.set_text(&match self.lemmas_only.get() {
+            true => format!("{counted} · lemmas only"),
+            false => counted,
+        });
 
         // a search fired from the hotkey should land on an answer, not on a list you
         // still have to click. consumed either way, so a later hand-typed search
@@ -1029,6 +1051,29 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     scope_hint.add_css_class("dim-label");
     scope_hint.add_css_class("caption");
 
+    // roadmap #33. a dictionary that ships an inflection table files 1.18M forms
+    // as aliases of 37,777 words, and searching `rex` walks into 26 of them —
+    // so the wordlist can be told to show only words a dictionary files in its
+    // own right.
+    let lemmas_only = gtk::CheckButton::builder()
+        .valign(gtk::Align::Center)
+        .build();
+    lemmas_only.update_property(&[gtk::accessible::Property::Label("Lemmas only")]);
+    let lemmas_row = adw::ActionRow::builder()
+        .title("Lemmas only")
+        .subtitle("Hide the forms a dictionary files as pointers")
+        .activatable_widget(&lemmas_only)
+        .build();
+    lemmas_row.add_prefix(&lemmas_only);
+    // its own list rather than a bare check box: the same shape as the dictionary
+    // rows above, which is what makes it reachable to a screen reader (and to the
+    // harness, which aims at a check box's own extents).
+    let lemmas_list = gtk::ListBox::new();
+    lemmas_list.set_selection_mode(gtk::SelectionMode::None);
+    lemmas_list.add_css_class("boxed-list");
+    lemmas_list.update_property(&[gtk::accessible::Property::Label("Search options")]);
+    lemmas_list.append(&lemmas_row);
+
     let scope_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
     scope_box.set_margin_top(6);
     scope_box.set_margin_bottom(6);
@@ -1037,6 +1082,7 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     scope_box.append(&scope_title);
     scope_box.append(&scope_hint);
     scope_box.append(&scope_list);
+    scope_box.append(&lemmas_list);
 
     let scope_button = gtk::MenuButton::builder()
         .icon_name("view-list-symbolic")
@@ -1070,6 +1116,7 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         words: Rc::new(RefCell::new(Vec::new())),
         shown: Rc::new(RefCell::new(None)),
         auto_select: Rc::new(Cell::new(false)),
+        lemmas_only: Rc::new(Cell::new(false)),
         scope: Rc::new(RefCell::new(Vec::new())),
         scope_list,
         scope_button,
@@ -1101,6 +1148,15 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
             if let Some(selected) = selected {
                 ui.show_row(&selected);
             }
+        }
+    ));
+
+    lemmas_only.connect_toggled(glib::clone!(
+        #[weak]
+        ui,
+        move |toggle| {
+            ui.lemmas_only.set(toggle.is_active());
+            ui.populate_results(&ui.search.text());
         }
     ));
 

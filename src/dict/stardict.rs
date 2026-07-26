@@ -139,6 +139,10 @@ impl StarDict {
         };
 
         let (mut entries, mut display) = parse_idx(idx.as_slice(), offset_bits);
+        // everything the `.syn` adds is an alias pointing at one of the entries
+        // above — an inflection, where a dictionary uses it that way — so where
+        // they start is worth remembering (#33).
+        let aliases_from = entries.len();
         if let Some(syn) = syn.as_deref() {
             apply_syn(syn, &mut entries, &mut display);
         }
@@ -148,6 +152,7 @@ impl StarDict {
             index_cache::Built {
                 entries: &entries,
                 display: &display,
+                aliases_from: syn.is_some().then_some(aliases_from),
                 ..Default::default()
             },
             fingerprint,
@@ -203,6 +208,10 @@ impl Dictionary for StarDict {
             .filter_map(|(offset, size)| self.entry_text(offset, size))
             .filter(|entry| !entry.is_empty())
             .collect()
+    }
+
+    fn is_alias(&self, index: usize) -> bool {
+        self.index.is_alias(index)
     }
 }
 
@@ -582,5 +591,28 @@ mod tests {
         assert_eq!(map.get("bookname").unwrap(), "My Dict");
         assert_eq!(map.get("sametypesequence").unwrap(), "h");
         assert!(!map.contains_key("StarDict's dict ifo file"));
+    }
+    /// roadmap #33: a `.syn` record is a pointer at another entry, and in the one
+    /// dictionary here that ships them, every one is an inflected form.
+    #[test]
+    fn syn_words_are_aliases_and_idx_words_are_not() {
+        let dir = temp_dir("alias");
+        let mut idx = Vec::new();
+        push_idx(&mut idx, "rego", 0, 5);
+        let mut syn = Vec::new();
+        push_syn(&mut syn, "rexit", 0);
+        push_syn(&mut syn, "rexerint", 0);
+        let path = write_dict(&dir, &idx, b"rulez", Some(&syn));
+
+        let dict = StarDict::open(&path, None).expect("opens");
+        let words = dict.headwords();
+        assert_eq!(words, ["rego", "rexit", "rexerint"].map(String::from));
+        // the dictionary's own headword, then the two forms it points at it.
+        let aliases: Vec<bool> = (0..words.len()).map(|i| dict.is_alias(i)).collect();
+        assert_eq!(aliases, [false, true, true]);
+        // and an alias still answers with the entry it points at.
+        assert!(!dict.lookup("rexit").is_empty());
+
+        fs::remove_dir_all(&dir).ok();
     }
 }

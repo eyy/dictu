@@ -835,6 +835,46 @@ def main():
             f"expected {IDLE_STATUS!r}, got {idle!r}",
         )
 
+        # roadmap #33: the wordlist can be asked for words rather than the forms a
+        # dictionary files as pointers at them. neither fixture has an alias table,
+        # so the list itself must not move — what must change is the status line,
+        # because a list that quietly got shorter would be a mystery.
+        app_proc.forward("--search", "byte")
+        wait_for(
+            lambda: [w for w in widgets.row_words() if w] == ["byte"] or None,
+            10,
+            "the byte row",
+        )
+        open_scope(node)
+        toggle_scope(app_proc, node, "Lemmas only")
+        noted = wait_for(
+            lambda: widgets.status_line() if "lemmas only" in widgets.status_line() else None,
+            10,
+            "the lemmas-only note in the status line",
+        )
+        r.check(
+            "the status line says when inflected forms are hidden",
+            noted == "1 result · lemmas only",
+            f"status={noted!r}",
+        )
+        r.check(
+            "a dictionary that files no aliases is unaffected by the toggle",
+            [w for w in widgets.row_words() if w] == ["byte"],
+            f"rows={widgets.row_words()}",
+        )
+        toggle_scope(app_proc, node, "Lemmas only")
+        back = wait_for(
+            lambda: widgets.status_line() if "lemmas" not in widgets.status_line() else None,
+            10,
+            "the status line to drop the note",
+        )
+        r.check(
+            "turning it back off restores the count",
+            back == "1 result",
+            f"status={back!r}",
+        )
+        close_scope(node)
+
         # keyboard behaviour (roadmap #16, #23). synthetic keys land in whichever
         # window has focus, so skip rather than type into the user's terminal.
         app_proc.forward("--search", "aardvark")

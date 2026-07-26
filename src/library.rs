@@ -150,6 +150,20 @@ impl Library {
     /// `מֶלֶךְ` no longer answers with `מָלָךְ` while `מֶלך`, pointed half way,
     /// still reaches `מֶלֶךְ`.
     pub fn search(&self, query: &str, limit: usize, active: &[bool]) -> Vec<Row> {
+        self.search_where(query, limit, active, false)
+    }
+
+    /// as `search`, but `lemmas_only` drops every headword a dictionary files as
+    /// an alias of another — its inflections (#33). a row survives while any of
+    /// its spellings is a word in its own right, so `rex` stays and `rexerint`
+    /// goes.
+    pub fn search_where(
+        &self,
+        query: &str,
+        limit: usize,
+        active: &[bool],
+        lemmas_only: bool,
+    ) -> Vec<Row> {
         let fold = keys::fold(query.trim());
         let needle = keys::bare(&fold);
         // an empty needle is every word: a query of nothing, or of nothing but
@@ -201,6 +215,9 @@ impl Library {
             if !active.get(d as usize).copied().unwrap_or(true) {
                 continue; // dict deselected in the scope panel.
             }
+            if lemmas_only && self.is_alias(d, h) {
+                continue; // an inflection, and the reader asked for words.
+            }
             let word = self.word(d, h);
             if marked && !keys::marks_allow(&fold, word) {
                 continue; // the headword contradicts a diacritic the query typed.
@@ -247,6 +264,12 @@ impl Library {
             .get(dict)
             .map(|loaded| loaded.dict.lookup(word))
             .unwrap_or_default()
+    }
+
+    fn is_alias(&self, dict: u32, headword: u32) -> bool {
+        self.dicts
+            .get(dict as usize)
+            .is_some_and(|loaded| loaded.dict.is_alias(headword as usize))
     }
 
     fn word(&self, dict: u32, headword: u32) -> &str {
@@ -492,6 +515,8 @@ mod tests {
         words: Vec<String>,
         /// what the dictionary calls itself, as `bookname`/`#NAME` would.
         internal: String,
+        /// where this dictionary's aliases begin, as a `.syn` would put them.
+        aliases_from: usize,
     }
     impl Dictionary for Mock {
         fn name(&self) -> &str {
@@ -507,6 +532,9 @@ mod tests {
                 .map(|w| format!("<b>{w}</b> def"))
                 .collect()
         }
+        fn is_alias(&self, index: usize) -> bool {
+            index >= self.aliases_from
+        }
     }
 
     /// two mock dicts, sorted in memory — `None` for the cache, so these tests
@@ -519,6 +547,7 @@ mod tests {
                     label: "A".into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
+                        aliases_from: usize::MAX,
                         words: vec!["Apple".into(), "apricot".into()],
                     }),
                 },
@@ -526,6 +555,7 @@ mod tests {
                     label: "B".into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
+                        aliases_from: usize::MAX,
                         words: vec!["apple".into(), "grape".into()],
                     }),
                 },
@@ -541,6 +571,7 @@ mod tests {
             dict: Box::new(Mock {
                 internal: internal.into(),
                 words: words.iter().map(|w| (*w).to_string()).collect(),
+                aliases_from: usize::MAX,
             }),
         }
     }
@@ -609,6 +640,7 @@ mod tests {
                 label: "A".into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
+                    aliases_from: usize::MAX,
                     words: vec!["מֶלֶךְ".into(), "מָלָךְ".into(), "מלך".into()],
                 }),
             }],
@@ -647,6 +679,7 @@ mod tests {
                 label: "A".into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
+                    aliases_from: usize::MAX,
                     words: vec!["λόγος".into(), "λὸγος".into(), "λογος".into()],
                 }),
             }],
@@ -671,6 +704,7 @@ mod tests {
                     label: "A".into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
+                        aliases_from: usize::MAX,
                         words: vec!["logos".into(), "logotype".into()],
                     }),
                 },
@@ -678,6 +712,7 @@ mod tests {
                     label: "B".into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
+                        aliases_from: usize::MAX,
                         words: vec!["logos".into()],
                     }),
                 },
@@ -927,6 +962,7 @@ mod tests {
                 label: "A".into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
+                    aliases_from: usize::MAX,
                     words: vec!["כאב לב".into(), "כְּאֵב לֵב".into()],
                 }),
             }],
@@ -968,6 +1004,7 @@ mod tests {
                     label: "Gaffiot".into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
+                        aliases_from: usize::MAX,
                         words: vec!["rex (1)".into(), "Rex (2)".into()],
                     }),
                 },
@@ -975,6 +1012,7 @@ mod tests {
                     label: "L&S".into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
+                        aliases_from: usize::MAX,
                         words: vec!["rex".into()],
                     }),
                 },
@@ -1006,6 +1044,7 @@ mod tests {
                 label: "Bailly".into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
+                    aliases_from: usize::MAX,
                     words: vec!["λ\u{1F79}γος".into()], // oxia
                 }),
             }],
@@ -1028,6 +1067,7 @@ mod tests {
                 label: "Larousse".into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
+                    aliases_from: usize::MAX,
                     words: vec!["mur".into(), "mûr".into()],
                 }),
             }],
@@ -1051,6 +1091,7 @@ mod tests {
                 label: "LSJ".into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
+                    aliases_from: usize::MAX,
                     words: vec!["εἰ".into(), "εἶ".into()],
                 }),
             }],
@@ -1083,5 +1124,79 @@ mod tests {
             Some(vec![1])
         );
         assert!(lib.resolve("apple", &[false, false]).is_none());
+    }
+    /// roadmap #33: the wordlist can be asked for words rather than forms. a row
+    /// survives while any of its spellings is a headword in its own right.
+    #[test]
+    fn lemmas_only_drops_the_forms_and_keeps_the_words() {
+        let latin = Library::from_loaded(
+            vec![Loaded {
+                label: "Whitaker".into(),
+                dict: Box::new(Mock {
+                    internal: "mock".into(),
+                    // two headwords, then the forms the dictionary points at them
+                    words: vec![
+                        "rego".into(),
+                        "rexi".into(),
+                        "rexit".into(),
+                        "rexerint".into(),
+                    ],
+                    aliases_from: 2,
+                }),
+            }],
+            &[],
+            None,
+        );
+
+        let all: Vec<String> = latin
+            .search("rex", 10, &[])
+            .into_iter()
+            .map(|row| row.word)
+            .collect();
+        assert_eq!(all, ["rexerint", "rexi", "rexit"]);
+
+        let lemmas: Vec<String> = latin
+            .search_where("rex", 10, &[], true)
+            .into_iter()
+            .map(|row| row.word)
+            .collect();
+        assert_eq!(lemmas, ["rexi"], "only the word it files itself");
+        // and a form on its own now finds nothing, rather than its lemma's entry
+        // under a form's heading.
+        assert!(latin.search_where("rexerint", 10, &[], true).is_empty());
+    }
+
+    /// a row whose spellings are part alias, part headword is a word, not a form.
+    #[test]
+    fn a_row_survives_on_one_real_spelling() {
+        let mixed = Library::from_loaded(
+            vec![
+                Loaded {
+                    label: "Forms".into(),
+                    dict: Box::new(Mock {
+                        internal: "mock".into(),
+                        words: vec!["placeholder".into(), "rex".into()],
+                        aliases_from: 1, // "rex" here is only a pointer
+                    }),
+                },
+                Loaded {
+                    label: "L&S".into(),
+                    dict: Box::new(Mock {
+                        internal: "mock".into(),
+                        words: vec!["rex".into()], // and here it is the headword
+                        aliases_from: usize::MAX,
+                    }),
+                },
+            ],
+            &[],
+            None,
+        );
+        let rows = mixed.search_where("rex", 10, &[], true);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].dicts(),
+            [1],
+            "the alias member is gone, the word stays"
+        );
     }
 }

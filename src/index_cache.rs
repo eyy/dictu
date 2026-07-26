@@ -55,11 +55,13 @@ pub type Range = (u64, u32);
 /// key and carries it (#39), so a v2 file is sorted by a key nothing searches
 /// with any more — the one kind of staleness a warm cache would answer wrongly
 /// rather than not at all. **4**: that key now also drops a trailing homograph
-/// number (#43), which reorders it again.
-const VERSION: u32 = 4;
+/// number (#43), which reorders it again. **5**: the per-dictionary index carries
+/// one more count — how many of its display headwords are lemmas rather than
+/// `.syn` aliases (#33).
+const VERSION: u32 = 5;
 
 const INDEX_MAGIC: &[u8; 8] = b"DICTUIDX";
-const INDEX_HEADER: usize = 108;
+const INDEX_HEADER: usize = 112;
 const ORDER_MAGIC: &[u8; 8] = b"DICTUMRG";
 const ORDER_HEADER: usize = 52;
 
@@ -176,6 +178,11 @@ pub struct Built<'a> {
     pub display: &'a [u32],
     pub name: &'a str,
     pub payload: &'a [u8],
+    /// where a format's *aliases* begin in `entries` — StarDict appends its
+    /// `.syn` records after the `.idx` ones, and those records are the inflection
+    /// table (Whitaker files 1.18M forms that way). `None` means every entry is a
+    /// headword in its own right, which is true of every other format here.
+    pub aliases_from: Option<usize>,
 }
 
 /// lay an index out as the bytes of a cache file. the first occurrence of each
@@ -187,6 +194,7 @@ pub fn build(source: Built<'_>, fingerprint: &str) -> Vec<u8> {
         display,
         name,
         payload,
+        aliases_from,
     } = source;
     // sort entry indices by headword. byte order and `str` order agree, so the
     // reader can binary-search the blob without decoding utf-8.
@@ -213,12 +221,22 @@ pub fn build(source: Built<'_>, fingerprint: &str) -> Vec<u8> {
     // range_start[i] opens key i's run of ranges; one more entry closes the last.
     range_start.push(ranges.len() as u32);
 
+    // the display list keeps the first appearance of each key, and a format lists
+    // its own headwords before any alias — so the survivors are partitioned, and
+    // one count says where the aliases start. a word that is *both* (filed and
+    // pointed at) keeps its earlier, lemma position, which is the right answer.
+    let aliases_from = aliases_from.unwrap_or(entries.len()) as u32;
     let mut seen = vec![false; keys.len()];
+    let mut lemmas = 0usize;
     let display: Vec<u32> = display
         .iter()
         .filter_map(|&entry| {
             let key = *key_of.get(entry as usize)?;
-            (!std::mem::replace(&mut seen[key as usize], true)).then_some(key)
+            let first = !std::mem::replace(&mut seen[key as usize], true);
+            if first && entry < aliases_from {
+                lemmas += 1;
+            }
+            first.then_some(key)
         })
         .collect();
 
@@ -246,6 +264,7 @@ pub fn build(source: Built<'_>, fingerprint: &str) -> Vec<u8> {
     out.extend_from_slice(&(keys.len() as u32).to_le_bytes());
     out.extend_from_slice(&(ranges.len() as u32).to_le_bytes());
     out.extend_from_slice(&(display.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(lemmas as u32).to_le_bytes());
     out.extend_from_slice(&(fp.len() as u32).to_le_bytes());
     for at in [
         key_off_at,
@@ -290,6 +309,9 @@ pub struct Index {
     n_keys: usize,
     n_ranges: usize,
     n_display: usize,
+    /// how many of the display headwords are the dictionary's own, rather than
+    /// aliases it points at them; see `Built::aliases_from`.
+    n_lemmas: usize,
     key_off_at: usize,
     blob_at: usize,
     blob_len: usize,
@@ -321,21 +343,22 @@ impl Index {
         let n_keys = u32_le(raw, 12)? as usize;
         let n_ranges = u32_le(raw, 16)? as usize;
         let n_display = u32_le(raw, 20)? as usize;
-        let fp_len = u32_le(raw, 24)? as usize;
+        let n_lemmas = u32_le(raw, 24)? as usize;
+        let fp_len = u32_le(raw, 28)? as usize;
         if raw.get(INDEX_HEADER..INDEX_HEADER.checked_add(fp_len)?)? != fingerprint.as_bytes() {
             return None; // a cache of some other state of these files.
         }
 
-        let key_off_at = offset_le(raw, 28)?;
-        let blob_at = offset_le(raw, 36)?;
-        let blob_len = offset_le(raw, 44)?;
-        let range_off_at = offset_le(raw, 52)?;
-        let ranges_at = offset_le(raw, 60)?;
-        let display_at = offset_le(raw, 68)?;
-        let name_at = offset_le(raw, 76)?;
-        let name_len = offset_le(raw, 84)?;
-        let payload_at = offset_le(raw, 92)?;
-        let payload_len = offset_le(raw, 100)?;
+        let key_off_at = offset_le(raw, 32)?;
+        let blob_at = offset_le(raw, 40)?;
+        let blob_len = offset_le(raw, 48)?;
+        let range_off_at = offset_le(raw, 56)?;
+        let ranges_at = offset_le(raw, 64)?;
+        let display_at = offset_le(raw, 72)?;
+        let name_at = offset_le(raw, 80)?;
+        let name_len = offset_le(raw, 88)?;
+        let payload_at = offset_le(raw, 96)?;
+        let payload_len = offset_le(raw, 104)?;
 
         // every section must lie inside the file: a truncated cache is rejected
         // here rather than read past its end later.
@@ -355,6 +378,7 @@ impl Index {
         }
 
         Some(Self {
+            n_lemmas,
             n_keys,
             n_ranges,
             n_display,
@@ -380,6 +404,14 @@ impl Index {
     /// when the format maps its own data file instead.
     pub fn payload(&self) -> &[u8] {
         &self.bytes.as_slice()[self.payload.clone()]
+    }
+
+    /// whether the display headword at `index` is an alias the dictionary points
+    /// at one of its own entries — an inflection, in the one collection that has
+    /// any: Whitaker files 1.18M of them in a `.syn`. aliases sit after the
+    /// dictionary's own headwords in display order, so this is a comparison.
+    pub fn is_alias(&self, index: usize) -> bool {
+        index >= self.n_lemmas
     }
 
     /// the display headwords, in display order — the one part a caller has to
