@@ -264,10 +264,12 @@ struct UiInner {
     /// it carries the spellings each dictionary files it under, which is what the
     /// definition pane needs to find the entries again (#43).
     words: Rc<RefCell<Vec<library::Row>>>,
-    /// the row the definition pane is showing, so a scope change can render it
+    /// the word the definition pane is showing, so a scope change can render it
     /// again under the new scope: rebuilding the wordlist deselects every row
-    /// without telling anyone which one the pane was left on.
-    shown: Rc<RefCell<Option<library::Row>>>,
+    /// without telling anyone which one the pane was left on. the word rather
+    /// than the row, because a row is only the dictionaries that were in scope
+    /// when it was built — re-selecting one has to be able to bring it back.
+    shown: Rc<RefCell<Option<String>>>,
     /// set when a search arrived from outside (`--search`, i.e. the global hotkey):
     /// the next set of results selects its first row on its own. a flag rather than a
     /// timer because `SearchEntry` debounces `search-changed`, so there is no moment
@@ -319,6 +321,9 @@ impl UiInner {
         // dictionary that has it (#12). the grouping is the library's: it is the
         // only place that knows which spellings are the same word.
         let rows = library.search(query, SEARCH_LIMIT, &self.scope.borrow());
+        // recorded before the widgets exist: appending a row can select it, and
+        // the handler reads this list by index.
+        self.words.replace(rows.clone());
 
         for row in &rows {
             let names: Vec<&str> = row
@@ -334,7 +339,6 @@ impl UiInner {
                 listed.update_property(&[gtk::accessible::Property::Label(&row.word)]);
             }
         }
-        self.words.replace(rows.clone());
 
         if query.is_empty() {
             self.set_message("Type to search all dictionaries.");
@@ -545,8 +549,8 @@ impl UiInner {
             !scope.is_empty() && !scope.iter().any(|active| *active)
         };
         let shown = self.shown.borrow().clone();
-        if let (false, Some(row)) = (scoped_out, shown) {
-            self.show_row(&row);
+        if let (false, Some(word)) = (scoped_out, shown) {
+            self.show_word(&word);
         }
     }
 
@@ -586,7 +590,7 @@ impl UiInner {
             let Some(library) = borrow.as_ref() else {
                 return;
             };
-            library.resolve(word)
+            library.resolve(word, &self.scope.borrow())
         };
         match row {
             Some(row) => self.show_row(&row),
@@ -608,7 +612,7 @@ impl UiInner {
         let Some(library) = borrow.as_ref() else {
             return;
         };
-        self.shown.replace(Some(row.clone()));
+        self.shown.replace(Some(row.word.clone()));
         // scoped, like the wordlist: a definition from a dictionary the user
         // deselected would contradict the status line, and the fold strip would go
         // further and advertise that dictionary by name.
@@ -625,7 +629,17 @@ impl UiInner {
                 continue;
             }
             match defs.last_mut() {
-                Some((last, all)) if last == dict => all.extend(entries),
+                // a dictionary can file two spellings of the row against the same
+                // entry — a hebrew-hebrew dictionary does it 28,494 times, pointed and unpointed
+                // at one body — and printing that twice would have the pane
+                // announce "1 of 2" over one definition said once.
+                Some((last, all)) if last == dict => {
+                    for entry in entries {
+                        if !all.contains(&entry) {
+                            all.push(entry);
+                        }
+                    }
+                }
                 _ => defs.push((*dict, entries)),
             }
         }

@@ -213,10 +213,19 @@ these are blocked on a decision or an action only you can take. nothing else wai
   spellings; within those, a **fold key** (case, canonical form, oxia-vs-tonos, and the
   homograph number `keys::bare` now strips) says which are literally the same spelling; and
   then a spelling that merely *says less* joins the one it can only be — `כאב לב` into
-  `כְּאֵב לֵב`. only when unambiguous: `מלך` fits both `מֶלֶךְ` and `מָלָךְ`, which are
-  different words, so it stays a row of its own rather than being filed under a guess.
-  the row shows the most fully marked spelling, because that is the headword a reader wants
-  and the bare one is a search key that happens to be written down.
+  `כְּאֵב לֵב` — showing the most fully marked spelling, because that is the headword a
+  reader wants and the bare one is a search key that happens to be written down.
+  **that last step is only for marks a writer may leave off**, which is the correction two
+  reviews forced and the most important line in this entry. hebrew niqqud and arabic
+  harakat annotate a spelling that is already complete; a latin, french or greek accent
+  *is* the spelling. the first draft absorbed on marks alone and merged 41,906 classes,
+  including `mur` (a wall) into `mûr` (ripe), `ou` into `où`, `cote`+`côte`+`coté` into
+  `côté`, and — worse, because they are two of the commonest words in greek — `εἰ` ("if")
+  into `εἶ` ("you are") and `ὁ` (the article) into `ὅ` (the relative). the ambiguity guard
+  did not catch them: it only fires when *two* marked spellings compete, and french
+  normally has one. `keys::only_optional_marks` now draws the line by script.
+  even within hebrew the guard still matters: `מלך` fits both `מֶלֶךְ` and `מָלָךְ`, which
+  are different words, so it stays a row of its own rather than being filed under a guess.
   **`lookup_all` is gone**, and with it the bug that made this more than cosmetic. a row now
   carries the spelling *each* dictionary files it under, so the pane asks each one for its
   own spelling instead of matching a single string against all of them — which is why

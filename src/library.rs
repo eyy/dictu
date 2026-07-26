@@ -135,11 +135,11 @@ impl Library {
     /// `active[dict]` is false (missing/short `active` = included, so `&[]` means
     /// "all dicts").
     ///
-    /// **`limit` counts rows, not hits, and bounds neither exactly.** the walk
-    /// stops at the first key boundary past `limit` distinct words, so it returns
-    /// one hit per dictionary holding each word, and up to one extra row for every
-    /// other word sharing that last key. the overshoot is the point: stopping mid-key
-    /// would hand back a word whose dictionaries had not all been seen.
+    /// **`limit` counts rows and is not an exact ceiling.** a key's worth of
+    /// entries is grouped whole before the limit is consulted, so the return can
+    /// exceed it by the other spellings in that last key — measured at most 11
+    /// over this collection, for a limit of 500. stopping mid-key would split one
+    /// lemma across two searches instead.
     ///
     /// the search is **asymmetric in how specific the query is**. it runs on the
     /// bare key, which ignores every diacritic on both sides, so `מלך` reaches
@@ -158,8 +158,9 @@ impl Library {
             return Vec::new();
         }
         // a query whose bare key is its fold key spelled no diacritics, so there
-        // is nothing to hold candidates to.
-        let marked = needle != fold;
+        // is nothing to hold candidates to. the homograph number comes off both
+        // sides first, or `rex (1)` would read as a query about marks.
+        let marked = *needle != *keys::without_homograph(&fold);
         let needle = needle.as_bytes();
 
         // first position whose key is >= needle. hand-rolled rather than
@@ -214,9 +215,16 @@ impl Library {
     /// dictionary that has the word may spell it with marks the link does not
     /// (Bailly stores 97,717 greek keys with oxia and none with tonos, so an
     /// exact-match lookup of a word typed on a greek keyboard finds nothing).
-    pub fn resolve(&self, word: &str) -> Option<Row> {
+    ///
+    /// scoped like the wordlist, so a link cannot be headed by a spelling only a
+    /// deselected dictionary files. only rows for *this* word are candidates: the
+    /// walk matches a prefix, and answering `rexer` with `rexeram` would be
+    /// serving a different word rather than the same one spelled differently.
+    pub fn resolve(&self, word: &str, active: &[bool]) -> Option<Row> {
         let fold = keys::fold(word);
-        let mut rows = self.search(word, 8, &[]);
+        let key = keys::bare(&fold).into_owned();
+        let mut rows = self.search(word, 8, active);
+        rows.retain(|row| *keys::bare(&keys::fold(&row.word)) == key);
         let found = rows
             .iter()
             .position(|row| {
@@ -225,8 +233,8 @@ impl Library {
             .or_else(|| rows.iter().position(|row| keys::fold(&row.word) == fold));
         match found {
             Some(row) => Some(rows.swap_remove(row)),
-            // the spelling is not in the collection under any of its own marks;
-            // the nearest row on the same letters is still the right answer.
+            // the spelling is not in the collection under any of its own marks,
+            // but another spelling of the same letters is.
             None => rows.into_iter().next(),
         }
     }
@@ -255,8 +263,6 @@ impl Library {
     }
 }
 
-/// where each dictionary's headwords begin once the lists are laid end to end,
-/// with the total last — the slot numbering the merged order is written in.
 /// group one key's worth of entries into rows.
 ///
 /// every entry here shares a bare key, so they are spellings of the same letters
@@ -299,7 +305,11 @@ fn group(run: &[(usize, &str)]) -> Vec<Row> {
         }
     }
 
-    // a class is maximal when no other spells more marks than it does.
+    // a class is maximal when no other spells more marks than it does. two
+    // classes can allow each other — the same marks in a different order, or one
+    // written twice — and then neither is maximal and the run simply does not
+    // group, which is the safe way to be wrong (one occurrence in the collection:
+    // a hebrew-hebrew dictionary's `חָזַר בִּתְשׁוּבָָה` with a doubled qamats).
     let maximal: Vec<bool> = folds
         .iter()
         .map(|fold| {
@@ -316,10 +326,13 @@ fn group(run: &[(usize, &str)]) -> Vec<Row> {
         if maximal[class] {
             continue;
         }
-        let mut into = folds
-            .iter()
-            .enumerate()
-            .filter(|(other, fold)| maximal[*other] && keys::marks_allow(&folds[class], fold));
+        let mut into = folds.iter().enumerate().filter(|(other, fold)| {
+            maximal[*other]
+                && keys::marks_allow(&folds[class], fold)
+                // only where the marks are annotation the writer may leave off.
+                // french `mur` is not an unpointed `mûr`, it is a wall.
+                && keys::only_optional_marks(fold)
+        });
         let (Some((host, _)), None) = (into.next(), into.next()) else {
             continue; // ambiguous: `מלך` under both `מֶלֶךְ` and `מָלָךְ`.
         };
@@ -343,6 +356,8 @@ fn group(run: &[(usize, &str)]) -> Vec<Row> {
     kept
 }
 
+/// where each dictionary's headwords begin once the lists are laid end to end,
+/// with the total last — the slot numbering the merged order is written in.
 fn slot_bases(dicts: &[Loaded]) -> Vec<u32> {
     std::iter::once(0)
         .chain(dicts.iter().scan(0u32, |at, loaded| {
@@ -716,7 +731,7 @@ mod tests {
         // dictionary is remembered with its own spelling — which is what lets the
         // pane ask for entries without any dictionary agreeing on case.
         let lib = lib();
-        let row = lib.resolve("apple").expect("a row for apple");
+        let row = lib.resolve("apple", &[]).expect("a row for apple");
         assert_eq!(
             row.members,
             [(0, "Apple".to_owned()), (1, "apple".to_owned())]
@@ -885,7 +900,7 @@ mod tests {
         assert_eq!(words_of(&warm, "ap"), ["Apple", "apricot"]);
         assert_eq!(words_of(&warm, "gr"), ["grape"]);
         assert_eq!(
-            warm.resolve("apple").map(|row| row.dicts()),
+            warm.resolve("apple", &[]).map(|row| row.dicts()),
             Some(vec![0, 1])
         );
         assert_eq!(warm.total_headwords(), 4);
@@ -997,11 +1012,76 @@ mod tests {
             &[],
             None,
         );
-        let row = greek.resolve("λόγος").expect("tonos should find oxia");
+        let row = greek.resolve("λόγος", &[]).expect("tonos should find oxia");
         assert_eq!(row.members.len(), 1);
         assert_eq!(
             row.members[0].1, "λ\u{1F79}γος",
             "kept the spelling it is filed under"
         );
+    }
+    /// the review's sharpest finding: a mark is only "optional" where a reader may
+    /// leave it off and still have written the same word. french accents are not.
+    #[test]
+    fn an_accent_that_is_part_of_the_spelling_keeps_its_own_row() {
+        let french = Library::from_loaded(
+            vec![Loaded {
+                label: "Larousse".into(),
+                dict: Box::new(Mock {
+                    internal: "mock".into(),
+                    words: vec!["mur".into(), "mûr".into()],
+                }),
+            }],
+            &[],
+            None,
+        );
+        let words: Vec<String> = french
+            .search("mur", 10, &[])
+            .into_iter()
+            .map(|row| row.word)
+            .collect();
+        assert_eq!(words, ["mur", "mûr"], "a wall is not an unpointed ripe");
+    }
+
+    /// and greek accent position is lexical too — `εἰ` (if) is a mark-subset of
+    /// `εἶ` (you are), and they are not the same word.
+    #[test]
+    fn a_greek_breathing_does_not_absorb_into_an_accent() {
+        let greek = Library::from_loaded(
+            vec![Loaded {
+                label: "LSJ".into(),
+                dict: Box::new(Mock {
+                    internal: "mock".into(),
+                    words: vec!["εἰ".into(), "εἶ".into()],
+                }),
+            }],
+            &[],
+            None,
+        );
+        assert_eq!(greek.search("ει", 10, &[]).len(), 2);
+    }
+
+    /// a link to a word the collection does not have must say so, rather than
+    /// answering with the next word along the same prefix.
+    #[test]
+    fn resolving_a_word_that_is_not_there_finds_nothing() {
+        let lib = lib();
+        assert!(
+            lib.resolve("appl", &[]).is_none(),
+            "a prefix is not the word"
+        );
+        assert!(lib.resolve("zzz", &[]).is_none());
+        assert!(lib.resolve("apple", &[]).is_some());
+    }
+
+    /// and it answers within the scope, so a link cannot be headed by a spelling
+    /// only a deselected dictionary files.
+    #[test]
+    fn resolving_honours_the_scope() {
+        let lib = lib();
+        assert_eq!(
+            lib.resolve("apple", &[false, true]).map(|row| row.dicts()),
+            Some(vec![1])
+        );
+        assert!(lib.resolve("apple", &[false, false]).is_none());
     }
 }

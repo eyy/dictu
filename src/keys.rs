@@ -56,7 +56,9 @@ pub fn fold(word: &str) -> Cow<'_, str> {
 }
 
 /// the bare key, derived from a *fold* key — never from the raw word, so the two
-/// keys agree about case and canonical form and differ only in the marks.
+/// keys agree about case and canonical form and differ only in the marks. a
+/// trailing homograph number comes off here too: it is the only part of a
+/// headword that no unicode operation would have removed.
 pub fn bare(fold: &str) -> Cow<'_, str> {
     let fold = without_homograph(fold);
     if fold.is_ascii() {
@@ -78,6 +80,26 @@ pub fn bare(fold: &str) -> Cow<'_, str> {
 /// one — and a reader typing `rex` means both. it is bookkeeping, not spelling,
 /// so it comes off the key exactly as a diacritic does; unlike a diacritic, no
 /// amount of unicode normalization would have removed it.
+/// whether every combining mark in `fold` is *optional annotation* — pointing a
+/// reader can leave off without writing a different word.
+///
+/// this is the line between two scripts' worth of behaviour, and it decides
+/// whether an unmarked spelling may be folded into a marked one. hebrew niqqud
+/// and arabic harakat annotate a spelling that is already complete without them:
+/// `כאב לב` and `כְּאֵב לֵב` are the same word written twice. a latin or greek
+/// accent is part of the spelling: french `mur` (a wall) and `mûr` (ripe) are two
+/// words, as are `cote`, `côte` and `côté`, and greek accent position is lexical
+/// too. so hebrew and arabic marks absorb, and nothing else does.
+pub fn only_optional_marks(fold: &str) -> bool {
+    fold.nfd().filter(|c| is_combining_mark(*c)).all(|mark| {
+        matches!(u32::from(mark),
+            // hebrew points and cantillation
+            0x0591..=0x05BD | 0x05BF | 0x05C1..=0x05C2 | 0x05C4..=0x05C5 | 0x05C7
+            // arabic harakat, and the dagger alif
+            | 0x064B..=0x065F | 0x0670)
+    })
+}
+
 pub fn without_homograph(word: &str) -> &str {
     let Some(open) = word
         .strip_suffix(')')
