@@ -54,8 +54,9 @@ pub type Range = (u64, u32);
 /// rebuilt rather than misread. **3**: the merged order is sorted by the bare
 /// key and carries it (#39), so a v2 file is sorted by a key nothing searches
 /// with any more — the one kind of staleness a warm cache would answer wrongly
-/// rather than not at all.
-const VERSION: u32 = 3;
+/// rather than not at all. **4**: that key now also drops a trailing homograph
+/// number (#43), which reorders it again.
+const VERSION: u32 = 4;
 
 const INDEX_MAGIC: &[u8; 8] = b"DICTUIDX";
 const INDEX_HEADER: usize = 108;

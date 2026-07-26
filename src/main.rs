@@ -6,8 +6,6 @@
 // at once; a result shows its definition from each dict that has it.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::io::{self, Write};
 use std::path::Path;
 use std::rc::{Rc, Weak};
@@ -136,9 +134,17 @@ fn search_cli(query: Option<&str>) -> glib::ExitCode {
             lib.dict_count(),
             lib.total_headwords()
         )?;
-        for hit in lib.prefix_search(query, 20, &[]) {
-            let label = lib.dict_label(hit.dict).unwrap_or("?");
-            writeln!(out, "  [{label}] {}", hit.word)?;
+        for row in lib.search(query, 20, &[]) {
+            // one line per dictionary, naming the spelling it files the row under
+            // — the row's own spelling is the first of them.
+            for (dict, spelling) in &row.members {
+                let label = lib.dict_label(*dict).unwrap_or("?");
+                let under = match *spelling == row.word {
+                    true => String::new(),
+                    false => format!("  (under {spelling})"),
+                };
+                writeln!(out, "  [{label}] {}{under}", row.word)?;
+            }
         }
         Ok(glib::ExitCode::SUCCESS)
     })
@@ -253,12 +259,16 @@ struct UiInner {
     /// label, and a mark at the line it starts on. marks (not line numbers) because
     /// they survive the buffer being rewritten under them.
     sections: Rc<RefCell<Vec<(String, gtk::TextMark)>>>,
-    /// the words in the wordlist, in row order — a row is now a box of two labels,
-    /// so its word is looked up by index rather than read back out of a widget.
-    words: Rc<RefCell<Vec<String>>>,
+    /// the wordlist's rows, in order. a row is a box of labels rather than a
+    /// word, so it is found by index rather than read back out of a widget — and
+    /// it carries the spellings each dictionary files it under, which is what the
+    /// definition pane needs to find the entries again (#43).
+    words: Rc<RefCell<Vec<library::Row>>>,
     /// the word the definition pane is showing, so a scope change can render it
     /// again under the new scope: rebuilding the wordlist deselects every row
-    /// without telling anyone which word the pane was left on.
+    /// without telling anyone which one the pane was left on. the word rather
+    /// than the row, because a row is only the dictionaries that were in scope
+    /// when it was built — re-selecting one has to be able to bring it back.
     shown: Rc<RefCell<Option<String>>>,
     /// set when a search arrived from outside (`--search`, i.e. the global hotkey):
     /// the next set of results selects its first row on its own. a flag rather than a
@@ -307,45 +317,26 @@ impl UiInner {
             return;
         }
 
-        let hits = library.prefix_search(query, SEARCH_LIMIT, &self.scope.borrow());
-        // one row per word, naming every dictionary that has it (#12). the search
-        // stops only at a word boundary, so no row here is missing a dictionary
-        // that the walk simply never reached.
-        let mut rows: Vec<(&str, Vec<usize>)> = Vec::new();
-        let mut at: HashMap<String, usize> = HashMap::new();
-        for hit in &hits {
-            match at.entry(hit.word.to_lowercase()) {
-                Entry::Vacant(slot) => {
-                    slot.insert(rows.len());
-                    rows.push((&hit.word, vec![hit.dict]));
-                }
-                Entry::Occupied(slot) => {
-                    let (word, dicts) = &mut rows[*slot.get()];
-                    // rows dedup case-insensitively, but selecting one looks up the
-                    // spelling it shows — so a dictionary that files "ab" is not an
-                    // answer for a row reading "AB", and counting it here would
-                    // promise a definition the pane then doesn't show.
-                    // a dictionary that files one word twice still answers once.
-                    if hit.word == *word && !dicts.contains(&hit.dict) {
-                        dicts.push(hit.dict);
-                    }
-                }
-            }
-        }
+        // one row per lemma, however its dictionaries spell it (#43), naming every
+        // dictionary that has it (#12). the grouping is the library's: it is the
+        // only place that knows which spellings are the same word.
+        let rows = library.search(query, SEARCH_LIMIT, &self.scope.borrow());
+        // recorded before the widgets exist: appending a row can select it, and
+        // the handler reads this list by index.
+        self.words.replace(rows.clone());
 
-        self.words.borrow_mut().clear();
-        for (word, dicts) in &rows {
-            let names: Vec<&str> = dicts
+        for row in &rows {
+            let names: Vec<&str> = row
+                .dicts()
                 .iter()
-                .map(|&d| library.dict_label(d).unwrap_or(""))
+                .map(|&dict| library.dict_label(dict).unwrap_or(""))
                 .collect();
-            self.words.borrow_mut().push((*word).to_string());
-            self.results.append(&word_row(word, &names));
+            self.results.append(&word_row(&row.word, &names));
             // name the row after its word: the row is a box of two labels now, so
             // without this a screen reader (and the e2e harness) would read the
             // language tag as part of the entry.
-            if let Some(row) = self.results.last_child().and_downcast::<gtk::ListBoxRow>() {
-                row.update_property(&[gtk::accessible::Property::Label(word)]);
+            if let Some(listed) = self.results.last_child().and_downcast::<gtk::ListBoxRow>() {
+                listed.update_property(&[gtk::accessible::Property::Label(&row.word)]);
             }
         }
 
@@ -589,21 +580,69 @@ impl UiInner {
     /// show a word's definition(s): the headword bold+large, then each dict that
     /// defines it under a dim source label, its html parsed into styled runs
     /// rendered with OUR uniform tags (dict css ignored → consistent look).
+    /// a spelling typed or clicked rather than picked from the list — a link
+    /// target, or the word the hotkey arrived with. the library decides which row
+    /// it belongs to, since the dictionary that has it may spell it with marks the
+    /// caller did not (#43).
     fn show_word(&self, word: &str) {
+        let row = {
+            let borrow = self.library.borrow();
+            let Some(library) = borrow.as_ref() else {
+                return;
+            };
+            library.resolve(word, &self.scope.borrow())
+        };
+        match row {
+            Some(row) => self.show_row(&row),
+            // nothing on these letters at all: say so, rather than leaving the
+            // last word's definition sitting there under a new heading.
+            None => {
+                self.shown.replace(None);
+                let buffer = self.definition.buffer();
+                self.clear_sections(&buffer);
+                buffer.set_text(&format!("No definition for “{word}”."));
+                self.update_fold();
+            }
+        }
+    }
+
+    fn show_row(&self, row: &library::Row) {
+        let word = row.word.as_str();
         let borrow = self.library.borrow();
         let Some(library) = borrow.as_ref() else {
             return;
         };
-        self.shown.replace(Some(word.to_owned()));
+        self.shown.replace(Some(row.word.clone()));
         // scoped, like the wordlist: a definition from a dictionary the user
         // deselected would contradict the status line, and the fold strip would go
         // further and advertise that dictionary by name.
+        // each dictionary is asked for the spelling it files this row under, so a
+        // pane never comes up empty for a word the list just showed.
         let scope = self.scope.borrow();
-        let defs: Vec<_> = library
-            .lookup_all(word)
-            .into_iter()
-            .filter(|(index, _)| scope.get(*index).copied().unwrap_or(true))
-            .collect();
+        let mut defs: Vec<(usize, Vec<String>)> = Vec::new();
+        for (dict, spelling) in &row.members {
+            if !scope.get(*dict).copied().unwrap_or(true) {
+                continue; // deselected: it does not answer here either.
+            }
+            let entries = library.entries(*dict, spelling);
+            if entries.is_empty() {
+                continue;
+            }
+            match defs.last_mut() {
+                // a dictionary can file two spellings of the row against the same
+                // entry — a hebrew-hebrew dictionary does it 28,494 times, pointed and unpointed
+                // at one body — and printing that twice would have the pane
+                // announce "1 of 2" over one definition said once.
+                Some((last, all)) if last == dict => {
+                    for entry in entries {
+                        if !all.contains(&entry) {
+                            all.push(entry);
+                        }
+                    }
+                }
+                _ => defs.push((*dict, entries)),
+            }
+        }
         drop(scope);
 
         let buffer = self.definition.buffer();
@@ -1056,11 +1095,11 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         ui,
         move |_list, row| {
             let Some(row) = row else { return };
-            let word = usize::try_from(row.index())
+            let selected = usize::try_from(row.index())
                 .ok()
                 .and_then(|index| ui.words.borrow().get(index).cloned());
-            if let Some(word) = word {
-                ui.show_word(&word);
+            if let Some(selected) = selected {
+                ui.show_row(&selected);
             }
         }
     ));
