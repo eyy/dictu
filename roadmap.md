@@ -19,6 +19,25 @@ nothing open right now.
 
 ## next — 2026-07-24 feedback
 
+- **[ ] #50 an english–english dictionary, oxford if it can be had.** the collection reads
+  *into* english and has nothing that defines english itself: thirteen of the fifteen
+  dictionaries are greek, latin or hebrew, and the other two are french. every gloss lands
+  in a language the app cannot then explain.
+  **oxford is the ask and probably the one thing that cannot be bought as data** — the same
+  wall #44 hit with every post-1950 lexicon. the OED is a subscription, and the Oxford
+  Dictionary of English ships inside other people's apps (Apple's Dictionary.app licenses it)
+  rather than as a file anyone sells. worth checking properly rather than assuming, since
+  that is what the #44 research was for; if it exists at a price, say the price.
+  what certainly exists, free and in formats we already read: **GCIDE** (Webster's 1913 plus
+  decades of GNU revisions, dictd, superb prose and blind to anything after ~1990),
+  **WordNet** (modern, complete, terse to the point of curt, and structured as synsets rather
+  than articles), the **Century Dictionary** (public domain, enormous, scanned), and English
+  **Wiktionary**, which #37 already brings in for five other languages and would cover the
+  modern vocabulary the others miss.
+  the honest shape of the answer is probably "one old and good plus one modern and thin",
+  the way Lewis & Short now sits beside Whitaker — so measure the overlap before installing
+  three of them.
+
 - **[ ] #49 back and forward.** there is real navigation now and no way to retrace it: a
   definition can be reached by typing, by picking a row, by the global hotkey, and — since
   #20 — by clicking a link inside another definition, which also rewrites the search box.
