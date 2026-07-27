@@ -699,7 +699,17 @@ def main():
         # to take that definition off the screen too. the row's count updates either
         # way, so a pane left behind would contradict the number beside it.
         close_scope(node)
-        app_proc.forward("--search", "byte")  # in both fixtures, and auto-selected
+        app_proc.forward("--search", "byte")  # in both fixtures
+        # wait for the row, then select it deliberately. `--search` does auto-select
+        # its first result (#36), but that is a one-shot flag consumed by whichever
+        # repopulate runs first, so leaning on it here made this check fail about
+        # one run in five. #36 has a check of its own; this one is about the pane.
+        wait_for(
+            lambda: [w for w in widgets.row_words() if w] == ["byte"] or None,
+            10,
+            "the byte row",
+        )
+        select_first_row(widgets.results)
         wait_for(
             lambda: "Sense 1" in widgets.definition_text() or None,
             10,
