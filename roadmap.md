@@ -109,8 +109,10 @@ these are blocked on a decision or an action only you can take. nothing else wai
   cheap-looking length filter passes 60% of the corpus at the modal query length. the signal
   that does work — an inflection's entry opens with its lemma in bold — costs 333 ms and
   turns `rex` from 27 rows into 1.
-  **phases A (normalized keys, #39) and B (attribution, #12) have landed.** what remains is
-  C (the fuzzy scan) and D (lemma detection, #33).
+  **phases A (normalized keys, #39), B (attribution, #12) and D (#33) have landed** — D for
+  none of the reasons planned here: #44 replaced the dictionary whose inflections needed
+  detecting, and what shipped folds rows that repeat a definition rather than identifying
+  lemmas at all. **only C, the fuzzy scan, remains.**
 
 
 
