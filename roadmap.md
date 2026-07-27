@@ -213,15 +213,26 @@ these are blocked on a decision or an action only you can take. nothing else wai
   the only row reaching that definition and stays.
   measured at the wordlist's own limit of 500 rows, before → after: `rex` **27 → 3**,
   `esse` **473 → 32**, `amo` **500+ → 91**, `sam` **215 → 78**, `regis` **19 → 7**,
-  `כאב` **18 → 13**, and the words above all still return their rows. `מלך` is **17 → 17** —
-  its rows are all headwords in their own right, which is the rule declining to do anything.
+  `כאב` **18 → 13**, and the words above all still return their rows. `מלך` is **17 → 17**,
+  though not for the reason first written here: it survives because two other dictionaries
+  file it themselves, not because the rule spares aliases. the case that wording was meant
+  to cover — an ambiguous unpointed spelling *only* a hebrew-hebrew dictionary holds — is the one a third
+  review found broken (below).
   greek is untouched: LSJ, Bailly, Dodson, Pindar and the Middle Liddell ship no `.syn`
   between them.
-  **the property, checked rather than argued**: over 52 query/limit combinations on the real
-  collection — latin, hebrew, greek and french, at limits 10 and 500 — every definition
-  reachable without folding is still reachable with it. 3,118 definitions, 1,752 repeat rows
-  folded, none lost. that is the exact failure the first version had, so it is worth a test
-  rather than a paragraph; the mock-fixture version of it lives in `library.rs`.
+  **the property, checked rather than argued** — and then a third review found the half of
+  it the check could not see. "every definition stays reachable" was true and insufficient:
+  folding was deleting rows whose *spelling* was the only one a reader would type. `טוניקה`
+  vanished, leaving `טוּנִיקָה` (a tunic) and `טוֹנִיקָה` (a tonic) and no way to say which
+  you meant — 2,508 a hebrew-hebrew dictionary aliases have that shape. the cause was a contradiction
+  between the two halves of the search: `group` keeps an ambiguous unpointed spelling as its
+  own row *because* it cannot be attributed to one lemma, and then folding deleted it, which
+  files it under a guess by omission. a class `group` declined to absorb is now one folding
+  may not drop either.
+  the sweep now asserts both halves — every definition reachable, and every spelling the
+  reader typed still a row — over 58 query/limit runs on the real collection: 2,666
+  definitions, 1,884 repeat rows folded, none lost, 52 typed spellings kept. the
+  mock-fixture versions of both live in `library.rs`.
   a definition's identity is `(dictionary, offset ^ size << 40)` — both halves of the range,
   since two entries can start in the same place and run to different lengths.
   the setting is session-only, like the scope beside it (#45 is where preferences persist).

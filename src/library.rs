@@ -411,7 +411,14 @@ fn group(run: &[(usize, &str, bool)]) -> Vec<(Row, bool)> {
                 && keys::only_optional_marks(fold)
         });
         let (Some((host, _)), None) = (into.next(), into.next()) else {
-            continue; // ambiguous: `מלך` under both `מֶלֶךְ` and `מָלָךְ`.
+            // ambiguous: `מלך` under both `מֶלֶךְ` and `מָלָךְ`. this row exists
+            // *because* the spelling cannot be attributed to one lemma — so it is
+            // also not one folding may drop as a repeat. deleting it files it
+            // under a guess by omission: type `טוניקה`, the only spelling a modern
+            // reader writes, and you would be left with `טוּנִיקָה` (a tunic) and
+            // `טוֹנִיקָה` (a tonic) and no way to tell which you meant.
+            all_aliases[class] = false;
+            continue;
         };
         let members = std::mem::take(&mut rows[class].members);
         rows[host].members.extend(members);
@@ -1294,5 +1301,41 @@ mod tests {
             [0, 1],
             "both spellings stay: one is a word"
         );
+    }
+    /// the review's finding, and the case a "is the definition still reachable"
+    /// test cannot see: `group` keeps an ambiguous unpointed spelling as its own
+    /// row *because* it cannot be attributed to one lemma, so folding may not
+    /// delete it either. type `טוניקה` and you must still get `טוניקה` — not a
+    /// choice between `טוּנִיקָה` (a tunic) and `טוֹנִיקָה` (a tonic).
+    #[test]
+    fn an_ambiguous_spelling_is_never_folded_away() {
+        let hebrew = Library::from_loaded(
+            vec![Loaded {
+                label: "a hebrew-hebrew dictionary".into(),
+                dict: Box::new(Mock {
+                    internal: "mock".into(),
+                    words: vec![
+                        "טוּנִיקָה".into(),
+                        "טוֹנִיקָה".into(),
+                        "טוניקה".into(), // the alias, pointing at the first entry
+                    ],
+                    aliases_from: 2,
+                    entry_of: vec![0, 1, 0],
+                }),
+            }],
+            &[],
+            None,
+        );
+
+        let folded: Vec<String> = hebrew
+            .search_where("טוניקה", 10, &[], true)
+            .into_iter()
+            .map(|row| row.word)
+            .collect();
+        assert!(
+            folded.iter().any(|word| word == "טוניקה"),
+            "the typed spelling was folded away: {folded:?}"
+        );
+        assert_eq!(folded.len(), 3, "and the two words it could mean both stay");
     }
 }
