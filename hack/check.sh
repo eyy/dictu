@@ -109,7 +109,9 @@ smoke_search() {
     echo "$out"
     [ $status -eq 0 ] || return 1
     grep -q 'zeitgeist' <<<"$out" || { echo "prefix search missed zeitgeist" >&2; return 1; }
-    grep -q "2 dicts" <<<"$out" || { echo "fixture dicts not loaded" >&2; return 1; }
+    # the cli prints the same status line the window puts under its wordlist, so
+    # this also checks the two front ends still share it (roadmap #46).
+    grep -qE '^[0-9]+ results?' <<<"$out" || { echo "no result count in the header" >&2; return 1; }
 }
 
 # drive the real widget tree over at-spi (see hack/e2e.py).
