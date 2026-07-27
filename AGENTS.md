@@ -254,6 +254,42 @@ each plain path is scanned **recursively**; a `!` prefix excludes everything und
 don't mix a symlink with its target between an include and its exclude. point
 `XDG_CONFIG_HOME` at a temp dir to test against a fixture without touching the real one.
 
+## don't take the desktop down with you
+
+**this happened.** on 2026-07-26 systemd-oomd killed the user's GoLand (11 processes) and
+then IBus (4 processes) — their input method, so typing stopped working — because the user
+slice crossed 50% memory pressure for 20 seconds. nothing crashed; the machine sacrificed
+their apps to make room for ours. it reads, from the other side of the screen, exactly like
+the session falling over.
+
+what pushes it there, in order of damage:
+
+1. **cargo's default parallelism.** 14 cores means 14 `rustc` processes, each hundreds of
+   MB. cap it: `cargo build -j4` (or `CARGO_BUILD_JOBS=4`).
+2. **concurrent agents.** each one builds *and* opens the real collection. run reviewers
+   **one at a time** on this project, not two or five.
+3. **a cache VERSION bump.** it forces a cold rebuild of the merged index — a **792 MB
+   peak** — in every worktree and every agent that runs the binary. bump it when the format
+   demands it, then warm the cache once, deliberately, before anything else runs.
+4. **release builds.** only when measuring; debug is enough for everything else.
+
+for anything heavy, put a ceiling on it so the kernel throttles *us* rather than the
+machine hunting for something to kill:
+
+```sh
+systemd-run --user --scope -q -p MemoryHigh=6G -p MemoryMax=8G -- cargo build -j4
+```
+
+and check the aftermath rather than guessing, because oomd is silent in the terminal:
+
+```sh
+journalctl -b | grep -E "systemd-oomd.*Killed"
+```
+
+the cache is derived data and can be cleared, but a full wipe costs a 792 MB rebuild —
+delete only the images from superseded versions (the u32 at byte 8 of a `.didx`/`.dord` is
+its VERSION).
+
 ## gotchas
 
 1. cargo not on `$PATH` — the single most common wasted cycle.
