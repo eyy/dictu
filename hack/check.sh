@@ -97,21 +97,27 @@ smoke_dump() {
 # the same engine the gui uses, pointed at the fixture via a throwaway config,
 # so the assertion doesn't depend on which dictionaries are installed here.
 smoke_search() {
-    local tmp out
-    tmp=$(mktemp -d) || return 1
-    mkdir -p "$tmp/dictu"
-    printf 'dictionary_dirs = ["%s/sample"]\n' "$REPO" > "$tmp/dictu/config.toml"
+    local cfg out status
+    cfg=$(mktemp -d) || return 1
+    mkdir -p "$cfg/dictu"
+    printf 'dictionary_dirs = ["%s/sample"]\n' "$REPO" > "$cfg/dictu/config.toml"
     # a throwaway cache dir too, so the index cache (roadmap #7) is exercised from
     # cold here and the real ~/.cache/dictu is left alone.
-    out=$(XDG_CONFIG_HOME="$tmp" XDG_CACHE_HOME="$tmp" ./target/debug/dictu search zeit)
-    local status=$?
-    rm -rf "$tmp"
+    out=$(XDG_CONFIG_HOME="$cfg" XDG_CACHE_HOME="$cfg" ./target/debug/dictu search zeit)
+    status=$?
     echo "$out"
-    [ $status -eq 0 ] || return 1
+    [ $status -eq 0 ] || { rm -rf "$cfg"; return 1; }
     grep -q 'zeitgeist' <<<"$out" || { echo "prefix search missed zeitgeist" >&2; return 1; }
-    # the cli prints the same status line the window puts under its wordlist, so
-    # this also checks the two front ends still share it (roadmap #46).
-    grep -qE '^[0-9]+ results?' <<<"$out" || { echo "no result count in the header" >&2; return 1; }
+    # the cli prints the same status line the window puts under its wordlist, so this
+    # also checks the two front ends still share it (roadmap #46). the count carries
+    # separators and may end in "+", so match the shape rather than a bare integer.
+    grep -qE '^[0-9,]+\+? results?' <<<"$out" || { echo "no result count in the header" >&2; return 1; }
+    # and that both fixture dictionaries were actually indexed, which the count above
+    # cannot tell you — `zeit` is in one of them.
+    out=$(XDG_CONFIG_HOME="$cfg" XDG_CACHE_HOME="$cfg" ./target/debug/dictu scope)
+    echo "$out"
+    grep -q '2 dictionaries' <<<"$out" || { echo "fixture dicts not loaded" >&2; rm -rf "$cfg"; return 1; }
+    rm -rf "$cfg"
 }
 
 # drive the real widget tree over at-spi (see hack/e2e.py).

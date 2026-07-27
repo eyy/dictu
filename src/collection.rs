@@ -116,6 +116,17 @@ impl Collection {
         })
     }
 
+    /// a page of rows, and whether there are more: asked for one over the limit, so
+    /// that "more" means more rather than "exactly as many as you asked for". the
+    /// search overshoots a limit by design (it never cuts a key-run in half), so the
+    /// extra row is a probe, not a guarantee — anything past the limit is dropped.
+    pub fn page(&self, query: &str, limit: usize) -> (Vec<Row>, bool) {
+        let mut rows = self.search(query, limit + 1);
+        let more = rows.len() > limit;
+        rows.truncate(limit);
+        (rows, more)
+    }
+
     /// the row a spelling belongs to — for a link target or a word arriving from
     /// outside, neither of which came from a row to begin with.
     pub fn resolve(&self, word: &str) -> Option<Row> {

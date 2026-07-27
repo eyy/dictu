@@ -24,8 +24,9 @@ use library::Library;
 
 const APP_ID: &str = "io.github.eyy.Dictu";
 
-/// the loaded index, shared across signal handlers. `None` until indexing
-/// finishes on the worker thread.
+/// the collection, shared across signal handlers. it exists from the start and
+/// answers everything before indexing finishes too — `Collection::is_ready` is
+/// what asks whether the words are there yet.
 type SharedCollection = Rc<RefCell<Collection>>;
 
 fn main() -> glib::ExitCode {
@@ -169,7 +170,7 @@ impl UiInner {
         // one row per lemma, however its dictionaries spell it (#43), naming every
         // dictionary that has it (#12). the grouping is the library's: it is the
         // only place that knows which spellings are the same word.
-        let rows = collection.search(query, collection::ROW_LIMIT);
+        let (rows, more) = collection.page(query, collection::ROW_LIMIT);
         // recorded before the widgets exist: appending a row can select it, and
         // the handler reads this list by index.
         self.words.replace(rows.clone());
@@ -202,8 +203,7 @@ impl UiInner {
         }
         // the collection writes the line, so the window and the command line cannot
         // drift into describing one search differently.
-        self.status
-            .set_text(&collection.status(rows.len(), rows.len() >= collection::ROW_LIMIT));
+        self.status.set_text(&collection.status(rows.len(), more));
 
         // a search fired from the hotkey should land on an answer, not on a list you
         // still have to click. consumed either way, so a later hand-typed search
@@ -324,12 +324,25 @@ impl UiInner {
     /// fill the scope panel once the dictionaries are known: one row per
     /// dictionary, its size under its name, everything selected to begin with.
     fn build_scope(&self) {
-        let collection = self.collection.borrow();
-        if !collection.is_ready() {
+        // read what is needed and let the borrow go: the handlers installed below
+        // take a `borrow_mut`, and #45 will rewrite this loop into one that can fire
+        // them while it runs.
+        let (ready, dicts) = {
+            let collection = self.collection.borrow();
+            (collection.is_ready(), collection.dict_count())
+        };
+        if !ready {
             return;
         }
-        for index in 0..collection.dict_count() {
-            let label = collection.dict_label(index);
+        for index in 0..dicts {
+            let (label, headwords) = {
+                let collection = self.collection.borrow();
+                (
+                    collection.dict_label(index).to_owned(),
+                    collection.dict_headwords(index),
+                )
+            };
+            let label = label.as_str();
             let check = gtk::CheckButton::builder()
                 .active(true)
                 .valign(gtk::Align::Center)
@@ -340,11 +353,7 @@ impl UiInner {
             let row = adw::ActionRow::builder()
                 // a dictionary's name is data — escape it, the row renders markup.
                 .title(glib::markup_escape_text(label))
-                .subtitle(collection::quantity(
-                    collection.dict_headwords(index),
-                    "headword",
-                    "headwords",
-                ))
+                .subtitle(collection::quantity(headwords, "headword", "headwords"))
                 .activatable_widget(&check)
                 .build();
             row.add_prefix(&check);
@@ -364,7 +373,7 @@ impl UiInner {
         }
         // nothing to scope when nothing loaded: leave the button dead rather than
         // popping up an empty list.
-        self.scope_button.set_sensitive(collection.dict_count() > 0);
+        self.scope_button.set_sensitive(dicts > 0);
     }
 
     /// a checkbox changed: update the mask, then re-run whatever is in the search

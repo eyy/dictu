@@ -1,5 +1,5 @@
 //! the command line. every subcommand here answers a question the window also
-//! answers, through the same `Session` — which is the point: what the cli cannot
+//! answers, through the same `Collection` — which is the point: what the cli cannot
 //! reach is entangled with the ui, and what it can reach is the api the window
 //! should have been using (roadmap #46).
 //!
@@ -18,33 +18,62 @@ use crate::collection::{self, Collection};
 use crate::library::Library;
 use crate::{config, dict};
 
-/// run a subcommand if `args` names one. `None` means "no subcommand" — the
-/// caller goes on to open the window.
+/// run a subcommand if `args` names one. `None` means "this invocation is for the
+/// window" — a bare `dictu`, or `dictu --search WORD` from the hotkey. anything
+/// else in the first position is a mistyped subcommand and says so, rather than
+/// silently raising the window and exiting 0.
 pub fn run(args: &[String]) -> Option<glib::ExitCode> {
-    let json = args.iter().any(|arg| arg == "--json");
-    let value = |flag: &str| -> Option<&str> {
-        let at = args.iter().position(|arg| arg == flag)?;
-        args.get(at + 1).map(String::as_str)
-    };
-    let rest = args
-        .get(2)
-        .map(String::as_str)
-        .filter(|a| !a.starts_with('-'));
+    let json = flag(args, "--json");
+    let positional = positionals(args);
+    let word = |at: usize| positional.get(at).copied();
 
     Some(match args.get(1).map(String::as_str)? {
-        "search" => search(rest, args, json, value("--limit")),
-        "define" => define(rest, args, json),
+        "search" => match limit_of(args) {
+            Ok(limit) => search(word(0), args, json, limit),
+            Err(bad) => complain(&format!("not a row count: {bad}")),
+        },
+        "define" => define(word(0), args, json),
         "scope" => scope(json),
         "index" => index(json),
-        "dump" => dump(rest),
-        "lookup" => lookup(
-            rest,
-            args.get(3).map(String::as_str),
-            args.iter().any(|a| a == "--html"),
-        ),
+        "dump" => dump(word(0)),
+        "lookup" => lookup(word(0), word(1), flag(args, "--html")),
         "--help" | "-h" | "help" => usage(),
-        _ => return None,
+        // an option in the first position is the window's (`--search WORD`); a word
+        // is a subcommand that does not exist.
+        other if other.starts_with('-') => return None,
+        other => complain(&format!("no such command: {other}\n\n{USAGE}")),
     })
+}
+
+fn flag(args: &[String], name: &str) -> bool {
+    args.iter().any(|arg| arg == name)
+}
+
+/// the arguments that are not options, in order — so a flag may come before the
+/// word as easily as after it. `--limit` is the only option that takes a value, so
+/// it is the only one whose value has to be stepped over.
+fn positionals(args: &[String]) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut rest = args.iter().skip(2).peekable();
+    while let Some(arg) = rest.next() {
+        if arg == "--limit" {
+            rest.next();
+        } else if !arg.starts_with('-') {
+            found.push(arg.as_str());
+        }
+    }
+    found
+}
+
+/// the row limit asked for, if any. a value that isn't a number is an error rather
+/// than a silent fallback: a measurement taken at a limit you did not ask for is
+/// how a wrong number reaches a commit message.
+fn limit_of(args: &[String]) -> Result<usize, &str> {
+    let Some(at) = args.iter().position(|arg| arg == "--limit") else {
+        return Ok(collection::ROW_LIMIT);
+    };
+    let given = args.get(at + 1).map(String::as_str).unwrap_or("");
+    given.parse().map_err(|_| given)
 }
 
 fn usage() -> glib::ExitCode {
@@ -62,7 +91,7 @@ dictu — an offline dictionary for classical languages
 
 over the configured collection:
   dictu search QUERY [--fold-forms] [--limit N] [--json]
-  dictu define WORD  [--fold-forms] [--json]
+  dictu define WORD  [--json]            what the pane would show for it
   dictu scope [--json]                   the dictionaries, with their sizes
   dictu index [--json]                   what is loaded, and what it cost
 
@@ -80,16 +109,20 @@ fn collection_from(args: &[String]) -> Collection {
     collection
 }
 
-fn search(query: Option<&str>, args: &[String], json: bool, limit: Option<&str>) -> glib::ExitCode {
+fn search(query: Option<&str>, args: &[String], json: bool, limit: usize) -> glib::ExitCode {
     let Some(query) = query else {
         return complain("usage: dictu search QUERY [--fold-forms] [--limit N] [--json]");
     };
     let collection = collection_from(args);
-    let limit = limit
-        .and_then(|n| n.parse().ok())
-        .unwrap_or(collection::ROW_LIMIT);
-    let rows = collection.search(query, limit);
-    let truncated = rows.len() >= limit;
+    // an empty query is the collection itself, which is what the window says for it
+    // too — the two front ends describe one state one way.
+    if query.trim().is_empty() {
+        return printing(|out| {
+            writeln!(out, "{}", collection.library_size())?;
+            Ok(glib::ExitCode::SUCCESS)
+        });
+    }
+    let (rows, truncated) = collection.page(query, limit);
 
     printing(|out| {
         if json {
@@ -145,14 +178,19 @@ fn search(query: Option<&str>, args: &[String], json: bool, limit: Option<&str>)
 /// answers, in the order the pane stacks them.
 fn define(word: Option<&str>, args: &[String], json: bool) -> glib::ExitCode {
     let Some(word) = word else {
-        return complain("usage: dictu define WORD [--fold-forms] [--json]");
+        return complain("usage: dictu define WORD [--json]");
     };
     let collection = collection_from(args);
     let Some(row) = collection.resolve(word) else {
-        // like `lookup`: say so through `printing`, but fail, or `define x | grep -q`
-        // would call a missing word a success.
+        // say so through `printing` — and in the shape that was asked for, since a
+        // caller piping `--json` wants "no definitions" parseable rather than a
+        // syntax error. it still *fails*, or `define x | grep -q` would call a
+        // missing word a success.
         printing(|out| {
-            writeln!(out, "no entry for {word:?}")?;
+            match json {
+                true => writeln!(out, "{{\"word\":{}, \"definitions\":[]}}", quoted(word))?,
+                false => writeln!(out, "no entry for {word:?}")?,
+            }
             Ok(glib::ExitCode::SUCCESS)
         });
         return glib::ExitCode::FAILURE;
@@ -397,16 +435,73 @@ mod tests {
         assert_eq!(quoted("\u{1}"), "\"\\u0001\"");
     }
 
-    /// `run` returns `None` for anything it does not own, which is what lets the
-    /// window open on a bare `dictu` and on `dictu --search WORD`.
-    #[test]
-    fn only_subcommands_are_claimed() {
-        let args =
-            |list: &[&str]| -> Vec<String> { list.iter().map(|a| (*a).to_owned()).collect() };
-        assert!(run(&args(&["dictu"])).is_none());
-        assert!(run(&args(&["dictu", "--search", "rex"])).is_none());
-        assert!(run(&args(&["dictu", "nonsense"])).is_none());
-        // and it does claim its own, without needing a collection to say so
-        assert!(run(&args(&["dictu", "--help"])).is_some());
+    fn argv(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| (*arg).to_owned()).collect()
     }
+
+    /// `run` claims a subcommand, hands the window everything option-shaped, and
+    /// refuses a word it does not know rather than silently opening the window.
+    #[test]
+    fn only_the_window_gets_what_is_not_a_command() {
+        assert!(
+            run(&argv(&["dictu"])).is_none(),
+            "a bare launch is the window's"
+        );
+        assert!(
+            run(&argv(&["dictu", "--search", "rex"])).is_none(),
+            "so is the hotkey's argv"
+        );
+        assert!(run(&argv(&["dictu", "--help"])).is_some());
+        // a mistyped command is an error, not a window: `dictu serach x || fail`
+        // has to be able to fail.
+        assert_eq!(
+            run(&argv(&["dictu", "serach", "rex"])),
+            Some(glib::ExitCode::FAILURE)
+        );
+    }
+
+    /// a flag may come before the word as easily as after it, and `--limit`'s value
+    /// is not a word.
+    #[test]
+    fn options_and_words_can_come_in_any_order() {
+        assert_eq!(positionals(&argv(&["dictu", "search", "rex"])), ["rex"]);
+        assert_eq!(
+            positionals(&argv(&["dictu", "search", "--json", "rex"])),
+            ["rex"]
+        );
+        assert_eq!(
+            positionals(&argv(&["dictu", "search", "--limit", "10", "rex"])),
+            ["rex"]
+        );
+        assert_eq!(
+            positionals(&argv(&["dictu", "lookup", "--html", "file.ifo", "rex"])),
+            ["file.ifo", "rex"]
+        );
+        assert!(positionals(&argv(&["dictu", "search", "--json"])).is_empty());
+    }
+
+    /// a limit that is not a number is an error, not a quiet fallback — the whole
+    /// point of the flag is measuring at a number you chose.
+    #[test]
+    fn a_limit_that_is_not_a_number_is_refused() {
+        assert_eq!(
+            limit_of(&argv(&["dictu", "search", "rex"])),
+            Ok(ROW_LIMIT_FOR_TEST)
+        );
+        assert_eq!(
+            limit_of(&argv(&["dictu", "search", "rex", "--limit", "12"])),
+            Ok(12)
+        );
+        assert_eq!(
+            limit_of(&argv(&["dictu", "search", "rex", "--limit", "banana"])),
+            Err("banana")
+        );
+        // and a flag with nothing after it is just as wrong
+        assert_eq!(
+            limit_of(&argv(&["dictu", "search", "rex", "--limit"])),
+            Err("")
+        );
+    }
+
+    const ROW_LIMIT_FOR_TEST: usize = collection::ROW_LIMIT;
 }

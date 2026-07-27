@@ -89,20 +89,26 @@ nothing open right now.
   steps are done, by building the cli you suggested — and it worked as an argument-settler:
   every question the window asks about words now goes through one place, because the command
   line had to ask the same ones.
-  **`session`** is that place: the loaded collection plus what the reader has decided about
+  **`collection`** is that place: the loaded collection plus what the reader has decided about
   it — scope, folding — and every query over it (`search`, `resolve`, `definitions`,
   `scope_size`, and the status line both front ends print). it has never heard of gtk, so it
   is testable without a display, and the window's own state shrank from three fields
   (library, scope mask, fold flag) to one.
   **`cli`** is the second front end. collection-shaped commands — `search`, `define`,
-  `scope`, `index` — ask the session, so their answers are the app's answers rather than a
+  `scope`, `index` — ask the collection, so their answers are the app's answers rather than a
   parallel implementation; `dump` and `lookup` stay file-shaped, for looking at a dictionary
   the app has not been told about. `--json` on the four collection commands, escaped
   properly and checked against a real parser. `main.rs` went 1,511 → ~1,200 lines and no
   longer contains a subcommand.
   the boundary already caught something: the smoke check in `hack/check.sh` was asserting on
   a header only the cli printed, and now asserts on the status line *both* produce — so the
-  two cannot drift into describing one search differently.
+  two cannot drift into describing one search differently. a review then found the one hole
+  left in that promise (an empty query: the window answered with the library's size, the cli
+  with "0 results") and five other things the new surface got wrong — a `--limit` that
+  accepted `banana` and silently used 500, flags refused before the word, `truncated` true
+  whenever the count merely *reached* the limit, a `define --json` miss that printed prose
+  into a json pipe, and a mistyped subcommand that raised the window and exited 0. all fixed;
+  the shape of each is now a test.
   **what remains**: `main.rs` still holds window construction, every signal handler and the
   html-to-widget rendering (three jobs, ~1,200 lines) — a `ui` module with `render` beside
   it. and the payoff the cli was for: moving the e2e checks that are really about the search
