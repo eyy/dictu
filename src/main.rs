@@ -6,60 +6,36 @@
 // at once; a result shows its definition from each dict that has it.
 
 use std::cell::{Cell, RefCell};
-use std::io::{self, Write};
-use std::path::Path;
 use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
+mod cli;
+mod collection;
 mod config;
 mod dict;
 mod index_cache;
 mod keys;
 mod language;
 mod library;
+use collection::Collection;
 use library::Library;
 
 const APP_ID: &str = "io.github.eyy.Dictu";
 
-// cap search results shown (gtk::ListBox builds one widget per row).
-const SEARCH_LIMIT: usize = 500;
-
-// the same limit the wordlist uses, so a count measured through the cli is the
-// count the app would show. the old 20 silently truncated every measurement taken
-// that way, which is how a "no change" reading got as far as a commit message.
-const CLI_ROWS: usize = SEARCH_LIMIT;
-
-/// the loaded index, shared across signal handlers. `None` until indexing
-/// finishes on the worker thread.
-type SharedLibrary = Rc<RefCell<Option<Library>>>;
+/// the collection, shared across signal handlers. it exists from the start and
+/// answers everything before indexing finishes too — `Collection::is_ready` is
+/// what asks whether the words are there yet.
+type SharedCollection = Rc<RefCell<Collection>>;
 
 fn main() -> glib::ExitCode {
     let raw: Vec<String> = std::env::args().collect();
 
-    // dev affordances (no gui): `dictu dump <file>` prints one dictionary's
-    // stats; `dictu lookup <file> <word> [--html]` prints one entry, which is how
-    // two dictionaries' coverage of the same word get compared; `dictu search
-    // <query> [--fold-forms]` runs unified search across all configured dicts and
-    // prints its rows, optionally folding away rows that only repeat a definition
-    // another row already shows.
-    let subcommand = raw.get(1).map(String::as_str);
-    if subcommand == Some("dump") {
-        return dump(raw.get(2).map(String::as_str));
-    }
-    if subcommand == Some("lookup") {
-        return lookup(
-            raw.get(2).map(String::as_str),
-            raw.get(3).map(String::as_str),
-            raw.iter().any(|arg| arg == "--html"),
-        );
-    }
-    if subcommand == Some("search") {
-        return search_cli(
-            raw.get(2).map(String::as_str),
-            raw.iter().any(|arg| arg == "--fold-forms"),
-        );
+    // every subcommand lives in `cli`, over the same `Session` the window uses;
+    // `None` means this invocation is for the window (roadmap #46).
+    if let Some(code) = cli::run(&raw) {
+        return code;
     }
 
     // scan the configured directories for dictionaries once, up front.
@@ -111,142 +87,6 @@ fn parse_flag(args: &[String], flag: &str) -> Option<String> {
     args.get(idx + 1).cloned()
 }
 
-/// print through one locked stdout handle, stopping at the first failed write.
-/// these subcommands exist to be piped into `head`/`grep`, and rust ignores
-/// SIGPIPE — so `println!` panics once the reader goes away. a closed pipe is the
-/// reader's choice, not a failure: say nothing and exit 0.
-fn printing(
-    write: impl FnOnce(&mut io::StdoutLock) -> io::Result<glib::ExitCode>,
-) -> glib::ExitCode {
-    let mut out = io::stdout().lock();
-    match write(&mut out) {
-        Ok(code) => code,
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => glib::ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: writing to stdout: {e}");
-            glib::ExitCode::FAILURE
-        }
-    }
-}
-
-fn search_cli(query: Option<&str>, fold_forms: bool) -> glib::ExitCode {
-    let Some(query) = query else {
-        eprintln!("usage: dictu search <query> [--fold-forms]");
-        return glib::ExitCode::FAILURE;
-    };
-    let config = config::Config::load_or_create().unwrap_or_default();
-    let entries = config::scan(&config.dictionary_dirs);
-    let lib = library::Library::open(&entries);
-    let rows = lib.search_where(query, CLI_ROWS, &[], fold_forms);
-    printing(|out| {
-        writeln!(
-            out,
-            "{} dicts, {} headwords total, {} rows",
-            lib.dict_count(),
-            lib.total_headwords(),
-            rows.len()
-        )?;
-        for row in &rows {
-            // one line per dictionary, naming the spelling it files the row under
-            // — the row's own spelling is the first of them.
-            for (dict, spelling) in &row.members {
-                let label = lib.dict_label(*dict).unwrap_or("?");
-                let under = match *spelling == row.word {
-                    true => String::new(),
-                    false => format!("  (under {spelling})"),
-                };
-                writeln!(out, "  [{label}] {}{under}", row.word)?;
-            }
-        }
-        Ok(glib::ExitCode::SUCCESS)
-    })
-}
-
-fn dump(path: Option<&str>) -> glib::ExitCode {
-    let Some(path) = path else {
-        eprintln!("usage: dictu dump <dictionary-file>");
-        return glib::ExitCode::FAILURE;
-    };
-    match dict::open_any(Path::new(path), Some(&config::cache_dir())) {
-        Ok(dict) => printing(|out| {
-            writeln!(out, "name:      {}", dict.name())?;
-            let headwords = dict.headwords();
-            writeln!(out, "headwords: {}", headwords.len())?;
-            for word in headwords.iter().take(5) {
-                let entries = dict.lookup(word);
-                let text = entries
-                    .first()
-                    .map(|e| dict::html_to_text(e))
-                    .unwrap_or_default();
-                let preview: String = text.chars().take(100).collect();
-                // say when a headword has more than one entry; that is easy to miss
-                // and it is exactly what made `sam` look broken.
-                let more = match entries.len() {
-                    0 | 1 => String::new(),
-                    n => format!("  [{n} entries]"),
-                };
-                writeln!(out, "  {word:?} -> {preview:?}{more}")?;
-            }
-            Ok(glib::ExitCode::SUCCESS)
-        }),
-        Err(e) => {
-            eprintln!("error: {e:#}");
-            glib::ExitCode::FAILURE
-        }
-    }
-}
-
-/// print one word's entry from one dictionary — the plain text by default, the
-/// raw html with `--html` (which is what markup work needs to see).
-fn lookup(path: Option<&str>, word: Option<&str>, html: bool) -> glib::ExitCode {
-    let (Some(path), Some(word)) = (path, word) else {
-        eprintln!("usage: dictu lookup <dictionary-file> <word> [--html]");
-        return glib::ExitCode::FAILURE;
-    };
-    let dict = match dict::open_any(Path::new(path), Some(&config::cache_dir())) {
-        Ok(dict) => dict,
-        Err(e) => {
-            eprintln!("error: {e:#}");
-            return glib::ExitCode::FAILURE;
-        }
-    };
-    let entries = dict.lookup(word);
-    if entries.is_empty() {
-        // the verdict is about the dictionary, not about whether anyone was still
-        // listening: report the message through `printing` (so a closed pipe stays
-        // quiet) but fail regardless, or `lookup … | grep -q x` would call a missing
-        // word a success the moment grep exits early.
-        printing(|out| {
-            writeln!(out, "{}: no entry for {word:?}", dict.name())?;
-            Ok(glib::ExitCode::SUCCESS)
-        });
-        return glib::ExitCode::FAILURE;
-    }
-    printing(|out| {
-        writeln!(
-            out,
-            "{} — {word} ({})\n",
-            dict.name(),
-            quantity(entries.len(), "entry", "entries")
-        )?;
-        for (position, entry) in entries.iter().enumerate() {
-            if entries.len() > 1 {
-                writeln!(out, "--- {} of {} ---", position + 1, entries.len())?;
-            }
-            writeln!(
-                out,
-                "{}",
-                if html {
-                    entry.clone()
-                } else {
-                    dict::html_to_text(entry)
-                }
-            )?;
-        }
-        Ok(glib::ExitCode::SUCCESS)
-    })
-}
-
 /// the widgets + state a load touches, bundled so signal closures capture one
 /// cheap handle instead of half a dozen individual widget handles.
 ///
@@ -287,18 +127,16 @@ struct UiInner {
     /// timer because `SearchEntry` debounces `search-changed`, so there is no moment
     /// after `set_text` at which the rows are known to exist yet.
     auto_select: Rc<Cell<bool>>,
-    /// whether the wordlist shows each definition once rather than once per form
-    /// that points at it (#33). session-only, like the scope beside it.
-    fold_forms: Rc<Cell<bool>>,
-    /// the search scope: one flag per dictionary, in library order, as
-    /// `prefix_search` wants it. empty until indexing finishes (nothing to scope
-    /// before then, and `&[]` already means "all dictionaries").
-    scope: Rc<RefCell<Vec<bool>>>,
+    /// the collection and what the reader has decided about it: which
+    /// dictionaries are in scope, whether repeated forms are folded. every
+    /// question about words goes through here — and so does every question the
+    /// command line asks, which is why it lives in a module that has never heard
+    /// of gtk.
+    collection: SharedCollection,
     /// the scope panel's rows, filled once the dictionaries are known, and the
     /// header button that pops it up.
     scope_list: gtk::ListBox,
     scope_button: gtk::MenuButton,
-    library: SharedLibrary,
 }
 
 impl UiInner {
@@ -314,19 +152,16 @@ impl UiInner {
         while let Some(child) = self.results.first_child() {
             self.results.remove(&child);
         }
-        let borrow = self.library.borrow();
-        let Some(library) = borrow.as_ref() else {
+        let collection = self.collection.borrow();
+        if !collection.is_ready() {
             return;
-        };
+        }
 
         let query = query.trim();
         // searching nothing is a state, not an empty result: say so instead of
-        // showing an empty list that looks broken.
-        let (dicts, _) = self.scope_size(library);
-        // `dicts == 0` means the user deselected everything — but only if there was
-        // anything to deselect. with no dictionaries loaded at all the honest answer
-        // names the config, not a menu that would be empty.
-        if dicts == 0 && library.dict_count() > 0 {
+        // showing an empty list that looks broken. with nothing loaded at all the
+        // honest answer names the config, not a menu that would be empty.
+        if collection.nothing_selected() {
             self.set_message("No dictionaries selected.\n\nPick one in the search-scope menu.");
             self.show_scope_only();
             return;
@@ -335,12 +170,7 @@ impl UiInner {
         // one row per lemma, however its dictionaries spell it (#43), naming every
         // dictionary that has it (#12). the grouping is the library's: it is the
         // only place that knows which spellings are the same word.
-        let rows = library.search_where(
-            query,
-            SEARCH_LIMIT,
-            &self.scope.borrow(),
-            self.fold_forms.get(),
-        );
+        let (rows, more) = collection.page(query, collection::ROW_LIMIT);
         // recorded before the widgets exist: appending a row can select it, and
         // the handler reads this list by index.
         self.words.replace(rows.clone());
@@ -349,7 +179,7 @@ impl UiInner {
             let names: Vec<&str> = row
                 .dicts()
                 .iter()
-                .map(|&dict| library.dict_label(dict).unwrap_or(""))
+                .map(|&dict| collection.dict_label(dict))
                 .collect();
             self.results.append(&word_row(&row.word, &names));
             // name the row after its word: the row is a box of two labels now, so
@@ -371,22 +201,9 @@ impl UiInner {
         if rows.is_empty() {
             self.set_message(&format!("No matches for “{query}”."));
         }
-        // the search counts rows too, so hitting the limit is the same number the
-        // list shows: say "500+" rather than pretending 500 is the whole truth.
-        let counted = if rows.len() >= SEARCH_LIMIT {
-            format!("{}+ results", thousands(rows.len()))
-        } else {
-            quantity(rows.len(), "result", "results")
-        };
-        // and name the scope when it isn't the whole library, so the count can't be
-        // read as "this is all your dictionaries have".
-        let counted = match scope_note(dicts, library.dict_count()) {
-            Some(note) => format!("{counted} · {note}"),
-            None => counted,
-        };
-        // and say when forms are being folded away, so a short list is never a
-        // mystery.
-        self.status.set_text(&self.noting_folded(&counted));
+        // the collection writes the line, so the window and the command line cannot
+        // drift into describing one search differently.
+        self.status.set_text(&collection.status(rows.len(), more));
 
         // a search fired from the hotkey should land on an answer, not on a list you
         // still have to click. consumed either way, so a later hand-typed search
@@ -466,31 +283,25 @@ impl UiInner {
     /// the idle status line: how much is *in scope* — with every dictionary
     /// selected that is the whole library, which is what it used to say.
     fn show_library_size(&self) {
-        let borrow = self.library.borrow();
-        let Some(library) = borrow.as_ref() else {
+        let collection = self.collection.borrow();
+        if !collection.is_ready() {
             return;
-        };
-        let (dicts, words) = self.scope_size(library);
-        if dicts == 0 && library.dict_count() > 0 {
+        }
+        if collection.nothing_selected() {
             self.show_scope_only();
             return;
         }
-        self.status.set_text(&format!(
-            "{} · {}",
-            quantity(words, "word", "words"),
-            scope_note(dicts, library.dict_count()).unwrap_or_else(|| quantity(
-                dicts,
-                "dictionary",
-                "dictionaries"
-            )),
-        ));
+        self.status.set_text(&collection.library_size());
     }
 
-    /// the status line when the scope is empty — no counts to give, because
-    /// nothing is being searched.
+    /// the scope panel's own state, said out loud: not "0 results", which reads as
+    /// "your search found nothing", but that nothing is being searched.
     fn show_scope_only(&self) {
-        self.status
-            .set_text(&quantity(0, "dictionary selected", "dictionaries selected"));
+        self.status.set_text(&collection::quantity(
+            0,
+            "dictionary selected",
+            "dictionaries selected",
+        ));
     }
 
     /// render the open definition again after the wordlist was rebuilt under a new
@@ -503,53 +314,35 @@ impl UiInner {
     /// get out of it, and overwriting it with "No definition for X" would take the
     /// instruction away and clear `shown` on the way past.
     fn render_shown_again(&self) {
-        let scoped_out = {
-            let scope = self.scope.borrow();
-            !scope.is_empty() && !scope.iter().any(|active| *active)
-        };
+        let scoped_out = self.collection.borrow().nothing_selected();
         let shown = self.shown.borrow().clone();
         if let (false, Some(word)) = (scoped_out, shown) {
             self.show_word(&word);
         }
     }
 
-    /// `line` with a note when repeated forms are being folded away. only counts
-    /// folding can actually change get it: a result count does, the library's own
-    /// size does not — folding drops rows, never headwords.
-    fn noting_folded(&self, line: &str) -> String {
-        match self.fold_forms.get() {
-            true => format!("{line} · forms folded"),
-            false => line.to_owned(),
-        }
-    }
-
-    /// what the scope covers: how many dictionaries, and how many headwords they
-    /// hold between them. an empty mask is "everything" (the panel isn't built
-    /// until indexing finishes).
-    fn scope_size(&self, library: &Library) -> (usize, usize) {
-        let scope = self.scope.borrow();
-        if scope.is_empty() {
-            return (library.dict_count(), library.total_headwords());
-        }
-        scope
-            .iter()
-            .enumerate()
-            .filter(|(_, active)| **active)
-            .fold((0, 0), |(dicts, words), (index, _)| {
-                (dicts + 1, words + library.dict_headwords(index))
-            })
-    }
-
     /// fill the scope panel once the dictionaries are known: one row per
     /// dictionary, its size under its name, everything selected to begin with.
     fn build_scope(&self) {
-        let borrow = self.library.borrow();
-        let Some(library) = borrow.as_ref() else {
-            return;
+        // read what is needed and let the borrow go: the handlers installed below
+        // take a `borrow_mut`, and #45 will rewrite this loop into one that can fire
+        // them while it runs.
+        let (ready, dicts) = {
+            let collection = self.collection.borrow();
+            (collection.is_ready(), collection.dict_count())
         };
-        *self.scope.borrow_mut() = vec![true; library.dict_count()];
-        for index in 0..library.dict_count() {
-            let label = library.dict_label(index).unwrap_or("?");
+        if !ready {
+            return;
+        }
+        for index in 0..dicts {
+            let (label, headwords) = {
+                let collection = self.collection.borrow();
+                (
+                    collection.dict_label(index).to_owned(),
+                    collection.dict_headwords(index),
+                )
+            };
+            let label = label.as_str();
             let check = gtk::CheckButton::builder()
                 .active(true)
                 .valign(gtk::Align::Center)
@@ -560,11 +353,7 @@ impl UiInner {
             let row = adw::ActionRow::builder()
                 // a dictionary's name is data — escape it, the row renders markup.
                 .title(glib::markup_escape_text(label))
-                .subtitle(quantity(
-                    library.dict_headwords(index),
-                    "headword",
-                    "headwords",
-                ))
+                .subtitle(collection::quantity(headwords, "headword", "headwords"))
                 .activatable_widget(&check)
                 .build();
             row.add_prefix(&check);
@@ -584,15 +373,13 @@ impl UiInner {
         }
         // nothing to scope when nothing loaded: leave the button dead rather than
         // popping up an empty list.
-        self.scope_button.set_sensitive(library.dict_count() > 0);
+        self.scope_button.set_sensitive(dicts > 0);
     }
 
     /// a checkbox changed: update the mask, then re-run whatever is in the search
     /// box so the wordlist and the status line follow immediately.
     fn set_dict_active(&self, index: usize, active: bool) {
-        if let Some(flag) = self.scope.borrow_mut().get_mut(index) {
-            *flag = active;
-        }
+        self.collection.borrow_mut().set_dict_active(index, active);
         self.populate_results(&self.search.text());
         self.render_shown_again();
     }
@@ -628,13 +415,7 @@ impl UiInner {
     /// it belongs to, since the dictionary that has it may spell it with marks the
     /// caller did not (#43).
     fn show_word(&self, word: &str) {
-        let row = {
-            let borrow = self.library.borrow();
-            let Some(library) = borrow.as_ref() else {
-                return;
-            };
-            library.resolve(word, &self.scope.borrow())
-        };
+        let row = { self.collection.borrow().resolve(word) };
         match row {
             Some(row) => self.show_row(&row),
             // nothing on these letters at all: say so, rather than leaving the
@@ -651,42 +432,17 @@ impl UiInner {
 
     fn show_row(&self, row: &library::Row) {
         let word = row.word.as_str();
-        let borrow = self.library.borrow();
-        let Some(library) = borrow.as_ref() else {
+        let collection = self.collection.borrow();
+        if !collection.is_ready() {
             return;
-        };
-        self.shown.replace(Some(row.word.clone()));
-        // scoped, like the wordlist: a definition from a dictionary the user
-        // deselected would contradict the status line, and the fold strip would go
-        // further and advertise that dictionary by name.
-        // each dictionary is asked for the spelling it files this row under, so a
-        // pane never comes up empty for a word the list just showed.
-        let scope = self.scope.borrow();
-        let mut defs: Vec<(usize, Vec<String>)> = Vec::new();
-        for (dict, spelling) in &row.members {
-            if !scope.get(*dict).copied().unwrap_or(true) {
-                continue; // deselected: it does not answer here either.
-            }
-            let entries = library.entries(*dict, spelling);
-            if entries.is_empty() {
-                continue;
-            }
-            match defs.last_mut() {
-                // a dictionary can file two spellings of the row against the same
-                // entry — a hebrew-hebrew dictionary does it 28,494 times, pointed and unpointed
-                // at one body — and printing that twice would have the pane
-                // announce "1 of 2" over one definition said once.
-                Some((last, all)) if last == dict => {
-                    for entry in entries {
-                        if !all.contains(&entry) {
-                            all.push(entry);
-                        }
-                    }
-                }
-                _ => defs.push((*dict, entries)),
-            }
         }
-        drop(scope);
+        self.shown.replace(Some(row.word.clone()));
+        // scoped, like the wordlist: a definition from a dictionary the reader
+        // deselected would contradict the status line, and the fold strip would go
+        // further and advertise that dictionary by name. each dictionary is asked
+        // for the spelling *it* files, so the pane never comes up empty for a word
+        // the list just showed.
+        let defs = collection.definitions(row);
 
         let buffer = self.definition.buffer();
         self.clear_sections(&buffer);
@@ -699,12 +455,12 @@ impl UiInner {
 
         let mut iter = buffer.start_iter();
         buffer.insert_with_tags(&mut iter, &format!("{word}\n"), &[&head_tag(&buffer)]);
-        for (dict_index, entries) in &defs {
-            let label = library.dict_label(*dict_index).unwrap_or("");
+        for definition in &defs {
+            let (label, entries) = (&definition.label, &definition.entries);
             // remember where this dictionary's answer starts, so the strip below the
             // pane can say which ones are still out of sight.
             let mark = buffer.create_mark(None, &iter, true);
-            self.sections.borrow_mut().push((label.to_string(), mark));
+            self.sections.borrow_mut().push((label.clone(), mark));
             // no blank line: the heading's own space-above is what separates
             // sections, and a literal newline on top of it just leaves a hole.
             buffer.insert_with_tags(&mut iter, &format!("{label}\n"), &[&source_tag(&buffer)]);
@@ -777,7 +533,7 @@ impl UiInner {
         }
         self.fold.set_text(&format!(
             "{} below: {}",
-            quantity(below.len(), "more definition", "more definitions"),
+            collection::quantity(below.len(), "more definition", "more definitions"),
             below.join(" · "),
         ));
     }
@@ -1136,11 +892,9 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         words: Rc::new(RefCell::new(Vec::new())),
         shown: Rc::new(RefCell::new(None)),
         auto_select: Rc::new(Cell::new(false)),
-        fold_forms: Rc::new(Cell::new(false)),
-        scope: Rc::new(RefCell::new(Vec::new())),
+        collection: Rc::new(RefCell::new(Collection::empty())),
         scope_list,
         scope_button,
-        library: Rc::new(RefCell::new(None)),
     });
 
     // scrolling changes what's below the fold, so the strip follows it.
@@ -1175,7 +929,9 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         #[weak]
         ui,
         move |toggle| {
-            ui.fold_forms.set(toggle.is_active());
+            ui.collection
+                .borrow_mut()
+                .set_fold_forms(toggle.is_active());
             ui.populate_results(&ui.search.text());
             ui.render_shown_again();
         }
@@ -1298,7 +1054,7 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     glib::spawn_future_local(async move {
         if let Ok(library) = rx.recv().await {
             let Some(ui) = ui_ready.upgrade() else { return };
-            *ui.library.borrow_mut() = Some(library);
+            ui.collection.borrow_mut().open(library);
             // size the scope before anything searches: the re-run below reads it.
             ui.build_scope();
             ui.search.set_sensitive(true);
@@ -1386,42 +1142,9 @@ fn word_row(word: &str, dicts: &[&str]) -> gtk::Box {
     row
 }
 
-/// `n` with thousands separators: 4009914 -> "4,009,914". `rchunks` groups from
-/// the right, which is where digit grouping starts.
-fn thousands(n: usize) -> String {
-    n.to_string()
-        .as_bytes()
-        .rchunks(3)
-        .rev()
-        .map(|group| String::from_utf8_lossy(group).into_owned())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-/// a count with separators and the noun that agrees with it: 1 -> "1 dictionary",
-/// 8 -> "8 dictionaries".
-fn quantity(n: usize, singular: &str, plural: &str) -> String {
-    format!(
-        "{} {}",
-        thousands(n),
-        if n == 1 { singular } else { plural }
-    )
-}
-
-/// how the status line names a narrowed search scope — `None` when every
-/// dictionary is in scope, so the ordinary case reads exactly as it did before.
-fn scope_note(active: usize, total: usize) -> Option<String> {
-    (active < total).then(|| {
-        format!(
-            "{active} of {}",
-            quantity(total, "dictionary", "dictionaries")
-        )
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Rc, build_ui, quantity, scope_note, thousands};
+    use super::{Rc, build_ui};
     use adw::prelude::*;
     use gtk::gio;
 
@@ -1483,29 +1206,5 @@ mod tests {
             definition.upgrade().is_none(),
             "the definition pane outlived the window"
         );
-    }
-
-    #[test]
-    fn thousands_groups_from_the_right() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(12), "12");
-        assert_eq!(thousands(999), "999");
-        assert_eq!(thousands(1000), "1,000");
-        assert_eq!(thousands(4_009_914), "4,009,914");
-    }
-
-    #[test]
-    fn quantity_agrees_with_its_count() {
-        assert_eq!(quantity(1, "dictionary", "dictionaries"), "1 dictionary");
-        assert_eq!(quantity(8, "dictionary", "dictionaries"), "8 dictionaries");
-        assert_eq!(quantity(0, "result", "results"), "0 results");
-        assert_eq!(quantity(4_009_914, "word", "words"), "4,009,914 words");
-    }
-
-    #[test]
-    fn scope_note_only_speaks_up_when_the_scope_is_narrowed() {
-        assert_eq!(scope_note(2, 2), None);
-        assert_eq!(scope_note(1, 2).as_deref(), Some("1 of 2 dictionaries"));
-        assert_eq!(scope_note(0, 5).as_deref(), Some("0 of 5 dictionaries"));
     }
 }

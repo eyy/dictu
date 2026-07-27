@@ -121,28 +121,36 @@ nothing open right now.
      wordlist — which is a new idea for the app (a dictionary that answers but does not
      list) and worth deciding deliberately.
 
-- **[ ] #46 architectural review: draw the module boundaries properly.** the parts that were
-  extracted are clean — `dict/` (four readers behind one trait), `keys`, `index_cache`,
-  `language`, `config` — but `main.rs` is now ~1,400 lines holding four unrelated jobs: the
-  CLI subcommands, window construction, every signal handler, and the html-to-widget
-  rendering of a definition. `library` is likewise two things, the merged index and the
-  search over it, and #42's phases C and D will both land in it. worth a proper pass before
-  that, not after: what the modules are, what each one owns, and which of today's `pub`
-  surface is only public because everything lives in one file. the test for a good split
-  here is whether the ui can be described without naming a dictionary format.
-  **do it by building a proper cli** (your idea, and the right one). the boundary is hard to
-  argue about in the abstract and trivial to see through a command line: whatever the cli
-  cannot reach is entangled with the ui, and whatever it can reach is the api the ui should
-  have been using. today's `dump` / `lookup <file> <word>` / `search <query>` are dev
-  affordances that take a *file* and bypass the collection entirely; a real one is
-  collection-shaped and mirrors what the app does — search returning rows with their
-  attribution, a word's definitions per dictionary, the scope listed and toggled, the index
-  built and inspected — with a machine-readable output mode beside the human one.
-  it pays for itself twice: the e2e harness currently drives at-spi for everything, at
-  ~40 s a run on a private display, because there is no other way to ask the app a
-  question. most of those checks are really about the search, not the widgets, and would
-  become fast, displayless assertions over cli output — leaving at-spi for the handful of
-  things that genuinely are about the ui.
+- **[~] #46 architectural review: draw the module boundaries properly.** the first two
+  steps are done, by building the cli you suggested — and it worked as an argument-settler:
+  every question the window asks about words now goes through one place, because the command
+  line had to ask the same ones.
+  **`collection`** is that place: the loaded collection plus what the reader has decided about
+  it — scope, folding — and every query over it (`search`, `resolve`, `definitions`,
+  `scope_size`, and the status line both front ends print). it has never heard of gtk, so it
+  is testable without a display, and the window's own state shrank from three fields
+  (library, scope mask, fold flag) to one.
+  **`cli`** is the second front end. collection-shaped commands — `search`, `define`,
+  `scope`, `index` — ask the collection, so their answers are the app's answers rather than a
+  parallel implementation; `dump` and `lookup` stay file-shaped, for looking at a dictionary
+  the app has not been told about. `--json` on the four collection commands, escaped
+  properly and checked against a real parser. `main.rs` went 1,511 → ~1,200 lines and no
+  longer contains a subcommand.
+  the boundary already caught something: the smoke check in `hack/check.sh` was asserting on
+  a header only the cli printed, and now asserts on the status line *both* produce — so the
+  two cannot drift into describing one search differently. a review then found the one hole
+  left in that promise (an empty query: the window answered with the library's size, the cli
+  with "0 results") and five other things the new surface got wrong — a `--limit` that
+  accepted `banana` and silently used 500, flags refused before the word, `truncated` true
+  whenever the count merely *reached* the limit, a `define --json` miss that printed prose
+  into a json pipe, and a mistyped subcommand that raised the window and exited 0. all fixed;
+  the shape of each is now a test.
+  **what remains**: `main.rs` still holds window construction, every signal handler and the
+  html-to-widget rendering (three jobs, ~1,200 lines) — a `ui` module with `render` beside
+  it. and the payoff the cli was for: moving the e2e checks that are really about the search
+  off at-spi and onto `--json`, leaving the display harness for the handful that are
+  genuinely about widgets. that is where the ~40 s a run goes, and it is also what has been
+  loading the real collection over and over under memory pressure.
 
 - **[ ] #45 let the user order the dictionaries, and sort results by that order.**
   the scope panel lists dictionaries in scan order (`config::scan` sorts by label) and the
