@@ -166,6 +166,9 @@ impl DslDictionary {
         // into the decoded text — so both travel with the index.
         Ok(index_cache::build(
             index_cache::Built {
+                // a dsl headword is always the dictionary's own; the variants a
+                // card lists are spellings of it, not pointers at another entry.
+                aliases_from: None,
                 entries: &entries,
                 display: &display,
                 name: name.as_deref().unwrap_or(fallback_name),

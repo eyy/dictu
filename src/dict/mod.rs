@@ -135,6 +135,28 @@ pub trait Dictionary: Send {
     /// pre-joined so the ui can number them and set them apart, instead of showing a
     /// hundred entries as one run-together answer.
     fn lookup(&self, headword: &str) -> Vec<String>;
+
+    /// whether the headword at `index` (into `headwords`) is an **alias** this
+    /// dictionary points at one of its own entries, rather than a word it files in
+    /// its own right. StarDict `.syn` records are the only such thing here, and
+    /// three of the loaded dictionaries ship one: Whitaker's latin (1.18M forms of
+    /// 37,777 words), a hebrew-hebrew dictionary (2.9 MB of hebrew plurals, construct forms and
+    /// unpointed spellings — `כאבים` resolves to `כאב`'s entry, marked `מן כאב`),
+    /// and Even Sapir (a single record). formats without that notion answer
+    /// `false`, which is the honest default — a spelling variant on a dsl card is
+    /// still a way of writing the headword, not a pointer at it.
+    fn is_alias(&self, _index: usize) -> bool {
+        false
+    }
+
+    /// where in the file the entries under `headword` live — an identity for the
+    /// *definition*, not the word. two spellings that answer with the same bytes
+    /// share these, which is how a second way of reaching one entry is told from a
+    /// genuinely different entry. empty means "no identity to offer", and nothing
+    /// is deduplicated on it.
+    fn entry_ids(&self, _headword: &str) -> Vec<u64> {
+        Vec::new()
+    }
 }
 
 /// the dictionary file formats dictu knows about.

@@ -139,6 +139,10 @@ impl StarDict {
         };
 
         let (mut entries, mut display) = parse_idx(idx.as_slice(), offset_bits);
+        // everything the `.syn` adds is an alias pointing at one of the entries
+        // above — an inflection, where a dictionary uses it that way — so where
+        // they start is worth remembering (#33).
+        let aliases_from = entries.len();
         if let Some(syn) = syn.as_deref() {
             apply_syn(syn, &mut entries, &mut display);
         }
@@ -148,6 +152,7 @@ impl StarDict {
             index_cache::Built {
                 entries: &entries,
                 display: &display,
+                aliases_from: syn.is_some().then_some(aliases_from),
                 ..Default::default()
             },
             fingerprint,
@@ -202,6 +207,21 @@ impl Dictionary for StarDict {
             .flatten()
             .filter_map(|(offset, size)| self.entry_text(offset, size))
             .filter(|entry| !entry.is_empty())
+            .collect()
+    }
+
+    fn is_alias(&self, index: usize) -> bool {
+        self.index.is_alias(index)
+    }
+
+    fn entry_ids(&self, headword: &str) -> Vec<u64> {
+        self.index
+            .ranges(headword)
+            .into_iter()
+            .flatten()
+            // both halves of the range: two entries can start at one offset and
+            // run to different lengths, and those are different definitions.
+            .map(|(offset, size)| offset ^ (u64::from(size) << 40))
             .collect()
     }
 }
@@ -281,6 +301,11 @@ fn apply_syn<'a>(syn: &'a [u8], entries: &mut Entries<'a>, display: &mut Vec<u32
             continue; // out of range: a corrupt .syn record, skipped.
         }
         let range = entries[entry_index].1;
+        // note a shape that does not occur in any dictionary here (checked: none of
+        // the three `.syn` files has a `##` entry at all): a record pointing *at*
+        // metadata would make the alias the only listed way to reach that entry, so
+        // anything treating aliases as skippable would lose it rather than lose a
+        // duplicate of it.
         if !word.starts_with("##") {
             display.push(entries.len() as u32);
         }
@@ -582,5 +607,30 @@ mod tests {
         assert_eq!(map.get("bookname").unwrap(), "My Dict");
         assert_eq!(map.get("sametypesequence").unwrap(), "h");
         assert!(!map.contains_key("StarDict's dict ifo file"));
+    }
+    /// roadmap #33: a `.syn` record is a pointer at another entry. what kind of
+    /// pointer is the dictionary's business — Whitaker's are inflected forms, 
+    /// a hebrew-hebrew dictionary's mix those with plene spellings and abbreviations — so the reader
+    /// only reports *that* it is one.
+    #[test]
+    fn syn_words_are_aliases_and_idx_words_are_not() {
+        let dir = temp_dir("alias");
+        let mut idx = Vec::new();
+        push_idx(&mut idx, "rego", 0, 5);
+        let mut syn = Vec::new();
+        push_syn(&mut syn, "rexit", 0);
+        push_syn(&mut syn, "rexerint", 0);
+        let path = write_dict(&dir, &idx, b"rulez", Some(&syn));
+
+        let dict = StarDict::open(&path, None).expect("opens");
+        let words = dict.headwords();
+        assert_eq!(words, ["rego", "rexit", "rexerint"].map(String::from));
+        // the dictionary's own headword, then the two forms it points at it.
+        let aliases: Vec<bool> = (0..words.len()).map(|i| dict.is_alias(i)).collect();
+        assert_eq!(aliases, [false, true, true]);
+        // and an alias still answers with the entry it points at.
+        assert!(!dict.lookup("rexit").is_empty());
+
+        fs::remove_dir_all(&dir).ok();
     }
 }
