@@ -19,6 +19,24 @@ nothing open right now.
 
 ## next — 2026-07-24 feedback
 
+- **[ ] #52 give every dictionary a name a person would write.** the labels are folder names
+  and they read like it: `bgl-Latin_English_Inflected`, `Middle_Liddell_stardict`,
+  `HEB-HEB a hebrew-hebrew dictionary`, `Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)`,
+  `מילון_אבן_ספיר (BGL)`. they are the heading over every definition and the tag on every
+  row, so they are read more often than anything else in the app.
+  **this wants the same config structure #45 does.** a name is a per-dictionary preference,
+  exactly like a rank, and `dictionary_dirs` is a list of *paths* with nowhere to hang one.
+  a table keyed by path — `[dictionary."…/Middle_Liddell_stardict"] name = "Middle Liddell"`,
+  with #45's `order` beside it — gives both a home, and #38 made writing that file safe.
+  do the two together or the second will want the first rewritten.
+  a name is not enough on its own: the wordlist tag is ellipsized at 12 characters, so
+  something long needs a short form too (`Liddell & Scott` → `LSJ`). the language tag already
+  covers greek and hebrew rows, which is why this is mostly felt on latin and french ones.
+  a first cut, to argue with rather than adopt:
+  Whitaker's Words · Lewis & Short · Gaffiot · Bailly · Liddell & Scott (LSJ) ·
+  Middle Liddell · Dodson (NT Greek) · Lexicon to Pindar · LSJ sources · Klein Etymological ·
+  Klein abbreviations · HALOT · a hebrew-hebrew dictionary · Even Sapir · Larousse.
+
 - **[ ] #51 triple-click any word to look it up.** #20 made *links* clickable, which covers
   the cross-references a dictionary chose to mark. everything else in a definition is inert —
   and in these dictionaries most of what you want next is inert: a latin gloss inside a greek
