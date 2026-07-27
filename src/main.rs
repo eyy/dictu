@@ -41,8 +41,9 @@ fn main() -> glib::ExitCode {
     // dev affordances (no gui): `dictu dump <file>` prints one dictionary's
     // stats; `dictu lookup <file> <word> [--html]` prints one entry, which is how
     // two dictionaries' coverage of the same word get compared; `dictu search
-    // <query> [--lemmas]` runs unified search across all configured dicts and
-    // prints the rows, optionally skipping inflections.
+    // <query> [--fold-forms]` runs unified search across all configured dicts and
+    // prints its rows, optionally folding away rows that only repeat a definition
+    // another row already shows.
     let subcommand = raw.get(1).map(String::as_str);
     if subcommand == Some("dump") {
         return dump(raw.get(2).map(String::as_str));
@@ -361,11 +362,10 @@ impl UiInner {
 
         if query.is_empty() {
             self.set_message("Type to search all dictionaries.");
+            // deliberately without the folded note: folding drops rows from a
+            // result set, never headwords from the library, so the size is the one
+            // count it cannot change.
             self.show_library_size();
-            // the library size is a count like any other, and folding changes what
-            // it means; say so rather than advertising rows the setting hides.
-            let counted = self.status.text().to_string();
-            self.status.set_text(&self.noting_folded(&counted));
             return;
         }
         if rows.is_empty() {
@@ -493,11 +493,29 @@ impl UiInner {
             .set_text(&quantity(0, "dictionary selected", "dictionaries selected"));
     }
 
-    /// what the scope covers: how many dictionaries, and how many headwords they
-    /// hold between them. an empty mask is "everything" (the panel isn't built
-    /// until indexing finishes).
-    /// `line` with a note when repeated forms are being folded away — every count
-    /// the ui shows has to admit it, including the idle library size.
+    /// render the open definition again after the wordlist was rebuilt under a new
+    /// setting: rebuilding drops the selection silently, so without this the pane
+    /// keeps showing a dictionary just deselected, or forms just folded, beside a
+    /// row that has stopped counting them.
+    ///
+    /// except when nothing is selected at all — that state is a message
+    /// `populate_results` has already written into the pane, telling the user how to
+    /// get out of it, and overwriting it with "No definition for X" would take the
+    /// instruction away and clear `shown` on the way past.
+    fn render_shown_again(&self) {
+        let scoped_out = {
+            let scope = self.scope.borrow();
+            !scope.is_empty() && !scope.iter().any(|active| *active)
+        };
+        let shown = self.shown.borrow().clone();
+        if let (false, Some(word)) = (scoped_out, shown) {
+            self.show_word(&word);
+        }
+    }
+
+    /// `line` with a note when repeated forms are being folded away. only counts
+    /// folding can actually change get it: a result count does, the library's own
+    /// size does not — folding drops rows, never headwords.
     fn noting_folded(&self, line: &str) -> String {
         match self.fold_forms.get() {
             true => format!("{line} · forms folded"),
@@ -505,6 +523,9 @@ impl UiInner {
         }
     }
 
+    /// what the scope covers: how many dictionaries, and how many headwords they
+    /// hold between them. an empty mask is "everything" (the panel isn't built
+    /// until indexing finishes).
     fn scope_size(&self, library: &Library) -> (usize, usize) {
         let scope = self.scope.borrow();
         if scope.is_empty() {
@@ -573,19 +594,7 @@ impl UiInner {
             *flag = active;
         }
         self.populate_results(&self.search.text());
-        // and render the open definition again: rebuilding the wordlist drops the
-        // selection silently, so without this the pane keeps showing the dictionary
-        // just deselected — beside a row that has already stopped counting it.
-        // unless nothing is selected at all, which is a state `populate_results`
-        // has already written into the pane and is not ours to overwrite.
-        let scoped_out = {
-            let scope = self.scope.borrow();
-            !scope.is_empty() && !scope.iter().any(|active| *active)
-        };
-        let shown = self.shown.borrow().clone();
-        if let (false, Some(word)) = (scoped_out, shown) {
-            self.show_word(&word);
-        }
+        self.render_shown_again();
     }
 
     /// the link target under widget coordinates `(x, y)`, if any — read back off
@@ -1168,14 +1177,7 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         move |toggle| {
             ui.fold_forms.set(toggle.is_active());
             ui.populate_results(&ui.search.text());
-            // and render the open definition again under the new setting, for the
-            // same reason a scope change does: the rebuilt wordlist drops the
-            // selection silently, and a pane left behind would describe a row that
-            // is no longer beside it.
-            let shown = ui.shown.borrow().clone();
-            if let Some(word) = shown {
-                ui.show_word(&word);
-            }
+            ui.render_shown_again();
         }
     ));
 
