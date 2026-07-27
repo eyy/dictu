@@ -1,119 +1,176 @@
 //! the command line. every subcommand here answers a question the window also
-//! answers, through the same `Collection` — which is the point: what the cli cannot
-//! reach is entangled with the ui, and what it can reach is the api the window
-//! should have been using (roadmap #46).
+//! answers, through the same `Collection` — which is the point: what the cli
+//! cannot reach is entangled with the ui, and what it can reach is the api the
+//! window should have been using (roadmap #46).
 //!
 //! two kinds of command live here. the **collection** ones — `search`, `define`,
 //! `scope`, `index` — open the configured dictionaries and ask the collection, so
 //! their answers are the app's answers. the **file** ones — `dump`, `lookup` —
 //! take a path and bypass the collection entirely; they are for looking at a
 //! dictionary the app has not been told about yet, which is a different job.
+//!
+//! parsing is `clap`'s and json is `serde_json`'s. both were hand-rolled here
+//! first, and a review found four bugs in twenty lines of argument handling alone
+//! — a `--limit` that accepted `banana` and searched at 500, options refused
+//! before the word, a mistyped command that raised the window and exited 0. that
+//! is the class of thing these crates exist to have already gotten right.
 
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use clap::{Parser, Subcommand};
 use gtk::glib;
+use serde::Serialize;
 
 use crate::collection::{self, Collection};
 use crate::library::Library;
 use crate::{config, dict};
 
+#[derive(Parser)]
+#[command(
+    name = "dictu",
+    about = "an offline dictionary for classical languages",
+    disable_help_subcommand = true
+)]
+struct Cli {
+    /// open the window on a word — what the global hotkey passes
+    #[arg(long, value_name = "WORD")]
+    search: Option<String>,
+    /// answer as json rather than as something to read
+    #[arg(long, global = true)]
+    json: bool,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// the rows a query would show, and the dictionaries that answer
+    Search {
+        query: String,
+        /// hide rows that only repeat a definition another row already shows
+        #[arg(long)]
+        fold_forms: bool,
+        /// how many rows before the answer is cut off
+        #[arg(long, value_name = "N", default_value_t = collection::ROW_LIMIT)]
+        limit: usize,
+    },
+    /// every definition the pane would show for a word
+    Define { word: String },
+    /// the dictionaries in the collection, with their sizes
+    Scope,
+    /// what a launch loads, and what it costs
+    Index,
+    /// one dictionary file's name, size and first entries
+    Dump { file: PathBuf },
+    /// one word's entries from one file, in the collection or not
+    Lookup {
+        file: PathBuf,
+        word: String,
+        /// the raw html rather than the rendered text
+        #[arg(long)]
+        html: bool,
+    },
+}
+
 /// run a subcommand if `args` names one. `None` means "this invocation is for the
-/// window" — a bare `dictu`, or `dictu --search WORD` from the hotkey. anything
-/// else in the first position is a mistyped subcommand and says so, rather than
-/// silently raising the window and exiting 0.
+/// window" — a bare `dictu`, or `dictu --search WORD` from the hotkey.
 pub fn run(args: &[String]) -> Option<glib::ExitCode> {
-    let json = flag(args, "--json");
-    let positional = positionals(args);
-    let word = |at: usize| positional.get(at).copied();
-
-    Some(match args.get(1).map(String::as_str)? {
-        "search" => match limit_of(args) {
-            Ok(limit) => search(word(0), args, json, limit),
-            Err(bad) => complain(&format!("not a row count: {bad}")),
-        },
-        "define" => define(word(0), args, json),
-        "scope" => scope(json),
-        "index" => index(json),
-        "dump" => dump(word(0)),
-        "lookup" => lookup(word(0), word(1), flag(args, "--html")),
-        "--help" | "-h" | "help" => usage(),
-        // an option in the first position is the window's (`--search WORD`); a word
-        // is a subcommand that does not exist.
-        other if other.starts_with('-') => return None,
-        other => complain(&format!("no such command: {other}\n\n{USAGE}")),
-    })
-}
-
-fn flag(args: &[String], name: &str) -> bool {
-    args.iter().any(|arg| arg == name)
-}
-
-/// the arguments that are not options, in order — so a flag may come before the
-/// word as easily as after it. `--limit` is the only option that takes a value, so
-/// it is the only one whose value has to be stepped over.
-fn positionals(args: &[String]) -> Vec<&str> {
-    let mut found = Vec::new();
-    let mut rest = args.iter().skip(2).peekable();
-    while let Some(arg) = rest.next() {
-        if arg == "--limit" {
-            rest.next();
-        } else if !arg.starts_with('-') {
-            found.push(arg.as_str());
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        // clap has written the message already — a usage error, or `--help` — and
+        // its own exit code says which it was.
+        Err(complaint) => {
+            let failed = complaint.use_stderr();
+            let _ = complaint.print();
+            return Some(match failed {
+                true => glib::ExitCode::FAILURE,
+                false => glib::ExitCode::SUCCESS, // --help and --version
+            });
         }
-    }
-    found
-}
-
-/// the row limit asked for, if any. a value that isn't a number is an error rather
-/// than a silent fallback: a measurement taken at a limit you did not ask for is
-/// how a wrong number reaches a commit message.
-fn limit_of(args: &[String]) -> Result<usize, &str> {
-    let Some(at) = args.iter().position(|arg| arg == "--limit") else {
-        return Ok(collection::ROW_LIMIT);
     };
-    let given = args.get(at + 1).map(String::as_str).unwrap_or("");
-    given.parse().map_err(|_| given)
-}
+    let json = cli.json;
 
-fn usage() -> glib::ExitCode {
-    printing(|out| {
-        writeln!(out, "{USAGE}")?;
-        Ok(glib::ExitCode::SUCCESS)
+    Some(match cli.command? {
+        Command::Search {
+            query,
+            fold_forms,
+            limit,
+        } => search(&query, fold_forms, limit, json),
+        Command::Define { word } => define(&word, json),
+        Command::Scope => scope(json),
+        Command::Index => index(json),
+        Command::Dump { file } => dump(&file),
+        Command::Lookup { file, word, html } => lookup(&file, &word, html),
     })
 }
 
-const USAGE: &str = "\
-dictu — an offline dictionary for classical languages
+/// the json shapes. named types rather than strings built by hand: escaping is
+/// `serde_json`'s problem, and the shape becomes something a reader can see.
+#[derive(Serialize)]
+struct SearchOut<'a> {
+    query: &'a str,
+    rows: Vec<RowOut<'a>>,
+    truncated: bool,
+}
 
-  dictu                                  open the window
-  dictu --search WORD                    open it (or the running one) on a word
+#[derive(Serialize)]
+struct RowOut<'a> {
+    word: &'a str,
+    dictionaries: usize,
+    members: Vec<MemberOut<'a>>,
+}
 
-over the configured collection:
-  dictu search QUERY [--fold-forms] [--limit N] [--json]
-  dictu define WORD  [--json]            what the pane would show for it
-  dictu scope [--json]                   the dictionaries, with their sizes
-  dictu index [--json]                   what is loaded, and what it cost
+#[derive(Serialize)]
+struct MemberOut<'a> {
+    dictionary: &'a str,
+    spelling: &'a str,
+}
 
-over one file, whether or not it is in the collection:
-  dictu dump FILE                        its name, size and first few entries
-  dictu lookup FILE WORD [--html]        one word's entries";
+#[derive(Serialize)]
+struct DefineOut<'a> {
+    word: &'a str,
+    definitions: Vec<DefinitionOut<'a>>,
+}
 
-/// open the collection the config points at, with the reader's settings applied.
-fn collection_from(args: &[String]) -> Collection {
+#[derive(Serialize)]
+struct DefinitionOut<'a> {
+    dictionary: &'a str,
+    entries: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ScopeOut<'a> {
+    dictionaries: Vec<DictOut<'a>>,
+}
+
+#[derive(Serialize)]
+struct DictOut<'a> {
+    label: &'a str,
+    headwords: usize,
+}
+
+#[derive(Serialize)]
+struct IndexOut {
+    dictionaries: usize,
+    headwords: usize,
+    open_ms: u128,
+    cache_bytes: u64,
+    cache_dir: String,
+}
+
+/// open the collection the config points at.
+fn opened(fold_forms: bool) -> Collection {
     let config = config::Config::load_or_create().unwrap_or_default();
     let entries = config::scan(&config.dictionary_dirs);
     let mut collection = Collection::empty();
     collection.open(Library::open(&entries));
-    collection.set_fold_forms(args.iter().any(|arg| arg == "--fold-forms"));
+    collection.set_fold_forms(fold_forms);
     collection
 }
 
-fn search(query: Option<&str>, args: &[String], json: bool, limit: usize) -> glib::ExitCode {
-    let Some(query) = query else {
-        return complain("usage: dictu search QUERY [--fold-forms] [--limit N] [--json]");
-    };
-    let collection = collection_from(args);
+fn search(query: &str, fold_forms: bool, limit: usize, json: bool) -> glib::ExitCode {
+    let collection = opened(fold_forms);
     // an empty query is the collection itself, which is what the window says for it
     // too — the two front ends describe one state one way.
     if query.trim().is_empty() {
@@ -126,29 +183,26 @@ fn search(query: Option<&str>, args: &[String], json: bool, limit: usize) -> gli
 
     printing(|out| {
         if json {
-            writeln!(out, "{{\"query\":{}, \"rows\":[", quoted(query))?;
-            for (at, row) in rows.iter().enumerate() {
-                let members: Vec<String> = row
-                    .members
+            let answer = SearchOut {
+                query,
+                rows: rows
                     .iter()
-                    .map(|(dict, spelling)| {
-                        format!(
-                            "{{\"dictionary\":{}, \"spelling\":{}}}",
-                            quoted(collection.dict_label(*dict)),
-                            quoted(spelling)
-                        )
+                    .map(|row| RowOut {
+                        word: &row.word,
+                        dictionaries: row.dicts().len(),
+                        members: row
+                            .members
+                            .iter()
+                            .map(|(dict, spelling)| MemberOut {
+                                dictionary: collection.dict_label(*dict),
+                                spelling,
+                            })
+                            .collect(),
                     })
-                    .collect();
-                let comma = if at + 1 == rows.len() { "" } else { "," };
-                writeln!(
-                    out,
-                    "  {{\"word\":{}, \"dictionaries\":{}, \"members\":[{}]}}{comma}",
-                    quoted(&row.word),
-                    row.dicts().len(),
-                    members.join(", ")
-                )?;
-            }
-            writeln!(out, "], \"truncated\":{truncated}}}")?;
+                    .collect(),
+                truncated,
+            };
+            writeln!(out, "{}", serde_json::to_string_pretty(&answer)?)?;
             return Ok(glib::ExitCode::SUCCESS);
         }
 
@@ -176,11 +230,8 @@ fn search(query: Option<&str>, args: &[String], json: bool, limit: usize) -> gli
 
 /// what the definition pane would show for a word: every in-scope dictionary that
 /// answers, in the order the pane stacks them.
-fn define(word: Option<&str>, args: &[String], json: bool) -> glib::ExitCode {
-    let Some(word) = word else {
-        return complain("usage: dictu define WORD [--json]");
-    };
-    let collection = collection_from(args);
+fn define(word: &str, json: bool) -> glib::ExitCode {
+    let collection = opened(false);
     let Some(row) = collection.resolve(word) else {
         // say so through `printing` — and in the shape that was asked for, since a
         // caller piping `--json` wants "no definitions" parseable rather than a
@@ -188,7 +239,13 @@ fn define(word: Option<&str>, args: &[String], json: bool) -> glib::ExitCode {
         // missing word a success.
         printing(|out| {
             match json {
-                true => writeln!(out, "{{\"word\":{}, \"definitions\":[]}}", quoted(word))?,
+                true => {
+                    let empty = DefineOut {
+                        word,
+                        definitions: Vec::new(),
+                    };
+                    writeln!(out, "{}", serde_json::to_string_pretty(&empty)?)?;
+                }
                 false => writeln!(out, "no entry for {word:?}")?,
             }
             Ok(glib::ExitCode::SUCCESS)
@@ -199,22 +256,21 @@ fn define(word: Option<&str>, args: &[String], json: bool) -> glib::ExitCode {
 
     printing(|out| {
         if json {
-            writeln!(out, "{{\"word\":{}, \"definitions\":[", quoted(&row.word))?;
-            for (at, definition) in defs.iter().enumerate() {
-                let entries: Vec<String> = definition
-                    .entries
+            let answer = DefineOut {
+                word: &row.word,
+                definitions: defs
                     .iter()
-                    .map(|entry| quoted(&dict::html_to_text(entry)))
-                    .collect();
-                let comma = if at + 1 == defs.len() { "" } else { "," };
-                writeln!(
-                    out,
-                    "  {{\"dictionary\":{}, \"entries\":[{}]}}{comma}",
-                    quoted(&definition.label),
-                    entries.join(", ")
-                )?;
-            }
-            writeln!(out, "]}}")?;
+                    .map(|definition| DefinitionOut {
+                        dictionary: &definition.label,
+                        entries: definition
+                            .entries
+                            .iter()
+                            .map(|entry| dict::html_to_text(entry))
+                            .collect(),
+                    })
+                    .collect(),
+            };
+            writeln!(out, "{}", serde_json::to_string_pretty(&answer)?)?;
             return Ok(glib::ExitCode::SUCCESS);
         }
 
@@ -234,19 +290,18 @@ fn define(word: Option<&str>, args: &[String], json: bool) -> glib::ExitCode {
 
 /// the scope panel, as text: every dictionary the app loaded and how big it is.
 fn scope(json: bool) -> glib::ExitCode {
-    let collection = collection_from(&[]);
+    let collection = opened(false);
     printing(|out| {
         if json {
-            let dicts: Vec<String> = (0..collection.dict_count())
-                .map(|at| {
-                    format!(
-                        "  {{\"label\":{}, \"headwords\":{}}}",
-                        quoted(collection.dict_label(at)),
-                        collection.dict_headwords(at)
-                    )
-                })
-                .collect();
-            writeln!(out, "{{\"dictionaries\":[\n{}\n]}}", dicts.join(",\n"))?;
+            let answer = ScopeOut {
+                dictionaries: (0..collection.dict_count())
+                    .map(|at| DictOut {
+                        label: collection.dict_label(at),
+                        headwords: collection.dict_headwords(at),
+                    })
+                    .collect(),
+            };
+            writeln!(out, "{}", serde_json::to_string_pretty(&answer)?)?;
             return Ok(glib::ExitCode::SUCCESS);
         }
         for at in 0..collection.dict_count() {
@@ -266,8 +321,8 @@ fn scope(json: bool) -> glib::ExitCode {
 /// when a change is supposed to have made startup cheaper.
 fn index(json: bool) -> glib::ExitCode {
     let began = std::time::Instant::now();
-    let collection = collection_from(&[]);
-    let opened = began.elapsed();
+    let collection = opened(false);
+    let took = began.elapsed();
     let cache = config::cache_dir();
     let cached: u64 = std::fs::read_dir(&cache)
         .map(|dir| {
@@ -280,19 +335,18 @@ fn index(json: bool) -> glib::ExitCode {
 
     printing(|out| {
         if json {
-            writeln!(
-                out,
-                "{{\"dictionaries\":{}, \"headwords\":{}, \"open_ms\":{}, \"cache_bytes\":{}, \"cache_dir\":{}}}",
-                collection.dict_count(),
-                collection.total_headwords(),
-                opened.as_millis(),
-                cached,
-                quoted(&cache.display().to_string())
-            )?;
+            let answer = IndexOut {
+                dictionaries: collection.dict_count(),
+                headwords: collection.total_headwords(),
+                open_ms: took.as_millis(),
+                cache_bytes: cached,
+                cache_dir: cache.display().to_string(),
+            };
+            writeln!(out, "{}", serde_json::to_string_pretty(&answer)?)?;
             return Ok(glib::ExitCode::SUCCESS);
         }
         writeln!(out, "{}", collection.library_size())?;
-        writeln!(out, "opened in {:.2}s", opened.as_secs_f64())?;
+        writeln!(out, "opened in {:.2}s", took.as_secs_f64())?;
         writeln!(
             out,
             "cache      {:.0} MB in {}",
@@ -303,11 +357,8 @@ fn index(json: bool) -> glib::ExitCode {
     })
 }
 
-fn dump(path: Option<&str>) -> glib::ExitCode {
-    let Some(path) = path else {
-        return complain("usage: dictu dump FILE");
-    };
-    let dict = match dict::open_any(Path::new(path), Some(&config::cache_dir())) {
+fn dump(path: &Path) -> glib::ExitCode {
+    let dict = match dict::open_any(path, Some(&config::cache_dir())) {
         Ok(dict) => dict,
         Err(e) => return complain(&format!("error: {e:#}")),
     };
@@ -336,11 +387,8 @@ fn dump(path: Option<&str>) -> glib::ExitCode {
 
 /// one word's entries from one file — plain text by default, the raw html with
 /// `--html`, which is what markup work needs to see.
-fn lookup(path: Option<&str>, word: Option<&str>, html: bool) -> glib::ExitCode {
-    let (Some(path), Some(word)) = (path, word) else {
-        return complain("usage: dictu lookup FILE WORD [--html]");
-    };
-    let dict = match dict::open_any(Path::new(path), Some(&config::cache_dir())) {
+fn lookup(path: &Path, word: &str, html: bool) -> glib::ExitCode {
+    let dict = match dict::open_any(path, Some(&config::cache_dir())) {
         Ok(dict) => dict,
         Err(e) => return complain(&format!("error: {e:#}")),
     };
@@ -399,109 +447,85 @@ fn printing(
     }
 }
 
-/// a json string. hand-rolled because this is the only json the app emits and a
-/// serializer for six fields is a dependency for nothing — but escaped properly,
-/// since dictionary text is full of quotes, backslashes and newlines.
-fn quoted(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 2);
-    out.push('"');
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// the shapes serialize as the contract says, and dictionary text — quotes,
+    /// newlines, greek, hebrew — survives being one of the values. this used to
+    /// test a hand-rolled escaper; it now tests that the *shape* is what a caller
+    /// parses, which is the part still ours to get wrong.
     #[test]
-    fn json_strings_survive_dictionary_text() {
-        assert_eq!(quoted("plain"), "\"plain\"");
-        assert_eq!(quoted("say \"x\""), "\"say \\\"x\\\"\"");
-        assert_eq!(quoted("a\\b"), "\"a\\\\b\"");
-        assert_eq!(quoted("two\nlines"), "\"two\\nlines\"");
-        // greek and hebrew go through as themselves; json is utf-8.
-        assert_eq!(quoted("λόγος"), "\"λόγος\"");
-        assert_eq!(quoted("\u{1}"), "\"\\u0001\"");
+    fn the_json_shape_is_what_a_caller_parses() {
+        let answer = DefineOut {
+            word: "λόγος",
+            definitions: vec![DefinitionOut {
+                dictionary: "Bailly 2020 (Grc-Fra)",
+                entries: vec!["say \"x\"\nand a second line".to_owned()],
+            }],
+        };
+        let text = serde_json::to_string(&answer).expect("serializes");
+        let back: serde_json::Value = serde_json::from_str(&text).expect("parses");
+        assert_eq!(back["word"], "λόγος");
+        assert_eq!(
+            back["definitions"][0]["dictionary"],
+            "Bailly 2020 (Grc-Fra)"
+        );
+        assert_eq!(
+            back["definitions"][0]["entries"][0],
+            "say \"x\"\nand a second line"
+        );
     }
 
     fn argv(list: &[&str]) -> Vec<String> {
         list.iter().map(|arg| (*arg).to_owned()).collect()
     }
 
-    /// `run` claims a subcommand, hands the window everything option-shaped, and
-    /// refuses a word it does not know rather than silently opening the window.
+    /// what the window gets and what the cli claims. the window's share is a bare
+    /// launch and the hotkey's `--search WORD`; a word that is not a command is an
+    /// error, so `dictu serach x || fail` can fail.
     #[test]
     fn only_the_window_gets_what_is_not_a_command() {
         assert!(
-            run(&argv(&["dictu"])).is_none(),
-            "a bare launch is the window's"
+            Cli::try_parse_from(argv(&["dictu"]))
+                .unwrap()
+                .command
+                .is_none()
         );
-        assert!(
-            run(&argv(&["dictu", "--search", "rex"])).is_none(),
-            "so is the hotkey's argv"
-        );
-        assert!(run(&argv(&["dictu", "--help"])).is_some());
-        // a mistyped command is an error, not a window: `dictu serach x || fail`
-        // has to be able to fail.
+        let hotkey = Cli::try_parse_from(argv(&["dictu", "--search", "rex"])).unwrap();
+        assert!(hotkey.command.is_none());
+        assert_eq!(hotkey.search.as_deref(), Some("rex"));
+        assert!(Cli::try_parse_from(argv(&["dictu", "serach", "rex"])).is_err());
         assert_eq!(
             run(&argv(&["dictu", "serach", "rex"])),
             Some(glib::ExitCode::FAILURE)
         );
     }
 
-    /// a flag may come before the word as easily as after it, and `--limit`'s value
-    /// is not a word.
+    /// the declaration, not clap: that a limit is a number, that the flags are
+    /// global so they may come before the word, and that `--limit` is not read as
+    /// one. each of these was a bug when this was twenty hand-written lines.
     #[test]
     fn options_and_words_can_come_in_any_order() {
-        assert_eq!(positionals(&argv(&["dictu", "search", "rex"])), ["rex"]);
-        assert_eq!(
-            positionals(&argv(&["dictu", "search", "--json", "rex"])),
-            ["rex"]
-        );
-        assert_eq!(
-            positionals(&argv(&["dictu", "search", "--limit", "10", "rex"])),
-            ["rex"]
-        );
-        assert_eq!(
-            positionals(&argv(&["dictu", "lookup", "--html", "file.ifo", "rex"])),
-            ["file.ifo", "rex"]
-        );
-        assert!(positionals(&argv(&["dictu", "search", "--json"])).is_empty());
-    }
+        let parsed = |list: &[&str]| Cli::try_parse_from(argv(list));
+        let query_of = |cli: Cli| match cli.command {
+            Some(Command::Search { query, limit, .. }) => (query, limit),
+            _ => panic!("expected a search"),
+        };
 
-    /// a limit that is not a number is an error, not a quiet fallback — the whole
-    /// point of the flag is measuring at a number you chose.
-    #[test]
-    fn a_limit_that_is_not_a_number_is_refused() {
         assert_eq!(
-            limit_of(&argv(&["dictu", "search", "rex"])),
-            Ok(ROW_LIMIT_FOR_TEST)
+            query_of(parsed(&["dictu", "search", "rex"]).unwrap()),
+            ("rex".to_owned(), collection::ROW_LIMIT)
         );
         assert_eq!(
-            limit_of(&argv(&["dictu", "search", "rex", "--limit", "12"])),
-            Ok(12)
+            query_of(parsed(&["dictu", "search", "--limit", "10", "rex"]).unwrap()),
+            ("rex".to_owned(), 10)
         );
-        assert_eq!(
-            limit_of(&argv(&["dictu", "search", "rex", "--limit", "banana"])),
-            Err("banana")
-        );
-        // and a flag with nothing after it is just as wrong
-        assert_eq!(
-            limit_of(&argv(&["dictu", "search", "rex", "--limit"])),
-            Err("")
-        );
+        assert!(parsed(&["dictu", "search", "--json", "rex"]).unwrap().json);
+        // a limit that is not a number is refused, rather than quietly becoming 500
+        assert!(parsed(&["dictu", "search", "rex", "--limit", "banana"]).is_err());
+        assert!(parsed(&["dictu", "search", "rex", "--limit"]).is_err());
+        // and a word is still required
+        assert!(parsed(&["dictu", "search"]).is_err());
     }
-
-    const ROW_LIMIT_FOR_TEST: usize = collection::ROW_LIMIT;
 }
