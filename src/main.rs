@@ -12,21 +12,21 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 
 mod cli;
+mod collection;
 mod config;
 mod dict;
 mod index_cache;
 mod keys;
 mod language;
 mod library;
-mod session;
+use collection::Collection;
 use library::Library;
-use session::Session;
 
 const APP_ID: &str = "io.github.eyy.Dictu";
 
 /// the loaded index, shared across signal handlers. `None` until indexing
 /// finishes on the worker thread.
-type SharedSession = Rc<RefCell<Session>>;
+type SharedCollection = Rc<RefCell<Collection>>;
 
 fn main() -> glib::ExitCode {
     let raw: Vec<String> = std::env::args().collect();
@@ -131,7 +131,7 @@ struct UiInner {
     /// question about words goes through here — and so does every question the
     /// command line asks, which is why it lives in a module that has never heard
     /// of gtk.
-    session: SharedSession,
+    collection: SharedCollection,
     /// the scope panel's rows, filled once the dictionaries are known, and the
     /// header button that pops it up.
     scope_list: gtk::ListBox,
@@ -151,8 +151,8 @@ impl UiInner {
         while let Some(child) = self.results.first_child() {
             self.results.remove(&child);
         }
-        let session = self.session.borrow();
-        if !session.is_ready() {
+        let collection = self.collection.borrow();
+        if !collection.is_ready() {
             return;
         }
 
@@ -160,7 +160,7 @@ impl UiInner {
         // searching nothing is a state, not an empty result: say so instead of
         // showing an empty list that looks broken. with nothing loaded at all the
         // honest answer names the config, not a menu that would be empty.
-        if session.nothing_selected() {
+        if collection.nothing_selected() {
             self.set_message("No dictionaries selected.\n\nPick one in the search-scope menu.");
             self.show_scope_only();
             return;
@@ -169,7 +169,7 @@ impl UiInner {
         // one row per lemma, however its dictionaries spell it (#43), naming every
         // dictionary that has it (#12). the grouping is the library's: it is the
         // only place that knows which spellings are the same word.
-        let rows = session.search(query, session::ROW_LIMIT);
+        let rows = collection.search(query, collection::ROW_LIMIT);
         // recorded before the widgets exist: appending a row can select it, and
         // the handler reads this list by index.
         self.words.replace(rows.clone());
@@ -178,7 +178,7 @@ impl UiInner {
             let names: Vec<&str> = row
                 .dicts()
                 .iter()
-                .map(|&dict| session.dict_label(dict))
+                .map(|&dict| collection.dict_label(dict))
                 .collect();
             self.results.append(&word_row(&row.word, &names));
             // name the row after its word: the row is a box of two labels now, so
@@ -200,10 +200,10 @@ impl UiInner {
         if rows.is_empty() {
             self.set_message(&format!("No matches for “{query}”."));
         }
-        // the session writes the line, so the window and the command line cannot
+        // the collection writes the line, so the window and the command line cannot
         // drift into describing one search differently.
         self.status
-            .set_text(&session.status(rows.len(), rows.len() >= session::ROW_LIMIT));
+            .set_text(&collection.status(rows.len(), rows.len() >= collection::ROW_LIMIT));
 
         // a search fired from the hotkey should land on an answer, not on a list you
         // still have to click. consumed either way, so a later hand-typed search
@@ -283,21 +283,21 @@ impl UiInner {
     /// the idle status line: how much is *in scope* — with every dictionary
     /// selected that is the whole library, which is what it used to say.
     fn show_library_size(&self) {
-        let session = self.session.borrow();
-        if !session.is_ready() {
+        let collection = self.collection.borrow();
+        if !collection.is_ready() {
             return;
         }
-        if session.nothing_selected() {
+        if collection.nothing_selected() {
             self.show_scope_only();
             return;
         }
-        self.status.set_text(&session.library_size());
+        self.status.set_text(&collection.library_size());
     }
 
     /// the scope panel's own state, said out loud: not "0 results", which reads as
     /// "your search found nothing", but that nothing is being searched.
     fn show_scope_only(&self) {
-        self.status.set_text(&session::quantity(
+        self.status.set_text(&collection::quantity(
             0,
             "dictionary selected",
             "dictionaries selected",
@@ -314,7 +314,7 @@ impl UiInner {
     /// get out of it, and overwriting it with "No definition for X" would take the
     /// instruction away and clear `shown` on the way past.
     fn render_shown_again(&self) {
-        let scoped_out = self.session.borrow().nothing_selected();
+        let scoped_out = self.collection.borrow().nothing_selected();
         let shown = self.shown.borrow().clone();
         if let (false, Some(word)) = (scoped_out, shown) {
             self.show_word(&word);
@@ -324,12 +324,12 @@ impl UiInner {
     /// fill the scope panel once the dictionaries are known: one row per
     /// dictionary, its size under its name, everything selected to begin with.
     fn build_scope(&self) {
-        let session = self.session.borrow();
-        if !session.is_ready() {
+        let collection = self.collection.borrow();
+        if !collection.is_ready() {
             return;
         }
-        for index in 0..session.dict_count() {
-            let label = session.dict_label(index);
+        for index in 0..collection.dict_count() {
+            let label = collection.dict_label(index);
             let check = gtk::CheckButton::builder()
                 .active(true)
                 .valign(gtk::Align::Center)
@@ -340,8 +340,8 @@ impl UiInner {
             let row = adw::ActionRow::builder()
                 // a dictionary's name is data — escape it, the row renders markup.
                 .title(glib::markup_escape_text(label))
-                .subtitle(session::quantity(
-                    session.dict_headwords(index),
+                .subtitle(collection::quantity(
+                    collection.dict_headwords(index),
                     "headword",
                     "headwords",
                 ))
@@ -364,13 +364,13 @@ impl UiInner {
         }
         // nothing to scope when nothing loaded: leave the button dead rather than
         // popping up an empty list.
-        self.scope_button.set_sensitive(session.dict_count() > 0);
+        self.scope_button.set_sensitive(collection.dict_count() > 0);
     }
 
     /// a checkbox changed: update the mask, then re-run whatever is in the search
     /// box so the wordlist and the status line follow immediately.
     fn set_dict_active(&self, index: usize, active: bool) {
-        self.session.borrow_mut().set_dict_active(index, active);
+        self.collection.borrow_mut().set_dict_active(index, active);
         self.populate_results(&self.search.text());
         self.render_shown_again();
     }
@@ -406,7 +406,7 @@ impl UiInner {
     /// it belongs to, since the dictionary that has it may spell it with marks the
     /// caller did not (#43).
     fn show_word(&self, word: &str) {
-        let row = { self.session.borrow().resolve(word) };
+        let row = { self.collection.borrow().resolve(word) };
         match row {
             Some(row) => self.show_row(&row),
             // nothing on these letters at all: say so, rather than leaving the
@@ -423,8 +423,8 @@ impl UiInner {
 
     fn show_row(&self, row: &library::Row) {
         let word = row.word.as_str();
-        let session = self.session.borrow();
-        if !session.is_ready() {
+        let collection = self.collection.borrow();
+        if !collection.is_ready() {
             return;
         }
         self.shown.replace(Some(row.word.clone()));
@@ -433,7 +433,7 @@ impl UiInner {
         // further and advertise that dictionary by name. each dictionary is asked
         // for the spelling *it* files, so the pane never comes up empty for a word
         // the list just showed.
-        let defs = session.definitions(row);
+        let defs = collection.definitions(row);
 
         let buffer = self.definition.buffer();
         self.clear_sections(&buffer);
@@ -524,7 +524,7 @@ impl UiInner {
         }
         self.fold.set_text(&format!(
             "{} below: {}",
-            session::quantity(below.len(), "more definition", "more definitions"),
+            collection::quantity(below.len(), "more definition", "more definitions"),
             below.join(" · "),
         ));
     }
@@ -883,7 +883,7 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         words: Rc::new(RefCell::new(Vec::new())),
         shown: Rc::new(RefCell::new(None)),
         auto_select: Rc::new(Cell::new(false)),
-        session: Rc::new(RefCell::new(Session::empty())),
+        collection: Rc::new(RefCell::new(Collection::empty())),
         scope_list,
         scope_button,
     });
@@ -920,7 +920,9 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         #[weak]
         ui,
         move |toggle| {
-            ui.session.borrow_mut().set_fold_forms(toggle.is_active());
+            ui.collection
+                .borrow_mut()
+                .set_fold_forms(toggle.is_active());
             ui.populate_results(&ui.search.text());
             ui.render_shown_again();
         }
@@ -1043,7 +1045,7 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     glib::spawn_future_local(async move {
         if let Ok(library) = rx.recv().await {
             let Some(ui) = ui_ready.upgrade() else { return };
-            ui.session.borrow_mut().open(library);
+            ui.collection.borrow_mut().open(library);
             // size the scope before anything searches: the re-run below reads it.
             ui.build_scope();
             ui.search.set_sensitive(true);

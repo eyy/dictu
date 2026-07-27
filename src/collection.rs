@@ -14,7 +14,7 @@ use crate::library::{Library, Row};
 /// count measured there is the count the window would show.
 pub const ROW_LIMIT: usize = 500;
 
-pub struct Session {
+pub struct Collection {
     /// `None` until the worker thread finishes indexing.
     library: Option<Library>,
     /// one flag per dictionary, in library order. empty means "everything" — the
@@ -31,7 +31,7 @@ pub struct Definition {
     pub entries: Vec<String>,
 }
 
-impl Session {
+impl Collection {
     pub fn empty() -> Self {
         Self {
             library: None,
@@ -231,32 +231,32 @@ pub fn quantity(n: usize, singular: &str, plural: &str) -> String {
 mod tests {
     use super::*;
 
-    /// a session with no index answers everything rather than panicking: the
+    /// a collection with no index answers everything rather than panicking: the
     /// window is up and asking before the worker thread has finished.
     #[test]
-    fn an_unopened_session_is_answerable() {
-        let session = Session::empty();
-        assert!(!session.is_ready());
-        assert_eq!(session.dict_count(), 0);
-        assert_eq!(session.total_headwords(), 0);
-        assert_eq!(session.scope_size(), (0, 0));
-        assert!(session.search("rex", 10).is_empty());
-        assert!(session.resolve("rex").is_none());
+    fn an_unopened_collection_is_answerable() {
+        let collection = Collection::empty();
+        assert!(!collection.is_ready());
+        assert_eq!(collection.dict_count(), 0);
+        assert_eq!(collection.total_headwords(), 0);
+        assert_eq!(collection.scope_size(), (0, 0));
+        assert!(collection.search("rex", 10).is_empty());
+        assert!(collection.resolve("rex").is_none());
         assert!(
-            !session.nothing_selected(),
+            !collection.nothing_selected(),
             "no dictionaries is not a choice"
         );
-        assert_eq!(session.dict_label(3), "");
+        assert_eq!(collection.dict_label(3), "");
     }
 
     #[test]
     fn the_status_line_names_every_narrowing() {
-        let mut session = Session::empty();
-        assert_eq!(session.status(1, false), "1 result");
-        assert_eq!(session.status(4009, false), "4,009 results");
-        assert_eq!(session.status(500, true), "500+ results");
-        session.set_fold_forms(true);
-        assert_eq!(session.status(3, false), "3 results · forms folded");
+        let mut collection = Collection::empty();
+        assert_eq!(collection.status(1, false), "1 result");
+        assert_eq!(collection.status(4009, false), "4,009 results");
+        assert_eq!(collection.status(500, true), "500+ results");
+        collection.set_fold_forms(true);
+        assert_eq!(collection.status(3, false), "3 results · forms folded");
     }
 
     #[test]

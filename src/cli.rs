@@ -4,7 +4,7 @@
 //! should have been using (roadmap #46).
 //!
 //! two kinds of command live here. the **collection** ones — `search`, `define`,
-//! `scope`, `index` — open the configured dictionaries and ask the session, so
+//! `scope`, `index` — open the configured dictionaries and ask the collection, so
 //! their answers are the app's answers. the **file** ones — `dump`, `lookup` —
 //! take a path and bypass the collection entirely; they are for looking at a
 //! dictionary the app has not been told about yet, which is a different job.
@@ -14,8 +14,8 @@ use std::path::Path;
 
 use gtk::glib;
 
+use crate::collection::{self, Collection};
 use crate::library::Library;
-use crate::session::{self, Session};
 use crate::{config, dict};
 
 /// run a subcommand if `args` names one. `None` means "no subcommand" — the
@@ -71,24 +71,24 @@ over one file, whether or not it is in the collection:
   dictu lookup FILE WORD [--html]        one word's entries";
 
 /// open the collection the config points at, with the reader's settings applied.
-fn session_from(args: &[String]) -> Session {
+fn collection_from(args: &[String]) -> Collection {
     let config = config::Config::load_or_create().unwrap_or_default();
     let entries = config::scan(&config.dictionary_dirs);
-    let mut session = Session::empty();
-    session.open(Library::open(&entries));
-    session.set_fold_forms(args.iter().any(|arg| arg == "--fold-forms"));
-    session
+    let mut collection = Collection::empty();
+    collection.open(Library::open(&entries));
+    collection.set_fold_forms(args.iter().any(|arg| arg == "--fold-forms"));
+    collection
 }
 
 fn search(query: Option<&str>, args: &[String], json: bool, limit: Option<&str>) -> glib::ExitCode {
     let Some(query) = query else {
         return complain("usage: dictu search QUERY [--fold-forms] [--limit N] [--json]");
     };
-    let session = session_from(args);
+    let collection = collection_from(args);
     let limit = limit
         .and_then(|n| n.parse().ok())
-        .unwrap_or(session::ROW_LIMIT);
-    let rows = session.search(query, limit);
+        .unwrap_or(collection::ROW_LIMIT);
+    let rows = collection.search(query, limit);
     let truncated = rows.len() >= limit;
 
     printing(|out| {
@@ -101,7 +101,7 @@ fn search(query: Option<&str>, args: &[String], json: bool, limit: Option<&str>)
                     .map(|(dict, spelling)| {
                         format!(
                             "{{\"dictionary\":{}, \"spelling\":{}}}",
-                            quoted(session.dict_label(*dict)),
+                            quoted(collection.dict_label(*dict)),
                             quoted(spelling)
                         )
                     })
@@ -120,7 +120,7 @@ fn search(query: Option<&str>, args: &[String], json: bool, limit: Option<&str>)
         }
 
         // the same line the window puts under its wordlist, from the same place.
-        writeln!(out, "{}", session.status(rows.len(), truncated))?;
+        writeln!(out, "{}", collection.status(rows.len(), truncated))?;
         for row in &rows {
             // one line per dictionary, naming the spelling it files the row under
             // — the row's own spelling is the first of them.
@@ -129,7 +129,12 @@ fn search(query: Option<&str>, args: &[String], json: bool, limit: Option<&str>)
                     true => String::new(),
                     false => format!("  (under {spelling})"),
                 };
-                writeln!(out, "  [{}] {}{under}", session.dict_label(*dict), row.word)?;
+                writeln!(
+                    out,
+                    "  [{}] {}{under}",
+                    collection.dict_label(*dict),
+                    row.word
+                )?;
             }
         }
         Ok(glib::ExitCode::SUCCESS)
@@ -142,8 +147,8 @@ fn define(word: Option<&str>, args: &[String], json: bool) -> glib::ExitCode {
     let Some(word) = word else {
         return complain("usage: dictu define WORD [--fold-forms] [--json]");
     };
-    let session = session_from(args);
-    let Some(row) = session.resolve(word) else {
+    let collection = collection_from(args);
+    let Some(row) = collection.resolve(word) else {
         // like `lookup`: say so through `printing`, but fail, or `define x | grep -q`
         // would call a missing word a success.
         printing(|out| {
@@ -152,7 +157,7 @@ fn define(word: Option<&str>, args: &[String], json: bool) -> glib::ExitCode {
         });
         return glib::ExitCode::FAILURE;
     };
-    let defs = session.definitions(&row);
+    let defs = collection.definitions(&row);
 
     printing(|out| {
         if json {
@@ -191,30 +196,30 @@ fn define(word: Option<&str>, args: &[String], json: bool) -> glib::ExitCode {
 
 /// the scope panel, as text: every dictionary the app loaded and how big it is.
 fn scope(json: bool) -> glib::ExitCode {
-    let session = session_from(&[]);
+    let collection = collection_from(&[]);
     printing(|out| {
         if json {
-            let dicts: Vec<String> = (0..session.dict_count())
+            let dicts: Vec<String> = (0..collection.dict_count())
                 .map(|at| {
                     format!(
                         "  {{\"label\":{}, \"headwords\":{}}}",
-                        quoted(session.dict_label(at)),
-                        session.dict_headwords(at)
+                        quoted(collection.dict_label(at)),
+                        collection.dict_headwords(at)
                     )
                 })
                 .collect();
             writeln!(out, "{{\"dictionaries\":[\n{}\n]}}", dicts.join(",\n"))?;
             return Ok(glib::ExitCode::SUCCESS);
         }
-        for at in 0..session.dict_count() {
+        for at in 0..collection.dict_count() {
             writeln!(
                 out,
                 "{:>9}  {}",
-                session::thousands(session.dict_headwords(at)),
-                session.dict_label(at)
+                collection::thousands(collection.dict_headwords(at)),
+                collection.dict_label(at)
             )?;
         }
-        writeln!(out, "{}", session.library_size())?;
+        writeln!(out, "{}", collection.library_size())?;
         Ok(glib::ExitCode::SUCCESS)
     })
 }
@@ -223,7 +228,7 @@ fn scope(json: bool) -> glib::ExitCode {
 /// when a change is supposed to have made startup cheaper.
 fn index(json: bool) -> glib::ExitCode {
     let began = std::time::Instant::now();
-    let session = session_from(&[]);
+    let collection = collection_from(&[]);
     let opened = began.elapsed();
     let cache = config::cache_dir();
     let cached: u64 = std::fs::read_dir(&cache)
@@ -240,15 +245,15 @@ fn index(json: bool) -> glib::ExitCode {
             writeln!(
                 out,
                 "{{\"dictionaries\":{}, \"headwords\":{}, \"open_ms\":{}, \"cache_bytes\":{}, \"cache_dir\":{}}}",
-                session.dict_count(),
-                session.total_headwords(),
+                collection.dict_count(),
+                collection.total_headwords(),
                 opened.as_millis(),
                 cached,
                 quoted(&cache.display().to_string())
             )?;
             return Ok(glib::ExitCode::SUCCESS);
         }
-        writeln!(out, "{}", session.library_size())?;
+        writeln!(out, "{}", collection.library_size())?;
         writeln!(out, "opened in {:.2}s", opened.as_secs_f64())?;
         writeln!(
             out,
@@ -318,7 +323,7 @@ fn lookup(path: Option<&str>, word: Option<&str>, html: bool) -> glib::ExitCode 
             out,
             "{} — {word} ({})\n",
             dict.name(),
-            session::quantity(entries.len(), "entry", "entries")
+            collection::quantity(entries.len(), "entry", "entries")
         )?;
         for (at, entry) in entries.iter().enumerate() {
             if entries.len() > 1 {
