@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """end-to-end ui tests for dictu, driven through at-spi (the accessibility bus).
 
+these are the checks that need the widgets: focus, keyboard routing, the scope
+popover, link geometry, the fold strip, and that what the collection answers
+actually reaches the screen. the ones that were only ever about *answers* — is a
+headword findable, does an unaccented query reach an accented entry — live in
+hack/cli.py now, where they cost a subprocess instead of a display (roadmap #46).
+
 gtk4 exports every widget over at-spi automatically, so we can read the real
 widget tree of a running dictu — the search entry's text, the rows in the
 wordlist, the definition pane's contents — and assert on it. no screenshots, no
@@ -56,7 +62,7 @@ APP_NAME = "dictu"
 # window's other labels.
 COUNT_LINE = re.compile(r"^[\d,]+\+? (word|result|dictionar)")
 READY_TIMEOUT = 60.0  # generous: indexing a real collection can take a while.
-POLL = 0.15
+POLL = 0.04
 
 VERBOSE = "-v" in sys.argv
 
@@ -265,7 +271,7 @@ class AppUnderTest:
         if wid is None:
             return False
         subprocess.run(["xdotool", "windowfocus", wid], check=False, timeout=10)
-        time.sleep(0.5)
+        time.sleep(0.2)
         return True
 
     def press(self, key):
@@ -273,13 +279,13 @@ class AppUnderTest:
         directly, so a key can never land in one of the user's own windows: if
         focus moved away, gtk drops the event instead."""
         subprocess.run(["xdotool", "key", "--window", self.window_id(), key], check=False, timeout=10)
-        time.sleep(0.4)
+        time.sleep(0.15)
 
     def type_text(self, text):
         subprocess.run(
             ["xdotool", "type", "--window", self.window_id(), text], check=False, timeout=10
         )
-        time.sleep(0.4)
+        time.sleep(0.15)
 
     def click_at(self, x, y):
         """click at coordinates relative to the window under test. the pointer being
@@ -289,9 +295,9 @@ class AppUnderTest:
             check=False,
             timeout=10,
         )
-        time.sleep(0.25)
+        time.sleep(0.1)
         subprocess.run(["xdotool", "click", "1"], check=False, timeout=10)
-        time.sleep(0.5)
+        time.sleep(0.2)
 
     def forward(self, *args):
         """run `dictu <args>`, which the single-instance app forwards to the
@@ -526,25 +532,6 @@ def main():
         )
         r.check("a non-matching prefix clears the wordlist", bool(cleared))
 
-        # every fixture headword must be reachable by its own full name.
-        found = []
-        for word in SAMPLE_WORDS:
-            app_proc.forward("--search", word)
-            try:
-                wait_for(
-                    lambda w=word: w in [x for x in widgets.row_words() if x] or None,
-                    10,
-                    f"row for {word}",
-                )
-                found.append(word)
-            except TimeoutError:
-                log(f"missing row for {word}")
-        r.check(
-            "every fixture headword is findable",
-            found == SAMPLE_WORDS,
-            f"found {found} of {SAMPLE_WORDS}",
-        )
-
         # selecting a row must render that word's definition in the pane.
         app_proc.forward("--search", "aardvark")
         wait_for(lambda: "aardvark" in widgets.row_words() or None, 10, "the aardvark row")
@@ -572,35 +559,6 @@ def main():
             "a headword's script tags its language",
             greek == ["GRC"],
             f"expected ['GRC'], got {greek}",
-        )
-
-        # roadmap #39: the index is keyed by a normalized form, so a query typed
-        # without the accent — and with a plain sigma, which lowercasing alone
-        # never folded — still finds the accented headword.
-        app_proc.forward("--search", "λογοσ")
-        unaccented = wait_for(
-            lambda: [w for w in widgets.row_words() if w] or None,
-            15,
-            "rows for the unaccented greek query",
-        )
-        r.check(
-            "an unaccented query finds an accented headword",
-            unaccented == ["λόγος"],
-            f"expected ['λόγος'], got {unaccented}",
-        )
-
-        # the other half of that rule: an accent the query spells out has to be
-        # honoured, so a grave is not answered with an acute.
-        app_proc.forward("--search", "λὸγος")
-        r.check(
-            "a query's own accent rules out a different one",
-            bool(
-                wait_for(
-                    lambda: not [w for w in widgets.row_words() if w] or None,
-                    15,
-                    "the wordlist to clear",
-                )
-            ),
         )
 
         app_proc.forward("--search", "zeit")

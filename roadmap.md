@@ -155,6 +155,21 @@ nothing open right now.
   (serde was already here), +12 for clap, 128 → 142 in a tree a gtk app already dominates**,
   and the binary 3.04 → 3.70 MB. what stays hand-written is what no crate knows: the dictionary
   formats, the cache image, the key normalization.
+  **the e2e migration is done, and it did not do what the entry predicted.** the checks that
+  were only ever about answers — is a headword findable, does an unaccented query reach an
+  accented entry — moved to `hack/cli.py`, which asks the same `Collection` through the
+  command line: **20 checks in 0.8 s**, against ~0.3 s *each* over at-spi. but removing eight
+  of them from the e2e suite saved **one second of twenty-nine**, because that suite's cost
+  is fixed overhead and polling, not the checks. the honest speed-up came from tuning what
+  was actually slow — the 0.15 s poll interval and the fixed sleeps after every synthetic
+  key and click — which took the suite **29.6 s → 17.0 s**, stable over three runs.
+  so the migration's value is not speed. it is that `hack/cli.py` needs **no display, no
+  d-bus and no machine-wide lock**, so it runs while the app is open (the e2e stage kills
+  stray instances, which has twice killed a window mid-use), and that data assertions are
+  now cheap enough to be generous with: it covers exit codes, json shape, `define`, `dump`,
+  limit semantics and folding, none of which the at-spi suite ever checked.
+  what stays at-spi is what needs widgets: focus, keyboard routing, the scope popover, link
+  geometry, the fold strip, and that what the collection answers reaches the screen.
   **what remains**: `main.rs` still holds window construction, every signal handler and the
   html-to-widget rendering (three jobs, ~1,200 lines) — a `ui` module with `render` beside
   it. and the payoff the cli was for: moving the e2e checks that are really about the search
