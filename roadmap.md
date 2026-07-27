@@ -19,6 +19,24 @@ nothing open right now.
 
 ## next — 2026-07-24 feedback
 
+- **[ ] #51 triple-click any word to look it up.** #20 made *links* clickable, which covers
+  the cross-references a dictionary chose to mark. everything else in a definition is inert —
+  and in these dictionaries most of what you want next is inert: a latin gloss inside a greek
+  entry, a hebrew cognate in Klein, a word in a quotation. the global hotkey already does
+  this for text anywhere else on the desktop by reading the primary selection; inside our own
+  window it should not need a round trip through the clipboard.
+  the click plumbing is there — `link_at`/`follow_link` already intercept in the capture
+  phase, because the textview's own drag-select otherwise eats the release. a third press is
+  another arm of the same handler, claiming the sequence so gtk does not also select the
+  line, and landing in `show_word`, which resolves by bare key and so copes with an inflected
+  or pointed form.
+  two things to get right. **what a word is**: gtk's own boundaries are pango's, which is
+  what makes this work for `λόγος` and for hebrew with niqqud, but they will also stop at the
+  dots in `Cic. Rep.` and split `rēgis` if the macron is decomposed — worth testing on real
+  entries rather than english. and **what it does**: links fill the search box as well as the
+  pane, so the wordlist agrees with what is shown; a triple-click should do the same rather
+  than inventing a second kind of navigation.
+
 - **[ ] #50 an english–english dictionary, oxford if it can be had.** the collection reads
   *into* english and has nothing that defines english itself: thirteen of the fifteen
   dictionaries are greek, latin or hebrew, and the other two are french. every gloss lands
