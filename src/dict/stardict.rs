@@ -219,7 +219,9 @@ impl Dictionary for StarDict {
             .ranges(headword)
             .into_iter()
             .flatten()
-            .map(|(offset, _)| offset)
+            // both halves of the range: two entries can start at one offset and
+            // run to different lengths, and those are different definitions.
+            .map(|(offset, size)| offset ^ (u64::from(size) << 40))
             .collect()
     }
 }
