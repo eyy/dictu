@@ -215,6 +215,13 @@ these are blocked on a decision or an action only you can take. nothing else wai
   its rows are all headwords in their own right, which is the rule declining to do anything.
   greek is untouched: LSJ, Bailly, Dodson, Pindar and the Middle Liddell ship no `.syn`
   between them.
+  **the property, checked rather than argued**: over 52 query/limit combinations on the real
+  collection — latin, hebrew, greek and french, at limits 10 and 500 — every definition
+  reachable without folding is still reachable with it. 3,118 definitions, 1,752 repeat rows
+  folded, none lost. that is the exact failure the first version had, so it is worth a test
+  rather than a paragraph; the mock-fixture version of it lives in `library.rs`.
+  a definition's identity is `(dictionary, offset ^ size << 40)` — both halves of the range,
+  since two entries can start in the same place and run to different lengths.
   the setting is session-only, like the scope beside it (#45 is where preferences persist).
   the cli's `--fold-forms` drives the same code, and its row limit is now the wordlist's:
   the old 20 silently truncated every measurement taken through it, which is how a wrong
