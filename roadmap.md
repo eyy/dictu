@@ -152,8 +152,8 @@ nothing open right now.
   answers `dictu serach rex` with *"tip: a similar subcommand exists: 'search'"*. `serde_json`
   replaced a hand-rolled escaper that was correct only because nothing in the collection had
   yet contained the characters it got wrong. cost, measured: **+2 crates for serde_json
-  (serde was already here), +12 for clap, 128 → 142 in a tree a gtk app already dominates**;
-  the binary is 3.7 MB. what stays hand-written is what no crate knows: the dictionary
+  (serde was already here), +12 for clap, 128 → 142 in a tree a gtk app already dominates**,
+  and the binary 3.04 → 3.70 MB. what stays hand-written is what no crate knows: the dictionary
   formats, the cache image, the key normalization.
   **what remains**: `main.rs` still holds window construction, every signal handler and the
   html-to-widget rendering (three jobs, ~1,200 lines) — a `ui` module with `render` beside

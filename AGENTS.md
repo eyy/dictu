@@ -290,6 +290,22 @@ the cache is derived data and can be cleared, but a full wipe costs a 792 MB reb
 delete only the images from superseded versions (the u32 at byte 8 of a `.didx`/`.dord` is
 its VERSION).
 
+## reach for the crate first
+
+hand-rolled a json escaper and an argument parser here once. a review found four bugs in
+twenty lines of the argument handling — a `--limit` that accepted `banana` and silently
+searched at 500, options refused before the word, a mistyped command that raised the window
+and exited 0 — and the escaper was correct only because the collection had not yet contained
+the characters it got wrong. both are now `clap` and `serde_json`, which cost +14 crates in
+a tree gtk4 already dominates.
+
+before writing a utility, ask whether it is *this app's* problem. it is worth writing when no
+crate knows the answer — the dictionary formats (StarDict, DSL, dictd), the cache image, the
+key normalization for polytonic greek and pointed hebrew, the grouping rules in `library`.
+it is not worth writing for parsing, serializing, escaping, number formatting or anything
+else a thousand programs need: those have known answers, and ours will be the version with
+the bugs.
+
 ## gotchas
 
 1. cargo not on `$PATH` — the single most common wasted cycle.
