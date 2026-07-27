@@ -135,6 +135,22 @@ def window_is_active(app):
     )
 
 
+def wait_for_quiet(predicate, timeout=1.0):
+    """poll until `predicate` holds, and say whether it did — for the places where
+    not holding is an answer rather than an error: a probe click that followed no
+    link, or an assertion that is about to fail and wants to report what it saw.
+    returns as soon as it is true, so the timeout is a ceiling, not a cost."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if predicate():
+                return True
+        except Exception:  # the a11y tree is racy while the ui rebuilds
+            pass
+        time.sleep(POLL)
+    return False
+
+
 def wait_for(predicate, timeout, what):
     """poll `predicate` until it returns something truthy. raises on timeout."""
     deadline = time.monotonic() + timeout
@@ -271,25 +287,33 @@ class AppUnderTest:
         if wid is None:
             return False
         subprocess.run(["xdotool", "windowfocus", wid], check=False, timeout=10)
-        time.sleep(0.2)
         return True
 
     def press(self, key):
-        """send one keypress to the window under test. `--window` targets it
+        """send one keypress to the window under test. it returns as soon as
+        xdotool does, which is *before* gtk has seen the event — so every caller
+        waits for the effect it expects rather than sleeping on a guess. `--window` targets it
         directly, so a key can never land in one of the user's own windows: if
         focus moved away, gtk drops the event instead."""
-        subprocess.run(["xdotool", "key", "--window", self.window_id(), key], check=False, timeout=10)
-        time.sleep(0.15)
+        subprocess.run(
+            ["xdotool", "key", "--window", self.window_id(), key], check=False, timeout=10
+        )
 
     def type_text(self, text):
         subprocess.run(
             ["xdotool", "type", "--window", self.window_id(), text], check=False, timeout=10
         )
-        time.sleep(0.15)
 
     def click_at(self, x, y):
         """click at coordinates relative to the window under test. the pointer being
-        moved is the private display's, not the user's."""
+        moved is the private display's, not the user's.
+
+        the two sleeps are the only ones left in this file, and they are here
+        because what they wait for cannot be observed: at-spi exposes no pointer
+        position, and no "this surface is now taking input" for a popover that has
+        just mapped. measured, not assumed — without them roughly one scope click
+        in ten is lost, and each loss costs a three-second retry, which took the
+        suite from 17s to 22s. everywhere else the harness waits for the effect."""
         subprocess.run(
             ["xdotool", "mousemove", "--window", self.window_id(), str(x), str(y)],
             check=False,
@@ -838,21 +862,28 @@ def main():
         app_proc.forward("--search", "aardvark")
         wait_for(lambda: "aardvark" in widgets.row_words() or None, 10, "the aardvark row")
         app_proc.focus_window()
+        try:
+            wait_for(lambda: window_is_active(node) or None, 5, "the window to take focus")
+        except TimeoutError:
+            pass
         if not window_is_active(node):
             print("  skip  keyboard checks (could not focus the test window)")
         else:
             app_proc.press("Down")
+            selected = wait_for_quiet(
+                lambda: Atspi.Selection.get_n_selected_children(widgets.results) == 1
+                and "nocturnal" in widgets.definition_text().lower()
+            )
             r.check(
                 "Down from the search box selects the first row",
-                Atspi.Selection.get_n_selected_children(widgets.results) == 1
-                and "nocturnal" in widgets.definition_text().lower(),
+                selected,
                 f"selected={Atspi.Selection.get_n_selected_children(widgets.results)}",
             )
 
             app_proc.press("Up")
             r.check(
                 "Up from the first row returns to the search box",
-                is_focused(widgets.search),
+                wait_for_quiet(lambda: is_focused(widgets.search)),
                 "search entry did not regain focus",
             )
 
@@ -860,6 +891,7 @@ def main():
             # box rather than being swallowed by the list.
             app_proc.press("Down")
             app_proc.type_text("x")
+            wait_for_quiet(lambda: text_of(widgets.search) == "aardvarkx")
             entry_text = text_of(widgets.search)
             r.check(
                 "typing while the wordlist has focus goes to the search box",
