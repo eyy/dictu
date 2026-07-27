@@ -19,6 +19,31 @@ nothing open right now.
 
 ## next — 2026-07-24 feedback
 
+- **[ ] #49 back and forward.** there is real navigation now and no way to retrace it: a
+  definition can be reached by typing, by picking a row, by the global hotkey, and — since
+  #20 — by clicking a link inside another definition, which also rewrites the search box.
+  follow two cross-references and the way back is gone.
+  what a history entry has to hold is the whole question. the pane shows a *row*, but a row
+  is built from a query under a scope, so remembering only the word would send you back to a
+  definition beside a wordlist that no longer contains it — the exact inconsistency #43 and
+  #33 were spent closing. an entry is at least the query text and the word shown; whether it
+  also pins the scope and the fold setting is the design decision.
+  the plumbing exists: `UiInner::shown` already tracks the word the pane is on, and
+  `show_word`/`resolve` are the single door every navigation goes through. buttons belong at
+  the start of the header bar, gnome-style, and should answer `Alt+Left`/`Alt+Right` and the
+  mouse's back/forward buttons too — those are how anyone actually uses this.
+
+- **[ ] #48 a logo.** the app has no icon: the shell shows a generic placeholder in the
+  dash, the alt-tab switcher and the window list, which is also what a user sees before they
+  see anything else. needs an app icon under the id it already claims
+  (`io.github.eyy.Dictu`), in the hicolor theme, plus a `.desktop` file so the shell can find
+  it — today the app is launched from a terminal and never installed. an `adw::AboutWindow`
+  would then have somewhere to put it.
+  wanted: a full-colour icon and a symbolic one, both svg, following the gnome icon
+  guidelines rather than a photograph shrunk down. the subject picks itself — this is a tool
+  for reading greek, latin and hebrew — but resist a scroll or a quill: every dictionary app
+  has one.
+
 - **[ ] #47 resolve a citation where it is written.** LSJ's prose is mostly references —
   `Cic. Rep. 2, 30`, `Hdt. 2, 35`, `Alex.Aphr. in Metaph.` — and the collection already
   holds the key that decodes them: `LSJ sources`, 2,042 entries mapping each abbreviation to
@@ -145,6 +170,11 @@ these are blocked on a decision or an action only you can take. nothing else wai
   is only an audio reference (`[s]snd.wav[/s]`) leaves a row that shows nothing when
   selected. no occurrences in the current collection (0 of 475,360 entries), so it is latent;
   the fix is to reconcile the two at index time rather than filter at lookup time.
+  **it has a second edge now.** #33's folding identifies a definition by its byte range and
+  never reads it, while `lookup` drops what renders empty — so once this is fixed (or a
+  dictionary with audio-only cards arrives), a row could be folded away as a repeat of an
+  entry that renders as nothing. whichever way #41 goes, `entry_ids` has to agree with
+  `lookup` about which entries exist.
 
 
 - **[ ] #37 offline Wiktionary, chosen by language pair.** pick `French > English` in the
