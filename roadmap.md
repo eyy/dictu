@@ -83,6 +83,45 @@ nothing open right now.
   second copy of a file we can already map, which is the mistake the other direction.
   the moral for #53's sake: the number rotted for as long as nothing watched it, and what it
   cost was not subtle — a fifth of a second and 188 MB on every launch, for two files.
+- **[ ] #57 the wordlist should be a model, not a list of widgets we rebuild.** asked whether
+  the ui could be more declarative; of five candidates this is the one worth doing, and it is
+  worth doing for correctness rather than for brevity.
+  `populate_results` removes every child, builds a `gtk::Box` per row, appends it, then patches
+  each row's accessible name — and keeps `words: Vec<Row>` as a shadow copy that the selection
+  handler reads **by row position**. its own comment names the hazard: "recorded before the
+  widgets exist: appending a row can select it, and the handler reads this list by index." any
+  future change that reorders or filters rows without updating that vec in the same breath is
+  a wrong definition on screen, silently. #45 (let the reader order the dictionaries) is
+  exactly such a change.
+  **`gtk::ListView` + `gio::ListStore` + `SignalListItemFactory`** is the gtk4 answer and
+  removes the class: you hand gtk a model, and the selection hands you back the *item*, so
+  there is no index to keep honest and no shadow copy to desync. it also recycles row widgets
+  where `ListBox` instantiates every one, which is the difference between 500 boxes and a
+  screenful at the row cap. `ListBox` is the gtk3-era api; `ListView` is what gtk4 added for
+  this.
+  **cost, so it is not a surprise.** the item needs to be a `glib::Object` with properties
+  (word, dictionary count, tag) — 60–80 lines of subclass boilerplate — so the change is
+  roughly line-neutral. and **the e2e harness leans on today's widget shape**: `row_words`
+  and `row_tags` read `list item` nodes wrapping labels, `select_first_row` goes through
+  `Atspi.Selection.select_child`, and the keyboard checks assume `Down` lands on
+  `row_at_index(0)`. a `ListView` exposes a different tree, so expect to re-cut those
+  accessors and to re-check the six or seven checks that read rows. worth doing *before* #45
+  and #52, both of which touch the same rows: a per-row property is the natural home for #52's
+  short form and #45's rank, and doing them first means writing that twice.
+  **the other four candidates, and why not.** *composite templates* (`.ui` xml or blueprint)
+  are the canonical gnome answer and would move ~200 of `build`'s 362 lines out of rust — but
+  they need the window to become a `GObject` subclass, which replaces the deliberate
+  `Rc`/`Weak` design of #8 and the test guarding it, and they trade a compile error for a
+  startup failure when a widget is renamed. shorter in rust, not clearer overall. *property
+  bindings* (`bind_property`) would replace the four `set_sensitive`/`set_visible` pokes, but
+  binding needs a `GObject` to bind from and the source of truth is `Collection`, which #46
+  just finished keeping gtk-free — not worth dragging gtk across that boundary for four call
+  sites. *the definition pane* has no declarative form at all: `render.rs` applies `TextTag`s
+  to buffer ranges and gtk offers nothing else for that. *relm4* would genuinely be
+  declarative and probably shorter, but it is a rewrite that hands the architecture to a
+  dependency — a different question from adopting `serde_json`.
+  note the irony for whoever picks this up: both of the seriously declarative options require
+  *adding* `GObject` boilerplate. declarative here does not mean shorter.
 - **[ ] #52 give every dictionary a name a person would write.** the labels are folder names
   and they read like it: `bgl-Latin_English_Inflected`, `Middle_Liddell_stardict`,
   `HEB-HEB a hebrew-hebrew dictionary`, `Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)`,
