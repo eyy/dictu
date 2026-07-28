@@ -28,10 +28,15 @@ smoke: dump   reads sample/ end to end, asserts 7 headwords + real definition te
 cli           hack/cli.py — 21 checks driving `dictu search|define|scope|dump|lookup`
               over sample/. no display, no d-bus, under a second
 speed         hack/speed.py — 9 measurements against a recorded baseline, release build
-ui e2e        hack/e2e.py — 34 checks against the real widget tree, over at-spi, ~16s
+ui e2e        hack/e2e.py — 34 checks against the real widget tree, over at-spi, 9–13s
 ```
 
-the whole loop is about 22 seconds, or 29 when the speed stage has to rebuild release.
+the whole loop runs 15–24 seconds, plus ~7 when the speed stage has to rebuild release.
+those are ranges because they have to be: the same unchanged suite measured 8.7s and
+12.9s within one minute, and 13.5s against 16.9s an hour apart, purely on what else the
+machine was doing. that is why `hack/speed.py` compares the app against a recorded run
+of its own rather than against a number written in a doc — and why every figure quoted
+in this file for a *change* comes from interleaved A/B runs, never before-and-after.
 
 flags: `--fast` skips the ui and speed stages (no display needed), `--ci` treats formatting
 as a failure rather than fixing it and skips the machine-local speed stage.
@@ -107,7 +112,10 @@ what you need to know to add a check:
   definition is one wide, **gap-free** link — a space between two words belongs to neither
   link, so a click there follows nothing — and searches down a column for it in 16px steps.
   the step is measured, not guessed: clicking every 3px shows the band that follows the link
-  is ~24px tall, so anything under 21 lands in it.
+  is ~24px tall (pane+107..+128), so anything under 21 lands in it. the candidates are tried
+  **nearest that band first** and then outward, which is still a search over the same column
+  — a shifted layout costs a second or third click, not a failure — but the usual run pays
+  one click instead of six, and a click is 0.45s.
 - a popover (the search-scope panel) is a **surface of its own**: its widgets join the
   a11y tree only while it is open, and its x window is *also* named `dictu`, which
   xdotool's case-insensitive `--name '^Dictu$'` matches — so the toplevel is the **lowest**
@@ -127,6 +135,20 @@ what you need to know to add a check:
   that quiet is not negotiable: at 0.05s of it the miss rate is 11 in 20, and each miss
   costs a 3s timeout — cutting the sleeps makes the suite *slower*, which is why they are
   still there in `click_at`.
+- **ask a node you already have, not the tree.** every question over at-spi is d-bus
+  round trips: walking the window is 14ms closed and 25ms with the popover open, finding
+  the check boxes 38ms, finding the status line among every label 24ms — while asking a
+  node you already hold whether it is focused, checked, or what its name is costs
+  0.1–0.3ms. so `Widgets.status_line` remembers its label (gtk keeps the same accessible
+  when the text changes, and a stale one fails the pattern and falls back to the walk),
+  and `toggle_scope` reads the boxes and the focus chain off **one** `scope_state` walk
+  instead of looking them up per poll. that, and dropping `POLL` to 5ms once the
+  predicates were cheap enough to poll that fast, took the suite from 13.5s to 11s.
+- **a search waits on gtk, not on us.** `dictu --search WORD` does `set_text` on a
+  `gtk::SearchEntry`, which debounces `search-changed` by its own 150ms `search-delay` —
+  so every check that waits for a row pays that, ~2.3s across the suite. it is real
+  behaviour a user feels through the global hotkey too, so it is not the harness's to
+  fix; a forwarded search could skip it, which would be an app change.
 - **turn animations off.** the harness writes `gtk-4.0/settings.ini` with
   `gtk-enable-animations=false` into the throwaway config. it is a gtk setting, so nothing
   under test behaves differently, and it is worth about a second of popovers being pretty.

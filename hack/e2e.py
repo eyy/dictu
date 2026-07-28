@@ -70,10 +70,20 @@ APP_NAME = "dictu"
 # window's other labels.
 COUNT_LINE = re.compile(r"^[\d,]+\+? (word|result|dictionar)")
 READY_TIMEOUT = 60.0  # generous: indexing a real collection can take a while.
-POLL = 0.04
+# how long to sleep between polls. small on purpose: the cheap predicates here ask
+# one cached node a question, which costs 0.1–3 ms, so a 40 ms sleep was most of
+# what a wait cost. what stops this from hammering the bus is the predicates
+# themselves — a tree walk is 14–38 ms and paces its own loop — and that the bus is
+# private, so nothing outside the harness is on the other end of it.
+POLL = 0.005
 # how many tabs to spend looking for one check box. the focus chain runs to about a
 # dozen; this is a runaway guard, not a budget.
 TAB_LIMIT = 30
+# where in the definition pane the fixture's link sits, measured: the band that
+# follows it runs from pane+107 to pane+128. `link_click_column` tries the nearest
+# candidate to this first and then works outward, so it is a hint that saves clicks,
+# never a requirement — the whole column is still searched if the layout moves.
+LINK_BAND = 118
 
 VERBOSE = "-v" in sys.argv
 
@@ -391,6 +401,7 @@ class Widgets:
         if not views:
             raise LookupError("no definition pane in the widget tree")
         self.definition = views[0]
+        self._status = None  # see status_line: the label, once we have found it
 
     def row_words(self):
         """the words in the wordlist. a row is a box holding the word and a dim
@@ -429,9 +440,27 @@ class Widgets:
 
     def status_line(self):
         """the dim count line under the wordlist, e.g. "6 words · 1 dictionary"
-        or "1 result" — identified by starting with a number."""
-        for text in self.status_text():
+        or "1 result" — identified by starting with a number.
+
+        the label it lives in is remembered between calls, because more waits poll
+        this than anything else and finding it means walking every label in the
+        window: 24 ms a look against 0.3 ms for asking one node its name. gtk keeps
+        the same accessible when the text changes (measured over four searches), and
+        anything else — a rebuilt label, a dead node — fails the pattern below and
+        falls back to the walk, so a stale cache costs a look, not a wrong answer."""
+        if self._status is not None:
+            try:
+                text = (self._status.get_name() or "").strip()
+                if COUNT_LINE.match(text):
+                    return text
+            except Exception:  # the node went away with the widget
+                pass
+            self._status = None
+
+        for node in by_role(self.app, "label"):
+            text = (node.get_name() or "").strip()
             if COUNT_LINE.match(text):
+                self._status = node
                 return text
         return ""
 
@@ -1037,12 +1066,18 @@ def link_click_column(app_proc, widgets):
     # the step only has to be smaller than the band it is hunting for, and that band
     # was measured rather than guessed: clicking every 3px down the column follows
     # the link from pane+107 to pane+128, so it is ~24px tall — one line of text —
-    # and any step under 21 lands in it. 16 gets there in six clicks where the 8 this
-    # used to step needed eleven, and a click costs 0.45s nothing can shorten.
+    # and any step under 21 lands in it, where the 8 this used to step took eleven
+    # clicks at 0.45s each to walk past.
+    #
+    # and the nearest candidate to that band goes first. it is a search either way,
+    # over exactly the same column, so nothing here depends on the layout holding
+    # still — a shifted band is found on the second or third click instead of the
+    # first, which is what the old top-down order paid on every single run.
     pane = Atspi.Component.get_extents(widgets.definition, Atspi.CoordType.WINDOW)
     x = pane.x + 70
     log(f"clicking down x={x} (pane at {pane.x},{pane.y})")
-    for y in range(pane.y + 30, pane.y + 260, 16):
+    likely = pane.y + LINK_BAND
+    for y in sorted(range(pane.y + 30, pane.y + 260, 16), key=lambda y: abs(y - likely)):
         app_proc.click_at(x, y)
         text = widgets.definition_text()
         if "unit of digital information" in text.lower() and text_of(widgets.search) == "byte":
@@ -1098,9 +1133,29 @@ def is_checked(box):
     return box.get_state_set().contains(Atspi.StateType.CHECKED)
 
 
-def focused_scope_box(app):
-    """the name of whichever scope check box has keyboard focus, or None."""
-    return next((name for name, box in scope_boxes(app).items() if is_focused(box)), None)
+def scope_state(app):
+    """one walk over the window: (check boxes by name, every focusable node).
+
+    both in one pass, and passed around afterwards rather than looked up again:
+    walking the window costs 38 ms with the panel open, while asking a node it
+    already found whether it is focused costs 0.13 ms, and nothing moves while the
+    panel stays up."""
+    boxes, focusables = {}, []
+    for node in descendants(app):
+        states = node.get_state_set()
+        if states.contains(Atspi.StateType.FOCUSABLE):
+            focusables.append(node)
+        if node.get_role_name() == "check box" and node.get_name():
+            boxes[node.get_name()] = node
+    return boxes, focusables
+
+
+def focus_at(focusables):
+    """where in the focus chain the focus is, as an index — enough to tell that Tab
+    moved it, which is the only thing a tab has to be waited on for. every member of
+    the chain counts, including the ones outside the panel: a tab that lands on the
+    definition pane has to be observable too, or it would be waited out in full."""
+    return next((at for at, node in enumerate(focusables) if is_focused(node)), None)
 
 
 def focused_name(app):
@@ -1127,30 +1182,34 @@ def toggle_scope(app_proc, app, dictionary):
 
     Tab cannot miss, and where focus landed is a state to wait for rather than a
     guess to sleep through. focus survives a toggle, so repeated flips of one box
-    tab only once."""
+    tab only once.
+
+    everything here is read off one walk of the window (see `scope_state`), because
+    the walk is 38 ms and each question about what it found is a tenth of a
+    millisecond."""
     if scope_boxes(app).get(dictionary) is None:
         open_scope(app)
+    boxes, focusables = scope_state(app)
+    box = boxes.get(dictionary)
+    if box is None:
+        raise LookupError(f"no {dictionary!r} check box in the scope panel")
 
     # tab until the box we want has focus. the chain is the whole window's, not the
     # popover's — entry, scroll pane, definition pane, then each dictionary's row
     # *and* its check box — so the walk is longer than the panel looks; it cycles,
     # so any starting point reaches any box, and adjacent boxes are two tabs apart.
     for _ in range(TAB_LIMIT):
-        if focused_scope_box(app) == dictionary:
+        if is_focused(box):
             break
-        was_on = focused_name(app)
+        was_at = focus_at(focusables)
         app_proc.press_focused("Tab")
-        wait_for(lambda: focused_name(app) != was_on or None, 3, "focus to move")
+        wait_for(lambda: focus_at(focusables) != was_at or None, 3, "focus to move")
     else:
         raise TimeoutError(f"could not focus {dictionary!r} in the scope panel")
 
-    was = is_checked(scope_boxes(app)[dictionary])
+    was = is_checked(box)
     app_proc.press_focused("space")
-    return wait_for(
-        lambda: is_checked(scope_boxes(app)[dictionary]) != was or None,
-        3,
-        f"the {dictionary!r} check box to flip",
-    )
+    return wait_for(lambda: is_checked(box) != was or None, 3, f"{dictionary!r} to flip")
 
 
 def select_first_row(results):
