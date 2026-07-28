@@ -19,7 +19,7 @@ nothing open right now.
 
 ## next — 2026-07-24 feedback
 
-- **[ ] #56 a search from the hotkey waits 150 ms for nothing.** `--search WORD` — the path
+- **[x] #56 a search from the hotkey waits 150 ms for nothing.** `--search WORD` — the path
   the global hotkey takes — sets the search entry's text, and `gtk::SearchEntry` then
   debounces `search-changed` by its own `search-delay`, 150 ms by default. the debounce is
   there so that typing does not re-search on every keystroke; a word arriving complete from
@@ -27,22 +27,62 @@ nothing open right now.
   has already committed to the word. found while profiling #55, where it is ~2.3 s of the
   suite, but the reason to fix it is the app: press the hotkey and the answer is a sixth of a
   second late for no reason.
-  the shape of the fix is to run the search directly after `set_text` on the forwarded path
-  rather than waiting for the signal — noting that `auto_select` exists *because* of this
-  debounce (`UiInner`, "no moment after `set_text` at which the rows are known to exist
-  yet"), so whatever lands has to keep first-row selection working, and must not search
-  twice when the debounced signal arrives anyway.
-- **[ ] #54 warm start is 1.0 s, and #44 measured 0.39 s.** found by #53 the day it was
-  written, on the same 15 dictionaries and the same 1,941,344 headwords, so it is a real
-  change and not a different bookshelf. the time is all inside `Library::open` — loading
-  the config and scanning the directories together are 0.7 ms — and the suspects are the
-  three merges since #44 recorded that number (`567be0c`): #43's per-lemma rows, #33's
-  `.syn` aliases, which put 1.18M inflected forms into the index where they had been
-  hidden, and #46's refactor. bisecting it needs a scratch `XDG_CACHE_HOME` per commit,
-  since the cache format has moved 3 → 4 → 5 across that span and an old binary would
-  otherwise rebuild the current one. worth the hour: this is the wait before the window is
-  usable, and it is the number a user feels first. now that #53 exists it cannot rot
-  further — but nothing before #53 was watching, which is how it got here.
+  **done:** the forwarded path searches the moment the word arrives and selects the first
+  row itself, so `auto_select` is gone — it existed only because the debounce left no moment
+  at which the rows were known to exist, and now there is one. measured on the e2e suite,
+  interleaved: **12.87 s → 10.2 s**, and the wait for a row after `--search` went from
+  ~150 ms to ~15 ms.
+  the interesting part is what it took, because two fixes that looked right were not.
+  `set_text` is **not one change**: it deletes and then inserts, so it emits `changed`
+  twice, and although `SearchEntry` debounces a search it emits for an *emptied* box
+  immediately. filling the box therefore looks like `search-changed("")` synchronously plus
+  `search-changed("word")` 150 ms later.
+  attempt one armed a guard only when the text actually differed — but delete-then-insert
+  emits even when the result is identical, so the second of the suite's two consecutive
+  `--search aardvark` calls went unguarded. attempt two armed it always, and the
+  synchronous `("")` emission consumed the guard before the real signal arrived, which also
+  meant a whole-library search on every hotkey press. what settled it was tracing the
+  emissions instead of reasoning about them; the fix blocks the handler across `set_text`
+  so neither half is visible, and the guard then only has the debounced signal to swallow.
+  the failure mode is invisible to an assertion made straight after the search — the row is
+  deselected 150 ms later, and `populate_results` leaves the definition pane alone, so the
+  pane still reads correctly while nothing is selected. hence a 35th e2e check that outlasts
+  the debounce and looks again. it is a guard on the new mechanism rather than on the old
+  behaviour: it passes on the pre-#56 code too, where the single debounced search did the
+  selecting. it caught both wrong attempts, which is what it is for.
+- **[x] #54 warm start was 1.0 s, and #44 measured 0.39 s — it is 0.23 s now.** found by
+  #53 the day it was written, on the same 15 dictionaries and the same 1,941,344 headwords.
+  **warm open 1.0 s → 0.23 s and peak RSS 360 MB → 172 MB**, so it ended up well past the
+  number it was measured against, and prefix search came along for the ride: `rex` 12.0 →
+  7.5 µs, `a` 252 → 151 µs, `esse` 183 → 122 µs, presumably for want of 188 MB of heap.
+  no bisect was needed in the end, because profiling the phases answered it outright. the
+  merged index everyone would suspect loads in **0.4 ms**; the config and directory scan are
+  0.7 ms together. all of it was in opening individual dictionaries — and of those, three
+  files were 655 ms of 710:
+  | dictionary | `.dict` | open |
+  | --- | --- | --- |
+  | Lewis and Short 1879 | `.dict.dz`, 21.1 MB | 572 ms |
+  | Bailly 2020 | `.dict.dz`, 8.9 MB | 245 ms |
+  | the other 13 | plain `.dict` | 0.0–0.1 ms |
+  **the two compressed dictionaries were being gunzipped in full, into RAM, on every single
+  launch** — and then kept there for the life of the process, which is where a good part of
+  that 188 MB went. the other thirteen are memory-mapped for nothing, which is why the
+  comment in `build_index` said the payload was unnecessary because "the `.dict` its ranges
+  point into is already a file we can map": true of a plain file, false of a `.dz`, and
+  nobody had looked since.
+  the fix was already in the codebase, one module over: `dsl.rs` unpacks its decoded text
+  into the cached index's **payload** once and maps it after. StarDict now does the same when
+  its `.dict` is compressed — decided by the gzip magic bytes rather than the file name,
+  since a plain `.dict` that is secretly gzip is a case the old loader handled too. a stale
+  cache from before this carries an empty payload, so those entries rebuild on sight rather
+  than the cache version being bumped: only the two `.dz` dictionaries pay, once, 1.5 s.
+  **no fixture covered a compressed `.dict`** — the whole test module writes plain ones — and
+  the warm path is precisely where a missing payload would answer *nothing at all* while
+  everything else looked fine. two tests now cover it, and the compressed one fails with
+  `left: []` if the payload is dropped. the plain one asserts the cache does **not** carry a
+  second copy of a file we can already map, which is the mistake the other direction.
+  the moral for #53's sake: the number rotted for as long as nothing watched it, and what it
+  cost was not subtle — a fifth of a second and 188 MB on every launch, for two files.
 - **[ ] #52 give every dictionary a name a person would write.** the labels are folder names
   and they read like it: `bgl-Latin_English_Inflected`, `Middle_Liddell_stardict`,
   `HEB-HEB a hebrew-hebrew dictionary`, `Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)`,
@@ -799,11 +839,11 @@ these are blocked on a decision or an action only you can take. nothing else wai
   ones — and the "16 s" this item started from was partly load. all 34 checks passed on
   every one of the ten runs behind these figures. the whole `hack/check.sh` loop is 15–24 s.
   what is left is mostly not the harness's: **2.3 s is the scope popover** opening and
-  closing four times (~285 ms a transition, animations already off), and **2.3 s is gtk's
+  closing four times (~285 ms a transition, animations already off), and **2.3 s was gtk's
   own `SearchEntry` debounce** — `--search` sets the text and `search-changed` waits out the
-  150 ms `search-delay`. the second is worth thinking about as an *app* change rather than a
-  test one: a search arriving from the global hotkey has nothing to coalesce, so the debounce
-  is lag a user feels too. see #56.
+  150 ms `search-delay`. the second turned out to be an *app* fault rather than a test one
+  and is now fixed in #56: a search arriving from the global hotkey has nothing to coalesce,
+  so that delay was lag the reader felt too.
 
 ## housekeeping
 

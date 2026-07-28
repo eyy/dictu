@@ -21,14 +21,14 @@ the command line, then by driving the real ui. exit 0 means all of it passed.
 ```
 format        cargo fmt (in place; --ci fails instead of fixing)
 clippy        cargo clippy --all-targets -- -D warnings
-unit tests    cargo test — 108 tests, all in-tree, no external data
+unit tests    cargo test — 110 tests, all in-tree, no external data
 build         cargo build
 smoke: dump   reads sample/ end to end, asserts 7 headwords + real definition text,
               and that a closed pipe kills neither the output nor the process
 cli           hack/cli.py — 21 checks driving `dictu search|define|scope|dump|lookup`
               over sample/. no display, no d-bus, under a second
 speed         hack/speed.py — 9 measurements against a recorded baseline, release build
-ui e2e        hack/e2e.py — 34 checks against the real widget tree, over at-spi, 9–13s
+ui e2e        hack/e2e.py — 35 checks against the real widget tree, over at-spi, 9–13s
 ```
 
 the whole loop runs 15–24 seconds, plus ~7 when the speed stage has to rebuild release.
@@ -144,11 +144,14 @@ what you need to know to add a check:
   and `toggle_scope` reads the boxes and the focus chain off **one** `scope_state` walk
   instead of looking them up per poll. that, and dropping `POLL` to 5ms once the
   predicates were cheap enough to poll that fast, took the suite from 13.5s to 11s.
-- **a search waits on gtk, not on us.** `dictu --search WORD` does `set_text` on a
-  `gtk::SearchEntry`, which debounces `search-changed` by its own 150ms `search-delay` —
-  so every check that waits for a row pays that, ~2.3s across the suite. it is real
-  behaviour a user feels through the global hotkey too, so it is not the harness's to
-  fix; a forwarded search could skip it, which would be an app change.
+- **`set_text` on a `SearchEntry` is not one change, and half of it is not debounced.**
+  it is a delete followed by an insert, so it emits `changed` twice — even when the text
+  it leaves behind is identical — and while `SearchEntry` debounces a search by 150ms, it
+  emits for an *emptied* box immediately. so filling the box from code looks like
+  `search-changed("")` right now plus `search-changed("word")` in 150ms. #56 has the
+  forwarded path block its own handler across the call for that reason; anything else
+  that sets that text needs to know the same. it cost ~2.3s of this suite before #56,
+  and two wrong fixes before the trace showed what was actually being emitted.
 - **turn animations off.** the harness writes `gtk-4.0/settings.ini` with
   `gtk-enable-animations=false` into the throwaway config. it is a gtk setting, so nothing
   under test behaves differently, and it is worth about a second of popovers being pretty.
@@ -394,7 +397,14 @@ the bugs.
    instance the user is looking at. use `pgrep -x dictu`.
 4. relaunch race: kill, wait ~2s, then start.
 5. `.dsl` is read now (roadmap #13); `.bgl` still needs pyglossary first.
-6. stale doc: `src/config.rs`'s module comment says the config sits "next to the
+6. **compressed dictionary data is unpacked into the cache, never at open.** a `.dict.dz`
+   or `.dsl.dz` cannot be mapped and read in place, and gunzipping one per launch is not a
+   detail: two files cost 817 ms and 188 MB of every start until #54. both readers now
+   unpack once into the cached index's **payload** and map it ever after, so a reader whose
+   ranges point at bytes that are not a mappable file wants `Built::payload`, not a `Vec`
+   held for the life of the process. mind the direction too — a plain `.dict` must *not* be
+   copied into the cache, since it is already a file we can map.
+7. stale doc: `src/config.rs`'s module comment says the config sits "next to the
    executable". it doesn't — `Config::path()` is the xdg path above.
 
 ## conventions

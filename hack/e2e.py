@@ -704,6 +704,23 @@ def main():
             is_focused(widgets.search),
             "focus left the search entry",
         )
+        # roadmap #56: that search ran the instant it arrived instead of waiting out
+        # `SearchEntry`'s 150ms debounce — and the debounced signal still comes. if it
+        # is not suppressed it rebuilds the wordlist, which deselects every row, and
+        # the definition above vanishes a sixth of a second after being asserted.
+        #
+        # so this one has to outlast the debounce, which is the rare case where a sleep
+        # is the check: what must be waited for is the absence of an effect, at a
+        # deadline gtk owns. 0.4s is the 150ms delay with room for a loaded machine.
+        time.sleep(0.4)
+        after = widgets.definition_text()
+        r.check(
+            "and the debounce catching up does not undo it",
+            Atspi.Selection.get_n_selected_children(widgets.results) == 1
+            and "nocturnal" in after.lower(),
+            f"selected={Atspi.Selection.get_n_selected_children(widgets.results)}, "
+            f"definition={after[:80]!r}",
+        )
 
         # roadmap #35: a headword filed under several entries in ONE dictionary gets
         # them numbered, instead of run together as a single answer. the dictd
