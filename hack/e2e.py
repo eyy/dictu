@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """end-to-end ui tests for dictu, driven through at-spi (the accessibility bus).
 
+these are the checks that need the widgets: focus, keyboard routing, the scope
+popover, link geometry, the fold strip, and that what the collection answers
+actually reaches the screen. the ones that were only ever about *answers* — is a
+headword findable, does an unaccented query reach an accented entry — live in
+hack/cli.py now, where they cost a subprocess instead of a display (roadmap #46).
+
 gtk4 exports every widget over at-spi automatically, so we can read the real
 widget tree of a running dictu — the search entry's text, the rows in the
 wordlist, the definition pane's contents — and assert on it. no screenshots, no
@@ -56,7 +62,7 @@ APP_NAME = "dictu"
 # window's other labels.
 COUNT_LINE = re.compile(r"^[\d,]+\+? (word|result|dictionar)")
 READY_TIMEOUT = 60.0  # generous: indexing a real collection can take a while.
-POLL = 0.15
+POLL = 0.04
 
 VERBOSE = "-v" in sys.argv
 
@@ -127,6 +133,22 @@ def window_is_active(app):
     return any(
         frame.get_state_set().contains(Atspi.StateType.ACTIVE) for frame in by_role(app, "frame")
     )
+
+
+def wait_for_quiet(predicate, timeout=1.0):
+    """poll until `predicate` holds, and say whether it did — for the places where
+    not holding is an answer rather than an error: a probe click that followed no
+    link, or an assertion that is about to fail and wants to report what it saw.
+    returns as soon as it is true, so the timeout is a ceiling, not a cost."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if predicate():
+                return True
+        except Exception:  # the a11y tree is racy while the ui rebuilds
+            pass
+        time.sleep(POLL)
+    return False
 
 
 def wait_for(predicate, timeout, what):
@@ -265,33 +287,41 @@ class AppUnderTest:
         if wid is None:
             return False
         subprocess.run(["xdotool", "windowfocus", wid], check=False, timeout=10)
-        time.sleep(0.5)
         return True
 
     def press(self, key):
-        """send one keypress to the window under test. `--window` targets it
+        """send one keypress to the window under test. it returns as soon as
+        xdotool does, which is *before* gtk has seen the event — so every caller
+        waits for the effect it expects rather than sleeping on a guess. `--window` targets it
         directly, so a key can never land in one of the user's own windows: if
         focus moved away, gtk drops the event instead."""
-        subprocess.run(["xdotool", "key", "--window", self.window_id(), key], check=False, timeout=10)
-        time.sleep(0.4)
+        subprocess.run(
+            ["xdotool", "key", "--window", self.window_id(), key], check=False, timeout=10
+        )
 
     def type_text(self, text):
         subprocess.run(
             ["xdotool", "type", "--window", self.window_id(), text], check=False, timeout=10
         )
-        time.sleep(0.4)
 
     def click_at(self, x, y):
         """click at coordinates relative to the window under test. the pointer being
-        moved is the private display's, not the user's."""
+        moved is the private display's, not the user's.
+
+        the two sleeps are the only ones left in this file, and they are here
+        because what they wait for cannot be observed: at-spi exposes no pointer
+        position, and no "this surface is now taking input" for a popover that has
+        just mapped. measured, not assumed — without them roughly one scope click
+        in ten is lost, and each loss costs a three-second retry, which took the
+        suite from 17s to 22s. everywhere else the harness waits for the effect."""
         subprocess.run(
             ["xdotool", "mousemove", "--window", self.window_id(), str(x), str(y)],
             check=False,
             timeout=10,
         )
-        time.sleep(0.25)
+        time.sleep(0.1)
         subprocess.run(["xdotool", "click", "1"], check=False, timeout=10)
-        time.sleep(0.5)
+        time.sleep(0.2)
 
     def forward(self, *args):
         """run `dictu <args>`, which the single-instance app forwards to the
@@ -526,25 +556,6 @@ def main():
         )
         r.check("a non-matching prefix clears the wordlist", bool(cleared))
 
-        # every fixture headword must be reachable by its own full name.
-        found = []
-        for word in SAMPLE_WORDS:
-            app_proc.forward("--search", word)
-            try:
-                wait_for(
-                    lambda w=word: w in [x for x in widgets.row_words() if x] or None,
-                    10,
-                    f"row for {word}",
-                )
-                found.append(word)
-            except TimeoutError:
-                log(f"missing row for {word}")
-        r.check(
-            "every fixture headword is findable",
-            found == SAMPLE_WORDS,
-            f"found {found} of {SAMPLE_WORDS}",
-        )
-
         # selecting a row must render that word's definition in the pane.
         app_proc.forward("--search", "aardvark")
         wait_for(lambda: "aardvark" in widgets.row_words() or None, 10, "the aardvark row")
@@ -572,35 +583,6 @@ def main():
             "a headword's script tags its language",
             greek == ["GRC"],
             f"expected ['GRC'], got {greek}",
-        )
-
-        # roadmap #39: the index is keyed by a normalized form, so a query typed
-        # without the accent — and with a plain sigma, which lowercasing alone
-        # never folded — still finds the accented headword.
-        app_proc.forward("--search", "λογοσ")
-        unaccented = wait_for(
-            lambda: [w for w in widgets.row_words() if w] or None,
-            15,
-            "rows for the unaccented greek query",
-        )
-        r.check(
-            "an unaccented query finds an accented headword",
-            unaccented == ["λόγος"],
-            f"expected ['λόγος'], got {unaccented}",
-        )
-
-        # the other half of that rule: an accent the query spells out has to be
-        # honoured, so a grave is not answered with an acute.
-        app_proc.forward("--search", "λὸγος")
-        r.check(
-            "a query's own accent rules out a different one",
-            bool(
-                wait_for(
-                    lambda: not [w for w in widgets.row_words() if w] or None,
-                    15,
-                    "the wordlist to clear",
-                )
-            ),
         )
 
         app_proc.forward("--search", "zeit")
@@ -717,7 +699,17 @@ def main():
         # to take that definition off the screen too. the row's count updates either
         # way, so a pane left behind would contradict the number beside it.
         close_scope(node)
-        app_proc.forward("--search", "byte")  # in both fixtures, and auto-selected
+        app_proc.forward("--search", "byte")  # in both fixtures
+        # wait for the row, then select it deliberately. `--search` does auto-select
+        # its first result (#36), but that is a one-shot flag consumed by whichever
+        # repopulate runs first, so leaning on it here made this check fail about
+        # one run in five. #36 has a check of its own; this one is about the pane.
+        wait_for(
+            lambda: [w for w in widgets.row_words() if w] == ["byte"] or None,
+            10,
+            "the byte row",
+        )
+        select_first_row(widgets.results)
         wait_for(
             lambda: "Sense 1" in widgets.definition_text() or None,
             10,
@@ -880,21 +872,28 @@ def main():
         app_proc.forward("--search", "aardvark")
         wait_for(lambda: "aardvark" in widgets.row_words() or None, 10, "the aardvark row")
         app_proc.focus_window()
+        try:
+            wait_for(lambda: window_is_active(node) or None, 5, "the window to take focus")
+        except TimeoutError:
+            pass
         if not window_is_active(node):
             print("  skip  keyboard checks (could not focus the test window)")
         else:
             app_proc.press("Down")
+            selected = wait_for_quiet(
+                lambda: Atspi.Selection.get_n_selected_children(widgets.results) == 1
+                and "nocturnal" in widgets.definition_text().lower()
+            )
             r.check(
                 "Down from the search box selects the first row",
-                Atspi.Selection.get_n_selected_children(widgets.results) == 1
-                and "nocturnal" in widgets.definition_text().lower(),
+                selected,
                 f"selected={Atspi.Selection.get_n_selected_children(widgets.results)}",
             )
 
             app_proc.press("Up")
             r.check(
                 "Up from the first row returns to the search box",
-                is_focused(widgets.search),
+                wait_for_quiet(lambda: is_focused(widgets.search)),
                 "search entry did not regain focus",
             )
 
@@ -902,6 +901,7 @@ def main():
             # box rather than being swallowed by the list.
             app_proc.press("Down")
             app_proc.type_text("x")
+            wait_for_quiet(lambda: text_of(widgets.search) == "aardvarkx")
             entry_text = text_of(widgets.search)
             r.check(
                 "typing while the wordlist has focus goes to the search box",
