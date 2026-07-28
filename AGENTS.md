@@ -28,10 +28,10 @@ smoke: dump   reads sample/ end to end, asserts 7 headwords + real definition te
 cli           hack/cli.py — 21 checks driving `dictu search|define|scope|dump|lookup`
               over sample/. no display, no d-bus, under a second
 speed         hack/speed.py — 9 measurements against a recorded baseline, release build
-ui e2e        hack/e2e.py — 34 checks against the real widget tree, over at-spi
+ui e2e        hack/e2e.py — 34 checks against the real widget tree, over at-spi, ~16s
 ```
 
-the whole loop is about 35 seconds.
+the whole loop is about 29 seconds.
 
 flags: `--fast` skips the ui and speed stages (no display needed), `--ci` treats formatting
 as a failure rather than fixing it and skips the machine-local speed stage.
@@ -101,20 +101,35 @@ what you need to know to add a check:
   injected keys for an unfocused window, so focus comes first via `xdotool windowfocus`
   (`windowactivate` needs `_NET_ACTIVE_WINDOW`, which nothing sets on a bare display).
 - aiming a click needs care: gtk4 exposes text attributes over at-spi but **no character
-  geometry** (`get_character_extents` fails), so a click can't be aimed at a word
-  directly. the link click test aims at a fixture entry whose definition is one wide,
-  **gap-free** link — a space between two words belongs to neither link, so a click there
-  follows nothing — and searches down a column for it.
+  geometry** (`get_character_extents` fails, `get_offset_at_point` does not even reply, and
+  a label's links are exposed as neither `Hypertext` nor objects with a `link` role), so a
+  click can't be aimed at a word directly. the link click test aims at a fixture entry whose
+  definition is one wide, **gap-free** link — a space between two words belongs to neither
+  link, so a click there follows nothing — and searches down a column for it in 16px steps.
+  the step is measured, not guessed: clicking every 3px shows the band that follows the link
+  is ~24px tall, so anything under 21 lands in it.
 - a popover (the search-scope panel) is a **surface of its own**: its widgets join the
   a11y tree only while it is open, and its x window is *also* named `dictu`, which
   xdotool's case-insensitive `--name '^Dictu$'` matches — so the toplevel is the **lowest**
   matching window id, or keys and clicks get aimed at the popover's origin.
 - a `gtk::MenuButton` shows up as a `push button` wrapping a `toggle button`, and only the
   inner toggle carries the `click` action (`Atspi.Action.do_action`) that opens the popover.
-  a `check box` has **no** action, so it has to be clicked — its `WINDOW` extents are in
-  the toplevel's coordinates even though it lives in another surface. `toggle_scope` clicks,
-  then waits for the state to flip, and reopens the panel if the click missed (a stray click
-  dismisses it).
+  a `check box` has **no** action — measured, exactly zero — so it cannot be driven that way.
+- **drive a check box with the keyboard, not the pointer.** `Atspi.Component.grab_focus` on
+  one fails outright (`atspi_error 1`), but a real `Tab` works, because gtk routes it itself:
+  tab until the box has `FOCUSED`, then press space, then wait for `CHECKED` to flip. every
+  step is a state you can wait for. note the focus chain is the **whole window's** — entry,
+  scroll pane, definition pane, then each dictionary's row *and* its check box — so it is
+  longer than the panel looks, though adjacent boxes are two tabs apart.
+  clicking the box works too and is what `toggle_scope` used to do; it costs **six times**
+  as much (0.673s per flip against 0.111s) because a click needs coordinates, dismisses the
+  popover when it misses, and needs ~0.3s of quiet around it that nothing can be waited on.
+  that quiet is not negotiable: at 0.05s of it the miss rate is 11 in 20, and each miss
+  costs a 3s timeout — cutting the sleeps makes the suite *slower*, which is why they are
+  still there in `click_at`.
+- **turn animations off.** the harness writes `gtk-4.0/settings.ini` with
+  `gtk-enable-animations=false` into the throwaway config. it is a gtk setting, so nothing
+  under test behaves differently, and it is worth about a second of popovers being pretty.
 - don't interleave `dictu --search` with an open popover: the panel is driven by clicks and
   the search box by another process, and the two together are a race not worth chasing.
 - `python3-pyatspi` is **not** installed and isn't needed — `gi.repository.Atspi` works.

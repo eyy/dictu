@@ -71,6 +71,9 @@ APP_NAME = "dictu"
 COUNT_LINE = re.compile(r"^[\d,]+\+? (word|result|dictionar)")
 READY_TIMEOUT = 60.0  # generous: indexing a real collection can take a while.
 POLL = 0.04
+# how many tabs to spend looking for one check box. the focus chain runs to about a
+# dozen; this is a runaway guard, not a budget.
+TAB_LIMIT = 30
 
 VERBOSE = "-v" in sys.argv
 
@@ -233,6 +236,15 @@ class AppUnderTest:
         with open(os.path.join(config_dir, "config.toml"), "w") as fh:
             fh.write(f'dictionary_dirs = ["{SAMPLE_DIR}"]\n')
 
+        # and no animations. every transition the harness waits on — the scope
+        # popover mapping above all — otherwise spends a few hundred ms being
+        # pretty at a suite that has no eyes. a gtk setting rather than anything of
+        # ours, so nothing under test behaves differently for it.
+        gtk_dir = os.path.join(self.tmp, "gtk-4.0")
+        os.makedirs(gtk_dir)
+        with open(os.path.join(gtk_dir, "settings.ini"), "w") as fh:
+            fh.write("[Settings]\ngtk-enable-animations=false\n")
+
         env = dict(os.environ)
         env["XDG_CONFIG_HOME"] = self.tmp
         # and a throwaway cache, so a run neither reads nor leaves an index cache
@@ -307,6 +319,15 @@ class AppUnderTest:
             ["xdotool", "key", "--window", self.window_id(), key], check=False, timeout=10
         )
 
+    def press_focused(self, key):
+        """send one keypress to whatever holds keyboard focus, rather than to the
+        toplevel. the scope panel needs this: a gtk4 popover is an x surface of its
+        own, and `press` above deliberately aims at the *lowest* window id to keep
+        keys out of the popover — so it is the wrong tool for keys meant for one.
+        naming no window is safe here only because the private display has no other
+        client that could catch a stray key."""
+        subprocess.run(["xdotool", "key", key], check=False, timeout=10)
+
     def type_text(self, text):
         subprocess.run(
             ["xdotool", "type", "--window", self.window_id(), text], check=False, timeout=10
@@ -316,12 +337,18 @@ class AppUnderTest:
         """click at coordinates relative to the window under test. the pointer being
         moved is the private display's, not the user's.
 
+        one caller is left — the link check, where clicking *is* the behaviour under
+        test. the scope panel used to come through here too and now uses the
+        keyboard (see `toggle_scope`), which is six times cheaper.
+
         the two sleeps are the only ones left in this file, and they are here
         because what they wait for cannot be observed: at-spi exposes no pointer
-        position, and no "this surface is now taking input" for a popover that has
-        just mapped. measured, not assumed — without them roughly one scope click
-        in ten is lost, and each loss costs a three-second retry, which took the
-        suite from 17s to 22s. everywhere else the harness waits for the effect."""
+        position, and no "this surface is now taking input" for a surface that has
+        just mapped. measured, not assumed: what a click needs is about 0.3s of
+        quiet around it, and it does not much matter which side it goes on —
+        0.1/0.2 lands 20 of 20, while 0.1/0.0 loses 3 and 0.05/0.0 loses 11, each
+        loss costing a three-second timeout. everywhere else the harness waits for
+        the effect."""
         subprocess.run(
             ["xdotool", "mousemove", "--window", self.window_id(), str(x), str(y)],
             check=False,
@@ -671,7 +698,15 @@ def main():
         app_proc.forward("--search", "cf")
         wait_for(lambda: "cf" in widgets.row_words() or None, 10, "the cf row")
         select_first_row(widgets.results)
-        time.sleep(0.8)
+        # an absence cannot be waited for — it is already true before the pane has
+        # rendered anything, so asserting straight away would pass without looking.
+        # wait for the definition instead: the strip is built in the same pass, so
+        # once the text is there, an empty strip is the answer and not a race.
+        wait_for(
+            lambda: "compare" in widgets.definition_text().lower() or None,
+            10,
+            "the cf definition",
+        )
         r.check(
             "no fold strip when one dictionary answers",
             widgets.fold_line() == "",
@@ -999,10 +1034,15 @@ def link_click_column(app_proc, widgets):
     # directly. x is well inside the fixture's one wide link — which is a single
     # gap-free token on purpose, since the space between two words belongs to
     # neither link and a click there follows nothing.
+    # the step only has to be smaller than the band it is hunting for, and that band
+    # was measured rather than guessed: clicking every 3px down the column follows
+    # the link from pane+107 to pane+128, so it is ~24px tall — one line of text —
+    # and any step under 21 lands in it. 16 gets there in six clicks where the 8 this
+    # used to step needed eleven, and a click costs 0.45s nothing can shorten.
     pane = Atspi.Component.get_extents(widgets.definition, Atspi.CoordType.WINDOW)
     x = pane.x + 70
     log(f"clicking down x={x} (pane at {pane.x},{pane.y})")
-    for y in range(pane.y + 30, pane.y + 260, 8):
+    for y in range(pane.y + 30, pane.y + 260, 16):
         app_proc.click_at(x, y)
         text = widgets.definition_text()
         if "unit of digital information" in text.lower() and text_of(widgets.search) == "byte":
@@ -1058,29 +1098,59 @@ def is_checked(box):
     return box.get_state_set().contains(Atspi.StateType.CHECKED)
 
 
+def focused_scope_box(app):
+    """the name of whichever scope check box has keyboard focus, or None."""
+    return next((name for name, box in scope_boxes(app).items() if is_focused(box)), None)
+
+
+def focused_name(app):
+    """whatever holds keyboard focus, as (role, name) — enough to tell that focus
+    moved, which is what Tab has to be waited on for."""
+    return next(((n.get_role_name(), n.get_name()) for n in descendants(app) if is_focused(n)), None)
+
+
 def toggle_scope(app_proc, app, dictionary):
-    """flip one dictionary's check box, and prove it flipped. clicking is the only
-    route — a check box exposes no Action, unlike a button — and at-spi reports its
-    WINDOW extents in the toplevel's coordinates even though the popover is a
-    surface of its own, so they can be aimed at directly. a click that misses
-    dismisses the popover, so a miss reopens it and aims again."""
-    for _ in range(3):
-        box = scope_boxes(app).get(dictionary)
-        if box is None:
-            open_scope(app)
-            continue
-        was = is_checked(box)
-        extents = Atspi.Component.get_extents(box, Atspi.CoordType.WINDOW)
-        app_proc.click_at(extents.x + extents.width // 2, extents.y + extents.height // 2)
-        try:
-            return wait_for(
-                lambda: is_checked(scope_boxes(app)[dictionary]) != was or None,
-                3,
-                f"the {dictionary!r} check box to flip",
-            )
-        except (TimeoutError, KeyError):
-            log(f"the click on {dictionary!r} missed; reopening the panel")
-    raise TimeoutError(f"could not toggle {dictionary!r} in the scope panel")
+    """flip one dictionary's check box, and prove it flipped.
+
+    the keyboard, not the pointer. a check box exposes no Action — measured, gtk4
+    gives it exactly zero, unlike the button that opens the panel — so it has to be
+    driven the way a person drives it, and Tab is the cheap way in: gtk routes the
+    key itself, where `grab_focus()` is a request gtk4 declines outright (atspi_error
+    1, twenty times out of twenty).
+
+    clicking the box's centre also works and is what this used to do. it costs six
+    times as much: aiming needs coordinates, a click that misses dismisses the
+    popover instead of toggling anything, and landing one needs ~0.3s of quiet
+    around it that nothing in at-spi can be waited on — measured 0.673s per flip
+    against 0.111s here, both at 0 misses in 20. and the quiet is not negotiable:
+    at 0.15s the miss rate is 11 in 20, and every miss costs a 3s timeout.
+
+    Tab cannot miss, and where focus landed is a state to wait for rather than a
+    guess to sleep through. focus survives a toggle, so repeated flips of one box
+    tab only once."""
+    if scope_boxes(app).get(dictionary) is None:
+        open_scope(app)
+
+    # tab until the box we want has focus. the chain is the whole window's, not the
+    # popover's — entry, scroll pane, definition pane, then each dictionary's row
+    # *and* its check box — so the walk is longer than the panel looks; it cycles,
+    # so any starting point reaches any box, and adjacent boxes are two tabs apart.
+    for _ in range(TAB_LIMIT):
+        if focused_scope_box(app) == dictionary:
+            break
+        was_on = focused_name(app)
+        app_proc.press_focused("Tab")
+        wait_for(lambda: focused_name(app) != was_on or None, 3, "focus to move")
+    else:
+        raise TimeoutError(f"could not focus {dictionary!r} in the scope panel")
+
+    was = is_checked(scope_boxes(app)[dictionary])
+    app_proc.press_focused("space")
+    return wait_for(
+        lambda: is_checked(scope_boxes(app)[dictionary]) != was or None,
+        3,
+        f"the {dictionary!r} check box to flip",
+    )
 
 
 def select_first_row(results):

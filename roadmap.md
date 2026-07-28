@@ -747,7 +747,28 @@ these are blocked on a decision or an action only you can take. nothing else wai
   every query passed it silently. at a 100 ns floor the same mutation fails 7 checks
   (`consuetudino` 0.4 → 158.7 µs), which is the only reason to believe the rest.
   measured, for the record: prefix search is **0.4–252 µs** (not the 2.4 ms in #42, which
-  is the *fuzzy* scan), peak RSS **360 MB**, and the whole `hack/check.sh` loop 35 s.
+  is the *fuzzy* scan), peak RSS **360 MB**, and the whole `hack/check.sh` loop 29 s.
+- **[x] #55 the ui suite in 16s instead of 24s.** giving the harness its own d-bus session
+  stopped it crashing the desktop and cost ~6s; this gets the 6s back and a little more,
+  with all 34 checks passing across four consecutive runs. profiling first, which said
+  something surprising: **19 clicks were 8.5 of the 24 seconds**, while the 22 `dictu
+  --search` subprocesses everyone would suspect were 1.8s all told.
+  so the clicks went. a scope check box exposes no at-spi Action (measured: zero, unlike
+  the button that opens the panel), which is why it was being clicked — but `Tab` works
+  where `grab_focus()` does not, because gtk routes a real key itself. tab until the box
+  has focus, press space, wait for `CHECKED`: every step observable, **0.111s per flip
+  against 0.673s**, 0 misses in 20 either way.
+  two things I was wrong about on the way, both worth writing down. the pointer sleeps
+  cannot be trimmed — a click needs ~0.3s of quiet and it does not matter which side of it
+  goes where, so `0.1/0.0` loses 3 flips in 20 and `0.05/0.0` loses 11, each miss costing a
+  3s timeout: cutting them makes the suite **slower**. and gtk4 really does expose no
+  character geometry, so the link click cannot be aimed — `get_character_extents` fails,
+  `get_offset_at_point` never replies, and a label's links are neither `Hypertext` nor
+  objects. what it *can* do is step down the column faster: the band that follows the link
+  measures ~24px, so 16px steps find it in six clicks where 8px took eleven, 5.1s → 2.9s.
+  the rest: animations off via `gtk-enable-animations=false` in the throwaway config (~1s),
+  and the last arbitrary sleep in the suite replaced by the wait it stood in for — an
+  absence cannot be waited on, but the definition rendering beside it can.
 
 ## housekeeping
 
