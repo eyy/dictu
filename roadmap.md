@@ -185,7 +185,7 @@ nothing open right now.
      wordlist — which is a new idea for the app (a dictionary that answers but does not
      list) and worth deciding deliberately.
 
-- **[~] #46 architectural review: draw the module boundaries properly.** the first two
+- **[x] #46 architectural review: draw the module boundaries properly.** the first two
   steps are done, by building the cli you suggested — and it worked as an argument-settler:
   every question the window asks about words now goes through one place, because the command
   line had to ask the same ones.
@@ -234,12 +234,26 @@ nothing open right now.
   limit semantics and folding, none of which the at-spi suite ever checked.
   what stays at-spi is what needs widgets: focus, keyboard routing, the scope popover, link
   geometry, the fold strip, and that what the collection answers reaches the screen.
-  **what remains**: `main.rs` still holds window construction, every signal handler and the
-  html-to-widget rendering (three jobs, ~1,200 lines) — a `ui` module with `render` beside
-  it. and the payoff the cli was for: moving the e2e checks that are really about the search
-  off at-spi and onto `--json`, leaving the display harness for the handful that are
-  genuinely about widgets. that is where the ~40 s a run goes, and it is also what has been
-  loading the real collection over and over under memory pressure.
+  **and the window came out last: `main.rs` is 1,255 → 82 lines.** what is left in it is the
+  one thing only it can do — start the application, and hand a forwarded word to the window.
+  `ui` holds the widgets, the state and every signal handler; `render` beside it holds the
+  typography, the `TextTag`s a definition is dressed in and the paragraph structure laid over
+  its body.
+  the seam is narrow, which is the point: **all `main` knows of the window is four names** —
+  the `Ui` handle, `ui::build`, `present`, and `search_from_outside`. that last one is new,
+  and is the part worth having done. `main` used to reach into six of `UiInner`'s private
+  fields to fill the search box for the hotkey — blocking a signal handler, arming a guard,
+  populating, selecting — which is delicate gtk work that had no business being in the
+  process's entry point. it is one call now, and the reasoning lives next to the fields it
+  reasons about. every field stayed private; `render` kept 6 of its 13 names to itself.
+  **what I did not do, deliberately.** the entry called this three jobs and so three modules:
+  construction, handlers, typography. typography separated cleanly, but construction and
+  handlers did not, and pushing them apart would mean marking all fourteen of `UiInner`'s
+  fields `pub(super)` so a sibling module could fill them in — trading the encapsulation this
+  item is *for* against a smaller file. `ui/mod.rs` is 1,019 lines and honest; a carrier
+  struct threading a dozen widgets between two modules to avoid that would be ceremony. if it
+  is split later, the boundary to want is a `build` that returns the widget tree and a `ui`
+  that owns it and reacts — not one that knows the struct's insides.
 
 - **[ ] #45 let the user order the dictionaries, and sort results by that order.**
   the scope panel lists dictionaries in scan order (`config::scan` sorts by label) and the
