@@ -1,0 +1,51 @@
+{
+  "headwords": 1941344,
+  "dictionaries": 15,
+  "open_ms": 1401,
+  "cold": false,
+  "peak_rss_mb": 360,
+  "queries": [
+    {
+      "query": "a",
+      "rows": 500,
+      "best_ns": 252192,
+      "worst_ns": 613109
+    },
+    {
+      "query": "rex",
+      "rows": 27,
+      "best_ns": 11991,
+      "worst_ns": 93702
+    },
+    {
+      "query": "esse",
+      "rows": 473,
+      "best_ns": 183224,
+      "worst_ns": 425662
+    },
+    {
+      "query": "consuetudino",
+      "rows": 0,
+      "best_ns": 410,
+      "worst_ns": 47951
+    },
+    {
+      "query": "λόγος",
+      "rows": 1,
+      "best_ns": 8046,
+      "worst_ns": 91461
+    },
+    {
+      "query": "מלך",
+      "rows": 17,
+      "best_ns": 87460,
+      "worst_ns": 237384
+    },
+    {
+      "query": "כאב",
+      "rows": 18,
+      "best_ns": 66641,
+      "worst_ns": 171542
+    }
+  ]
+}

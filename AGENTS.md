@@ -21,16 +21,45 @@ the command line, then by driving the real ui. exit 0 means all of it passed.
 ```
 format        cargo fmt (in place; --ci fails instead of fixing)
 clippy        cargo clippy --all-targets -- -D warnings
-unit tests    cargo test — 66 tests, all in-tree, no external data
+unit tests    cargo test — 108 tests, all in-tree, no external data
 build         cargo build
 smoke: dump   reads sample/ end to end, asserts 7 headwords + real definition text,
               and that a closed pipe kills neither the output nor the process
-smoke: search the merged-index engine over sample/, asserts a prefix hit
-ui e2e        hack/e2e.py — 29 checks against the real widget tree, over at-spi
+cli           hack/cli.py — 21 checks driving `dictu search|define|scope|dump|lookup`
+              over sample/. no display, no d-bus, under a second
+speed         hack/speed.py — 9 measurements against a recorded baseline, release build
+ui e2e        hack/e2e.py — 34 checks against the real widget tree, over at-spi
 ```
 
-flags: `--fast` skips the ui stage (no display needed), `--ci` treats formatting as a
-failure rather than fixing it.
+the whole loop is about 35 seconds.
+
+flags: `--fast` skips the ui and speed stages (no display needed), `--ci` treats formatting
+as a failure rather than fixing it and skips the machine-local speed stage.
+
+## speed vs a baseline
+
+`hack/speed.py` runs `dictu bench` and fails if anything is more than 1.6× slower than the
+last recorded run (2× for opening, the one measurement that touches a disk). it exists
+because every performance number in this project was measured by hand into a commit
+message, where nothing ever checked it again.
+
+it measures the **real collection**, not `sample/` — thirteen words tell you nothing about
+opening two million headwords. so `hack/speed-baseline.json` describes one machine and one
+shelf of dictionaries, and on any other it skips itself, quietly and successfully, rather
+than reporting a regression that is really just a different bookshelf. re-record after
+adding a dictionary, or after a change whose cost you have decided to accept:
+
+```bash
+hack/speed.py --record     # this run becomes the baseline
+hack/speed.py --cold       # include the index rebuild instead of mapping the cache
+```
+
+two things learned the hard way while building it. **best-of-N or nothing:** a single warm
+open swung between 925 and 3375 ms over an unchanged binary, purely on page cache, so the
+script takes the best of three runs of a bench that itself takes the best of five. and
+**mind the floor:** the first version ignored anything under 2 ms as noise, which sounded
+prudent until you notice every prefix search is 8–400 µs — a mutation that added 160 µs to
+every query passed it silently. the floors are now 100 ns, and the mutation fails 7 checks.
 
 do not build ui changes blind. every visual change gets a screenshot; every behavioural
 change gets an e2e check.

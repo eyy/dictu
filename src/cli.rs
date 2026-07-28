@@ -175,9 +175,12 @@ struct QueryOut {
     query: String,
     rows: usize,
     /// best of several runs: the floor is the honest number for a hot cache, and
-    /// the mean would mostly measure whatever else the machine was doing
-    best_us: u128,
-    worst_us: u128,
+    /// the mean would mostly measure whatever else the machine was doing.
+    /// nanoseconds because a prefix search is 8-400 µs, and rounding those to
+    /// whole microseconds reported one of them as a flat 0 — a number no
+    /// regression check can ever compare against
+    best_ns: u128,
+    worst_ns: u128,
 }
 
 #[derive(Serialize)]
@@ -422,7 +425,7 @@ fn bench(cold: bool, json: bool) -> glib::ExitCode {
             for _ in 0..BENCH_RUNS {
                 let began = std::time::Instant::now();
                 let found = collection.search(query, collection::ROW_LIMIT);
-                let took = began.elapsed().as_micros();
+                let took = began.elapsed().as_nanos();
                 rows = found.len();
                 best = best.min(took);
                 worst = worst.max(took);
@@ -430,8 +433,8 @@ fn bench(cold: bool, json: bool) -> glib::ExitCode {
             QueryOut {
                 query: (*query).to_owned(),
                 rows,
-                best_us: best,
-                worst_us: worst,
+                best_ns: best,
+                worst_ns: worst,
             }
         })
         .collect();
@@ -465,9 +468,9 @@ fn bench(cold: bool, json: bool) -> glib::ExitCode {
         for query in &answer.queries {
             writeln!(
                 out,
-                "  {:>14}  {:>6.1} ms   {} rows",
+                "  {:>14}  {:>8.1} µs   {} rows",
                 query.query,
-                query.best_us as f64 / 1000.0,
+                query.best_ns as f64 / 1000.0,
                 query.rows
             )?;
         }

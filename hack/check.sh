@@ -3,8 +3,8 @@
 # on the command line and through the real ui. one command, one verdict.
 #
 #   hack/check.sh              format in place, then everything
-#   hack/check.sh --ci         fail (don't fix) on formatting, everything else same
-#   hack/check.sh --fast       skip the ui e2e (no display needed)
+#   hack/check.sh --ci         fail (don't fix) on formatting, skip the machine-local speed check
+#   hack/check.sh --fast       skip the ui e2e and the speed check (no display needed)
 #
 # exit 0 = every stage passed. anything else = read the output above it.
 
@@ -103,6 +103,22 @@ cli_checks() {
     python3 hack/cli.py
 }
 
+# is anything slower than the last time we looked (see hack/speed.py).
+#
+# release, not debug: the debug binary is several times slower and the ratio
+# between two debug builds is dominated by whichever inlining the optimizer was
+# not doing, so a real regression hides inside the noise. the rebuild is ~7s.
+#
+# this is the one stage that reads the developer's own collection rather than the
+# fixture, because a 13-word fixture cannot tell you anything about opening two
+# million headwords. that makes it machine-local: speed.py skips itself, quietly
+# and successfully, when there is no baseline or the shelf of dictionaries has
+# changed since one was recorded.
+speed() {
+    cargo build --release || return 1
+    python3 hack/speed.py
+}
+
 # drive the real widget tree over at-spi (see hack/e2e.py).
 e2e() {
     # take a machine-wide lock first. dictu is single-instance over d-bus, and this
@@ -169,6 +185,14 @@ stage "unit tests" unit
 stage "build" build
 stage "smoke: dump the fixture dictionary" smoke_dump
 stage "cli over the fixture" cli_checks
+if [ "$FAST" = 1 ]; then
+    printf '\n\033[33mskipped\033[0m speed vs baseline (--fast)\n'
+elif [ "$CI" = 1 ]; then
+    # the baseline is one machine's dictionaries; elsewhere there is nothing to compare
+    printf '\n\033[33mskipped\033[0m speed vs baseline (--ci)\n'
+else
+    stage "speed vs baseline" speed
+fi
 if [ "$FAST" = 1 ]; then
     printf '\n\033[33mskipped\033[0m ui e2e (--fast)\n'
 elif [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then

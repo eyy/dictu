@@ -19,6 +19,17 @@ nothing open right now.
 
 ## next — 2026-07-24 feedback
 
+- **[ ] #54 warm start is 1.0 s, and #44 measured 0.39 s.** found by #53 the day it was
+  written, on the same 15 dictionaries and the same 1,941,344 headwords, so it is a real
+  change and not a different bookshelf. the time is all inside `Library::open` — loading
+  the config and scanning the directories together are 0.7 ms — and the suspects are the
+  three merges since #44 recorded that number (`567be0c`): #43's per-lemma rows, #33's
+  `.syn` aliases, which put 1.18M inflected forms into the index where they had been
+  hidden, and #46's refactor. bisecting it needs a scratch `XDG_CACHE_HOME` per commit,
+  since the cache format has moved 3 → 4 → 5 across that span and an old binary would
+  otherwise rebuild the current one. worth the hour: this is the wait before the window is
+  usable, and it is the number a user feels first. now that #53 exists it cannot rot
+  further — but nothing before #53 was watching, which is how it got here.
 - **[ ] #52 give every dictionary a name a person would write.** the labels are folder names
   and they read like it: `bgl-Latin_English_Inflected`, `Middle_Liddell_stardict`,
   `HEB-HEB a hebrew-hebrew dictionary`, `Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)`,
@@ -717,6 +728,26 @@ these are blocked on a decision or an action only you can take. nothing else wai
   over at-spi** (`hack/e2e.py`, 8 checks driving the real widget tree), plus
   `hack/shot.sh`, which screenshots the running app unattended via XWayland + xdotool +
   `import`. documented in `AGENTS.md`.
+- **[x] #53 a mechanical check for speed.** every performance number in this file was
+  measured by hand into a commit message, where nothing ever checked it again — and the
+  first thing this check did was find one that had rotted: #44 recorded a **0.39 s** warm
+  start on this exact collection, and it is **~1.0 s** now (`Library::open` alone; loading
+  the config and scanning the directories are 0.7 ms together). see #54.
+  `hack/speed.py` runs `dictu bench --json` and fails a stage when anything is more than
+  1.6× the recorded baseline — 2× for opening, the one measurement that touches a disk.
+  it measures the real collection, not `sample/`: thirteen words say nothing about opening
+  1.9M headwords, so `hack/speed-baseline.json` is one machine's and the check skips itself
+  where it does not apply rather than blaming a different bookshelf.
+  two mistakes worth keeping, both mine, both caught by checking the check. **one run
+  measures nothing:** warm open swung 925–3375 ms over an unchanged binary on page cache
+  alone, so this takes the best of three runs of a bench that itself takes the best of five,
+  which brought the spread to 0.5%. and **the noise floor was hiding the signal:** the
+  first version ignored anything under 2 ms as scheduler noise, which sounds prudent until
+  you notice every prefix search here is 8–400 µs — a planted mutation that added 160 µs to
+  every query passed it silently. at a 100 ns floor the same mutation fails 7 checks
+  (`consuetudino` 0.4 → 158.7 µs), which is the only reason to believe the rest.
+  measured, for the record: prefix search is **0.4–252 µs** (not the 2.4 ms in #42, which
+  is the *fuzzy* scan), peak RSS **360 MB**, and the whole `hack/check.sh` loop 35 s.
 
 ## housekeeping
 
