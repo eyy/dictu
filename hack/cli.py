@@ -187,7 +187,7 @@ def main():
         folded = fixture.json("search", "byte", "--fold-forms")[1]
         r.check(
             "folding leaves a collection with no pointers alone",
-            words_in(plain) == words_in(folded),
+            words_in(plain) == ["byte"] and words_in(folded) == ["byte"],
             f"{words_in(plain)} vs {words_in(folded)}",
         )
 
@@ -238,9 +238,16 @@ def main():
             code == 0 and "headwords: 7" in out,
             f"exit={code}, {out.splitlines()[:2]}",
         )
-        code, _ = fixture.run(
-            "lookup", os.path.join(REPO, "sample", "sample.index"), "notaword"
+        sample = os.path.join(REPO, "sample", "sample.index")
+        code, out = fixture.run("lookup", sample, "aardvark")
+        r.check(
+            "lookup reads a word out of a file",
+            code == 0 and "nocturnal" in out.lower(),
+            f"exit={code}, {out[:60]!r}",
         )
+        # and only then that a miss fails — on its own, that check would pass
+        # against a lookup that failed at everything.
+        code, _ = fixture.run("lookup", sample, "notaword")
         r.check("lookup fails on a word a file does not have", code == 1, f"exit={code}")
 
         # and a mistyped command is an error rather than a window (#46).
