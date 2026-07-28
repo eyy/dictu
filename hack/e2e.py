@@ -23,6 +23,14 @@ click actually lands in whatever wayland window is drawn on top. on a private
 display the app is the only window there, coordinates are exact (no compositor
 shadow margins), and the tests never steal the user's focus or pointer.
 
+**run it through `hack/check.sh`, or under `dbus-run-session`.** run bare, dictu
+registers its accessibility tree on the user's own session bus and this file then
+enumerates every application there, repeatedly, while it waits — gnome-shell 46
+segfaulted twice under that, taking the whole desktop with it. a private bus costs
+nothing and removes the entire class:
+
+    dbus-run-session -- python3 hack/e2e.py [-v]
+
 run it: hack/e2e.py [-v]        -v echoes what the harness sees while it waits
         hack/e2e.py --tree      dump the live widget tree (roles + names) instead
                                 of asserting — how you find the selector to use

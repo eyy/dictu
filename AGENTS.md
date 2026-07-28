@@ -256,6 +256,20 @@ don't mix a symlink with its target between an include and its exclude. point
 
 ## don't take the desktop down with you
 
+**the ui harness must run on its own d-bus session.** `hack/check.sh` does this
+(`dbus-run-session -- python3 hack/e2e.py`); never invoke `hack/e2e.py` bare. dictu
+registers its accessibility tree on whatever session bus it finds, and the harness then
+enumerates every application on that bus at a 0.04 s poll while it waits — on the user's own
+session that means poking gnome-shell's a11y tree thousands of times per run. **gnome-shell
+46 segfaulted twice under exactly that**, core-dumping and taking every window on the desktop
+with it: 2026-07-27 23:42 and 2026-07-28 18:17, both while the suite was being run
+repeatedly. a private bus costs nothing and removes the class.
+
+and prefer `hack/cli.py` while iterating. it asks the same `Collection` through the command
+line, needs no display, no d-bus and no lock, and answers in 0.8 s against the e2e suite's
+16 s — so there is rarely a reason to run the display harness more than once.
+
+
 **this happened.** on 2026-07-26 systemd-oomd killed the user's GoLand (11 processes) and
 then IBus (4 processes) — their input method, so typing stopped working — because the user
 slice crossed 50% memory pressure for 20 seconds. nothing crashed; the machine sacrificed

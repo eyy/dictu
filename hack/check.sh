@@ -129,7 +129,15 @@ e2e() {
         kill "$pid" 2>/dev/null
     done
     sleep 2
-    python3 hack/e2e.py
+    # on a d-bus session of its own. dictu registers its accessibility tree on
+    # whatever session bus it finds, and the harness then enumerates every
+    # application on that bus, at a 0.04s poll, while it waits — which on the
+    # user's own session means poking gnome-shell's a11y tree thousands of times a
+    # run. gnome-shell 46 segfaulted twice under exactly that, taking every window
+    # on the desktop with it (2026-07-27 23:42, 2026-07-28 18:17). inside
+    # `dbus-run-session` the app and the harness share a private bus, at-spi starts
+    # a private registry on it, and gnome-shell is not on the other end of anything.
+    dbus-run-session -- python3 hack/e2e.py
     local status=$?
     exec 9>&-
     return $status
