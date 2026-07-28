@@ -747,7 +747,7 @@ these are blocked on a decision or an action only you can take. nothing else wai
   every query passed it silently. at a 100 ns floor the same mutation fails 7 checks
   (`consuetudino` 0.4 → 158.7 µs), which is the only reason to believe the rest.
   measured, for the record: prefix search is **0.4–252 µs** (not the 2.4 ms in #42, which
-  is the *fuzzy* scan), peak RSS **360 MB**, and the whole `hack/check.sh` loop 29 s.
+  is the *fuzzy* scan), peak RSS **360 MB**, and the whole `hack/check.sh` loop 22 s (29 when the speed stage rebuilds release).
 - **[x] #55 the ui suite in 16s instead of 24s.** giving the harness its own d-bus session
   stopped it crashing the desktop and cost ~6s; this gets the 6s back and a little more,
   with all 34 checks passing across four consecutive runs. profiling first, which said

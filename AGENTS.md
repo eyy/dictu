@@ -31,7 +31,7 @@ speed         hack/speed.py — 9 measurements against a recorded baseline, rele
 ui e2e        hack/e2e.py — 34 checks against the real widget tree, over at-spi, ~16s
 ```
 
-the whole loop is about 29 seconds.
+the whole loop is about 22 seconds, or 29 when the speed stage has to rebuild release.
 
 flags: `--fast` skips the ui and speed stages (no display needed), `--ci` treats formatting
 as a failure rather than fixing it and skips the machine-local speed stage.
