@@ -76,9 +76,15 @@ guard.
 
 | path | what it does |
 | --- | --- |
-| `src/main.rs` | the gtk4/libadwaita ui — sidebar search + wordlist, definition pane, the `TextTag` styling, the off-thread index load — plus argv handling and the `dump`/`lookup`/`search` subcommands |
+| `src/main.rs` | starts the application, and hands a word arriving from the global hotkey to the window. ~80 lines: everything else moved out |
+| `src/ui/mod.rs` | the window — sidebar search + wordlist, definition pane, the scope panel, the off-thread index load, and every signal handler |
+| `src/ui/render.rs` | definition typography: the `TextTag`s a definition is dressed in, and the paragraph structure laid over its body |
+| `src/collection.rs` | the loaded collection plus what the reader has decided about it (which dictionaries are in scope, whether repeated forms are folded), and every query over it. has never heard of gtk, so both front ends ask it the same questions |
+| `src/cli.rs` | the second front end: `search`/`define`/`scope`/`index` ask the collection, `dump`/`lookup` read a file the app was never told about, `--json` on all of them |
+| `src/keys.rs` | key normalization — case folding, and the diacritics a query may leave off versus the ones it means |
+| `src/language.rs` | which language a headword's script belongs to, for the tag on a wordlist row |
 | `src/config.rs` | `config.toml` (xdg), and the recursive directory scan that discovers dictionaries and classifies them by format |
-| `src/library.rs` | the whole collection: opens every dictionary, builds the merged sorted index, answers prefix searches and cross-dictionary lookups |
+| `src/library.rs` | the dictionaries as one index: opens every one, builds the merged sorted order, answers prefix searches and cross-dictionary lookups. `collection` above wraps it with what the reader has decided |
 | `src/dict/mod.rs` | the `Dictionary` trait every format implements, format classification, mmap and gzip plumbing |
 | `src/dict/stardict.rs` | StarDict reader — `.ifo` metadata, big-endian `.idx`, `sametypesequence`, `.syn` synonyms |
 | `src/dict/dictd.rs` | dictd reader — the tab-separated `.index` with dictd's own base-64 offset encoding |
@@ -87,13 +93,17 @@ guard.
 | `src/index_cache.rs` | the on-disk index cache: each dictionary's parsed index and the merged order, mmapped back, keyed by the files they came from |
 | `src/dict/markup.rs` | html → styled text runs. ui-agnostic (no gtk), so it's unit-testable |
 | `sample/` | a small hand-built dictd fixture used by the smoke tests and ui e2e |
-| `hack/` | the feedback loop — `check.sh` (format, lint, test, smoke, e2e), `e2e.py` (drives the real ui over at-spi), `shot.sh` (screenshots it) |
+| `hack/` | the feedback loop — `check.sh` runs all of it; `cli.py` drives the command line over the fixture, `e2e.py` drives the real widget tree over at-spi, `speed.py` compares the app against a recorded run, `shot.sh` screenshots it |
 
 the data layer knows nothing about gtk, and the ui knows nothing about dictionary file
 layouts — `Dictionary` is the whole contract between them: a name, a list of headwords, and
 `lookup(headword) -> Vec<html>` — every entry filed under that word. adding a format means
-implementing that trait and
-teaching `classify` its extension.
+implementing that trait and teaching `classify` its extension.
+
+above that, `collection` is the contract between the *front ends*: the window and the command
+line ask it the same questions and print the same answers, which is what stops them drifting
+into describing one search two ways. `main` in turn knows the window by four names only — the
+handle, `build`, `present`, and `search_from_outside`.
 
 ## configuration
 
