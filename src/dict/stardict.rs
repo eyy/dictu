@@ -36,8 +36,10 @@ pub struct StarDict {
     /// rather than held as a `HashMap` (roadmap #7): building that map was 5.5 s
     /// of a 16 s startup on the biggest dictionary here.
     index: Index,
-    /// the `.dict` bytes, memory-mapped (lazy) rather than read into RAM.
-    data: DictBytes,
+    /// the `.dict` bytes, memory-mapped (lazy) rather than read into RAM — and
+    /// `None` when there was no plain file to map, because the `.dict` was
+    /// dictzip-compressed and its bytes are the cached index's payload instead.
+    data: Option<DictBytes>,
 }
 
 /// the files a StarDict's cached index depends on: the `.ifo` it was described
@@ -70,9 +72,19 @@ impl StarDict {
             .and_then(|s| s.to_str())
             .context("ifo path has no usable stem")?;
 
-        // mmap the plain .dict (lazy) or gunzip a .dict.dz into memory.
-        let data =
-            load_dict_bytes(dir, stem, &["dict", "dict.dz"]).context("locating/reading .dict")?;
+        // the .dict, mapped lazily — nothing of it is read yet.
+        let dict_path =
+            super::sibling(dir, stem, &["dict", "dict.dz"]).context("locating the .dict")?;
+        let raw = super::mmap_file(&dict_path)?;
+        // compressed data cannot be mapped and read in place, and this file used to be
+        // gunzipped into RAM on every single launch: 572 ms and 245 ms for the two .dz
+        // dictionaries here, plus their unpacked size resident for the life of the
+        // process (#54). now it is unpacked once into the cached index's payload and
+        // mapped ever after — the bargain dsl.rs already struck with its decoded text.
+        //
+        // decided by the magic bytes rather than the name, because a plain `.dict` that
+        // is secretly gzip is a case the loader this replaces handled too.
+        let compressed = raw.starts_with(&[0x1f, 0x8b]);
 
         // idxoffsetbits is 32 unless the ifo says 64.
         let offset_bits: u8 = ifo
@@ -96,11 +108,31 @@ impl StarDict {
         let cache_file = cache.map(|dir| index_cache::index_path(dir, ifo_path));
         let cached = cache_file
             .as_deref()
-            .and_then(|path| Index::load(path, &fingerprint));
+            .and_then(|path| Index::load(path, &fingerprint))
+            // an index cached before the payload was carried has an empty one, which
+            // for a compressed `.dict` would leave every definition unreachable. only
+            // those dictionaries rebuild — the rest keep the cache they have, which is
+            // why this is a check here rather than a bump of the cache version.
+            .filter(|index| !compressed || !index.payload().is_empty());
 
         let index = match cached {
             Some(index) => index,
-            None => Self::build_index(dir, stem, offset_bits, cache_file.as_deref(), &fingerprint)?,
+            None => {
+                // the one place the file is decompressed, and only when there was no
+                // cache to read it back from.
+                let unpacked = match compressed {
+                    true => Some(super::gunzip_capped(&raw)?),
+                    false => None,
+                };
+                Self::build_index(
+                    dir,
+                    stem,
+                    offset_bits,
+                    cache_file.as_deref(),
+                    &fingerprint,
+                    unpacked.as_deref().unwrap_or_default(),
+                )?
+            }
         };
 
         Ok(Self {
@@ -108,7 +140,9 @@ impl StarDict {
             headwords: index.headwords(),
             same_type_sequence,
             index,
-            data,
+            // a compressed `.dict` has nothing worth keeping mapped: its bytes are in
+            // the index payload, and `raw` is the packed file.
+            data: (!compressed).then_some(DictBytes::Mapped(raw)),
         })
     }
 
@@ -122,6 +156,7 @@ impl StarDict {
         offset_bits: u8,
         cache_file: Option<&Path>,
         fingerprint: &str,
+        unpacked: &[u8],
     ) -> Result<Index> {
         // the .idx (possibly gzipped as .idx.gz). we read it via the shared
         // loader too, then parse its bytes — no need to hold it after open().
@@ -146,13 +181,16 @@ impl StarDict {
         if let Some(syn) = syn.as_deref() {
             apply_syn(syn, &mut entries, &mut display);
         }
-        // no name or payload: the `.ifo` names the dictionary for a few µs, and
-        // the `.dict` its ranges point into is already a file we can map.
+        // no name: the `.ifo` names the dictionary for a few µs. the payload is empty
+        // for a plain `.dict`, whose ranges point into a file we can map — and is the
+        // unpacked bytes for a dictzip one, which is the whole point of #54: unpack it
+        // here, once, and every later launch maps it back instead.
         let image = index_cache::build(
             index_cache::Built {
                 entries: &entries,
                 display: &display,
                 aliases_from: syn.is_some().then_some(aliases_from),
+                payload: unpacked,
                 ..Default::default()
             },
             fingerprint,
@@ -173,10 +211,19 @@ impl StarDict {
 
     /// pull the definition text out of one entry's data block, according to the
     /// StarDict field-typing rules.
+    /// the bytes the index's ranges point into: the mapped `.dict`, or the cached
+    /// index's payload where the `.dict` was compressed.
+    fn data(&self) -> &[u8] {
+        match &self.data {
+            Some(data) => data.as_slice(),
+            None => self.index.payload(),
+        }
+    }
+
     fn entry_text(&self, offset: u64, size: u32) -> Option<String> {
         let start = usize::try_from(offset).ok()?;
         let end = start.checked_add(size as usize)?;
-        let block = self.data.as_slice().get(start..end)?;
+        let block = self.data().get(start..end)?;
 
         match self.same_type_sequence.as_deref() {
             // one type char -> the whole block is a single field of that type.
@@ -523,6 +570,70 @@ mod tests {
         assert_eq!(warm.lookup("beta"), ["<i>beta</i>"]);
         assert!(warm.lookup("gamma").is_empty());
         assert_eq!(fs::metadata(&cache_file).unwrap().ino(), written);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// the same two-word fixture with a **gzipped** `.dict`, which is what a real
+    /// `.dict.dz` is: dictzip is gzip with a seek table in the header, and we read it
+    /// as plain gzip.
+    fn two_words_gzipped(dir: &Path) -> PathBuf {
+        let ifo = two_words(dir);
+        let plain = fs::read(dir.join("t.dict")).unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, &plain).unwrap();
+        fs::remove_file(dir.join("t.dict")).unwrap();
+        fs::write(dir.join("t.dict.dz"), encoder.finish().unwrap()).unwrap();
+        ifo
+    }
+
+    /// roadmap #54: a compressed `.dict` cannot be mapped and read in place, so its
+    /// bytes are unpacked once into the cached index's payload. that makes the *warm*
+    /// open the interesting one — it reads definitions from a file that is not the
+    /// dictionary — and it is the case no fixture covered while the bug was live.
+    #[test]
+    fn a_compressed_dict_is_unpacked_into_the_cache_and_read_from_there() {
+        let dir = temp_dir("dz");
+        let cache = dir.join("cache");
+        let ifo = two_words_gzipped(&dir);
+
+        let cold = StarDict::open(&ifo, Some(&cache)).unwrap();
+        assert_eq!(cold.lookup("alpha"), ["<b>alpha</b>"]);
+        assert_eq!(cold.lookup("beta"), ["<i>beta</i>"]);
+        // the unpacked bytes are in the cache, not in a mapped `.dict`
+        assert!(cold.data.is_none(), "a .dz has no plain file to map");
+        assert_eq!(cold.index.payload(), b"<b>alpha</b><i>beta</i>");
+
+        // and again off the cache, which is the path that would silently answer
+        // nothing if the payload were not carried.
+        let warm = StarDict::open(&ifo, Some(&cache)).unwrap();
+        assert_eq!(warm.headwords(), cold.headwords());
+        assert_eq!(warm.lookup("alpha"), ["<b>alpha</b>"]);
+        assert_eq!(warm.lookup("beta"), ["<i>beta</i>"]);
+        assert!(warm.lookup("gamma").is_empty());
+
+        // with no cache to write, it still works — just unpacked into memory.
+        let uncached = StarDict::open(&ifo, None).unwrap();
+        assert_eq!(uncached.lookup("alpha"), ["<b>alpha</b>"]);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// the other half of the bargain: a plain `.dict` is mapped, so the cache must
+    /// NOT carry a second copy of it.
+    #[test]
+    fn a_plain_dict_is_mapped_and_not_copied_into_the_cache() {
+        let dir = temp_dir("plain-payload");
+        let cache = dir.join("cache");
+        let ifo = two_words(&dir);
+
+        let dict = StarDict::open(&ifo, Some(&cache)).unwrap();
+        assert!(dict.data.is_some(), "a plain .dict is mapped");
+        assert!(
+            dict.index.payload().is_empty(),
+            "the definitions are in a file we can map; the cache should not hold them too"
+        );
+        assert_eq!(dict.lookup("alpha"), ["<b>alpha</b>"]);
 
         fs::remove_dir_all(&dir).ok();
     }

@@ -21,14 +21,14 @@ the command line, then by driving the real ui. exit 0 means all of it passed.
 ```
 format        cargo fmt (in place; --ci fails instead of fixing)
 clippy        cargo clippy --all-targets -- -D warnings
-unit tests    cargo test — 108 tests, all in-tree, no external data
+unit tests    cargo test — 110 tests, all in-tree, no external data
 build         cargo build
 smoke: dump   reads sample/ end to end, asserts 7 headwords + real definition text,
               and that a closed pipe kills neither the output nor the process
 cli           hack/cli.py — 21 checks driving `dictu search|define|scope|dump|lookup`
               over sample/. no display, no d-bus, under a second
 speed         hack/speed.py — 9 measurements against a recorded baseline, release build
-ui e2e        hack/e2e.py — 34 checks against the real widget tree, over at-spi, 9–13s
+ui e2e        hack/e2e.py — 35 checks against the real widget tree, over at-spi, 9–13s
 ```
 
 the whole loop runs 15–24 seconds, plus ~7 when the speed stage has to rebuild release.
@@ -397,7 +397,14 @@ the bugs.
    instance the user is looking at. use `pgrep -x dictu`.
 4. relaunch race: kill, wait ~2s, then start.
 5. `.dsl` is read now (roadmap #13); `.bgl` still needs pyglossary first.
-6. stale doc: `src/config.rs`'s module comment says the config sits "next to the
+6. **compressed dictionary data is unpacked into the cache, never at open.** a `.dict.dz`
+   or `.dsl.dz` cannot be mapped and read in place, and gunzipping one per launch is not a
+   detail: two files cost 817 ms and 188 MB of every start until #54. both readers now
+   unpack once into the cached index's **payload** and map it ever after, so a reader whose
+   ranges point at bytes that are not a mappable file wants `Built::payload`, not a `Vec`
+   held for the life of the process. mind the direction too — a plain `.dict` must *not* be
+   copied into the cache, since it is already a file we can map.
+7. stale doc: `src/config.rs`'s module comment says the config sits "next to the
    executable". it doesn't — `Config::path()` is the xdg path above.
 
 ## conventions
