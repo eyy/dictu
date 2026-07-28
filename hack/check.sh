@@ -137,7 +137,25 @@ e2e() {
     # on the desktop with it (2026-07-27 23:42, 2026-07-28 18:17). inside
     # `dbus-run-session` the app and the harness share a private bus, at-spi starts
     # a private registry on it, and gnome-shell is not on the other end of anything.
-    dbus-run-session -- python3 hack/e2e.py
+    #
+    # the stub costs 25 seconds if you leave it out. gtk asks the private bus for
+    # org.freedesktop.portal.Desktop (libadwaita reads the colour scheme from it);
+    # xdg-desktop-portal then chains to org.freedesktop.secrets, which is
+    # gnome-keyring and is not in a nested session — so that call sits on d-bus's
+    # 25s default timeout before the portal, and therefore the app, gets on with it.
+    # a service file whose Exec fails turns the timeout into an instant error:
+    # 25.4s to 0.9s before the first check.
+    local stub
+    stub=$(mktemp -d) || return 1
+    mkdir -p "$stub/dbus-1/services"
+    printf '[D-BUS Service]\nName=org.freedesktop.secrets\nExec=/bin/false\n' \
+        > "$stub/dbus-1/services/org.freedesktop.secrets.service"
+
+    XDG_DATA_DIRS="$stub:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" \
+        dbus-run-session -- python3 hack/e2e.py
+    local e2e_status=$?
+    rm -rf "$stub"
+    (exit $e2e_status)
     local status=$?
     exec 9>&-
     return $status
