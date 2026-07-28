@@ -19,6 +19,30 @@ nothing open right now.
 
 ## next — 2026-07-24 feedback
 
+- **[ ] #56 a search from the hotkey waits 150 ms for nothing.** `--search WORD` — the path
+  the global hotkey takes — sets the search entry's text, and `gtk::SearchEntry` then
+  debounces `search-changed` by its own `search-delay`, 150 ms by default. the debounce is
+  there so that typing does not re-search on every keystroke; a word arriving complete from
+  outside has nothing to coalesce, so that 150 ms is pure lag on the one path where the user
+  has already committed to the word. found while profiling #55, where it is ~2.3 s of the
+  suite, but the reason to fix it is the app: press the hotkey and the answer is a sixth of a
+  second late for no reason.
+  the shape of the fix is to run the search directly after `set_text` on the forwarded path
+  rather than waiting for the signal — noting that `auto_select` exists *because* of this
+  debounce (`UiInner`, "no moment after `set_text` at which the rows are known to exist
+  yet"), so whatever lands has to keep first-row selection working, and must not search
+  twice when the debounced signal arrives anyway.
+- **[ ] #54 warm start is 1.0 s, and #44 measured 0.39 s.** found by #53 the day it was
+  written, on the same 15 dictionaries and the same 1,941,344 headwords, so it is a real
+  change and not a different bookshelf. the time is all inside `Library::open` — loading
+  the config and scanning the directories together are 0.7 ms — and the suspects are the
+  three merges since #44 recorded that number (`567be0c`): #43's per-lemma rows, #33's
+  `.syn` aliases, which put 1.18M inflected forms into the index where they had been
+  hidden, and #46's refactor. bisecting it needs a scratch `XDG_CACHE_HOME` per commit,
+  since the cache format has moved 3 → 4 → 5 across that span and an old binary would
+  otherwise rebuild the current one. worth the hour: this is the wait before the window is
+  usable, and it is the number a user feels first. now that #53 exists it cannot rot
+  further — but nothing before #53 was watching, which is how it got here.
 - **[ ] #52 give every dictionary a name a person would write.** the labels are folder names
   and they read like it: `bgl-Latin_English_Inflected`, `Middle_Liddell_stardict`,
   `HEB-HEB a hebrew-hebrew dictionary`, `Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)`,
@@ -717,6 +741,69 @@ these are blocked on a decision or an action only you can take. nothing else wai
   over at-spi** (`hack/e2e.py`, 8 checks driving the real widget tree), plus
   `hack/shot.sh`, which screenshots the running app unattended via XWayland + xdotool +
   `import`. documented in `AGENTS.md`.
+- **[x] #53 a mechanical check for speed.** every performance number in this file was
+  measured by hand into a commit message, where nothing ever checked it again — and the
+  first thing this check did was find one that had rotted: #44 recorded a **0.39 s** warm
+  start on this exact collection, and it is **~1.0 s** now (`Library::open` alone; loading
+  the config and scanning the directories are 0.7 ms together). see #54.
+  `hack/speed.py` runs `dictu bench --json` and fails a stage when anything is more than
+  1.6× the recorded baseline — 2× for opening, the one measurement that touches a disk.
+  it measures the real collection, not `sample/`: thirteen words say nothing about opening
+  1.9M headwords, so `hack/speed-baseline.json` is one machine's and the check skips itself
+  where it does not apply rather than blaming a different bookshelf.
+  two mistakes worth keeping, both mine, both caught by checking the check. **one run
+  measures nothing:** warm open swung 925–3375 ms over an unchanged binary on page cache
+  alone, so this takes the best of three runs of a bench that itself takes the best of five,
+  which brought the spread to 0.5%. and **the noise floor was hiding the signal:** the
+  first version ignored anything under 2 ms as scheduler noise, which sounds prudent until
+  you notice every prefix search here is 8–400 µs — a planted mutation that added 160 µs to
+  every query passed it silently. at a 100 ns floor the same mutation fails 7 checks
+  (`consuetudino` 0.4 → 158.7 µs), which is the only reason to believe the rest.
+  measured, for the record: prefix search is **0.4–252 µs** (not the 2.4 ms in #42, which
+  is the *fuzzy* scan), peak RSS **360 MB**, and the whole `hack/check.sh` loop 22 s (29 when the speed stage rebuilds release).
+- **[x] #55 the ui suite in 16s instead of 24s.** giving the harness its own d-bus session
+  stopped it crashing the desktop and cost ~6s; this gets the 6s back and a little more,
+  with all 34 checks passing across four consecutive runs. profiling first, which said
+  something surprising: **19 clicks were 8.5 of the 24 seconds**, while the 22 `dictu
+  --search` subprocesses everyone would suspect were 1.8s all told.
+  so the clicks went. a scope check box exposes no at-spi Action (measured: zero, unlike
+  the button that opens the panel), which is why it was being clicked — but `Tab` works
+  where `grab_focus()` does not, because gtk routes a real key itself. tab until the box
+  has focus, press space, wait for `CHECKED`: every step observable, **0.111s per flip
+  against 0.673s**, 0 misses in 20 either way.
+  two things I was wrong about on the way, both worth writing down. the pointer sleeps
+  cannot be trimmed — a click needs ~0.3s of quiet and it does not matter which side of it
+  goes where, so `0.1/0.0` loses 3 flips in 20 and `0.05/0.0` loses 11, each miss costing a
+  3s timeout: cutting them makes the suite **slower**. and gtk4 really does expose no
+  character geometry, so the link click cannot be aimed — `get_character_extents` fails,
+  `get_offset_at_point` never replies, and a label's links are neither `Hypertext` nor
+  objects. what it *can* do is step down the column faster: the band that follows the link
+  measures ~24px, so 16px steps find it in six clicks where 8px took eleven, 5.1s → 2.9s.
+  the rest: animations off via `gtk-enable-animations=false` in the throwaway config (~1s),
+  and the last arbitrary sleep in the suite replaced by the wait it stood in for — an
+  absence cannot be waited on, but the definition rendering beside it can.
+  **then a second round, 13.5 s → 8.9 s**, after profiling said the waits were 73 calls at
+  77 ms and the cost was in the *questions*, not the sleeping. every at-spi question is
+  d-bus round trips: walking the window is 14–25 ms, finding the scope boxes 38 ms, finding
+  the status line among every label 24 ms — while asking a node you already hold is
+  0.1–0.3 ms. so the status line remembers its label (gtk keeps the same accessible across a
+  text change, verified over four searches, and a stale one fails the pattern and re-walks),
+  `toggle_scope` reads the boxes *and* the focus chain off one walk, and `POLL` dropped
+  0.04 → 0.005 once the predicates were cheap enough to poll that fast. that was 13.5 → 11 s.
+  the link click gave the rest: the candidates are now tried nearest the measured band
+  first, which is the same search over the same column — a shifted layout costs a second
+  click, not a failure — but the usual run pays one click instead of six. 11 → 8.9 s.
+  and a caution learned twice over: **these numbers move with the machine.** the same
+  unchanged suite measured 8.7 s and 12.9 s a minute apart, and 13.5 s against 16.9 s an hour
+  apart, so every figure above comes from interleaved A/B runs rather than before-and-after
+  ones — and the "16 s" this item started from was partly load. all 34 checks passed on
+  every one of the ten runs behind these figures. the whole `hack/check.sh` loop is 15–24 s.
+  what is left is mostly not the harness's: **2.3 s is the scope popover** opening and
+  closing four times (~285 ms a transition, animations already off), and **2.3 s is gtk's
+  own `SearchEntry` debounce** — `--search` sets the text and `search-changed` waits out the
+  150 ms `search-delay`. the second is worth thinking about as an *app* change rather than a
+  test one: a search arriving from the global hotkey has nothing to coalesce, so the debounce
+  is lag a user feels too. see #56.
 
 ## housekeeping
 

@@ -21,16 +21,50 @@ the command line, then by driving the real ui. exit 0 means all of it passed.
 ```
 format        cargo fmt (in place; --ci fails instead of fixing)
 clippy        cargo clippy --all-targets -- -D warnings
-unit tests    cargo test — 66 tests, all in-tree, no external data
+unit tests    cargo test — 108 tests, all in-tree, no external data
 build         cargo build
 smoke: dump   reads sample/ end to end, asserts 7 headwords + real definition text,
               and that a closed pipe kills neither the output nor the process
-smoke: search the merged-index engine over sample/, asserts a prefix hit
-ui e2e        hack/e2e.py — 29 checks against the real widget tree, over at-spi
+cli           hack/cli.py — 21 checks driving `dictu search|define|scope|dump|lookup`
+              over sample/. no display, no d-bus, under a second
+speed         hack/speed.py — 9 measurements against a recorded baseline, release build
+ui e2e        hack/e2e.py — 34 checks against the real widget tree, over at-spi, 9–13s
 ```
 
-flags: `--fast` skips the ui stage (no display needed), `--ci` treats formatting as a
-failure rather than fixing it.
+the whole loop runs 15–24 seconds, plus ~7 when the speed stage has to rebuild release.
+those are ranges because they have to be: the same unchanged suite measured 8.7s and
+12.9s within one minute, and 13.5s against 16.9s an hour apart, purely on what else the
+machine was doing. that is why `hack/speed.py` compares the app against a recorded run
+of its own rather than against a number written in a doc — and why every figure quoted
+in this file for a *change* comes from interleaved A/B runs, never before-and-after.
+
+flags: `--fast` skips the ui and speed stages (no display needed), `--ci` treats formatting
+as a failure rather than fixing it and skips the machine-local speed stage.
+
+## speed vs a baseline
+
+`hack/speed.py` runs `dictu bench` and fails if anything is more than 1.6× slower than the
+last recorded run (2× for opening, the one measurement that touches a disk). it exists
+because every performance number in this project was measured by hand into a commit
+message, where nothing ever checked it again.
+
+it measures the **real collection**, not `sample/` — thirteen words tell you nothing about
+opening two million headwords. so `hack/speed-baseline.json` describes one machine and one
+shelf of dictionaries, and on any other it skips itself, quietly and successfully, rather
+than reporting a regression that is really just a different bookshelf. re-record after
+adding a dictionary, or after a change whose cost you have decided to accept:
+
+```bash
+hack/speed.py --record     # this run becomes the baseline
+hack/speed.py --cold       # include the index rebuild instead of mapping the cache
+```
+
+two things learned the hard way while building it. **best-of-N or nothing:** a single warm
+open swung between 925 and 3375 ms over an unchanged binary, purely on page cache, so the
+script takes the best of three runs of a bench that itself takes the best of five. and
+**mind the floor:** the first version ignored anything under 2 ms as noise, which sounded
+prudent until you notice every prefix search is 8–400 µs — a mutation that added 160 µs to
+every query passed it silently. the floors are now 100 ns, and the mutation fails 7 checks.
 
 do not build ui changes blind. every visual change gets a screenshot; every behavioural
 change gets an e2e check.
@@ -72,20 +106,52 @@ what you need to know to add a check:
   injected keys for an unfocused window, so focus comes first via `xdotool windowfocus`
   (`windowactivate` needs `_NET_ACTIVE_WINDOW`, which nothing sets on a bare display).
 - aiming a click needs care: gtk4 exposes text attributes over at-spi but **no character
-  geometry** (`get_character_extents` fails), so a click can't be aimed at a word
-  directly. the link click test aims at a fixture entry whose definition is one wide,
-  **gap-free** link — a space between two words belongs to neither link, so a click there
-  follows nothing — and searches down a column for it.
+  geometry** (`get_character_extents` fails, `get_offset_at_point` does not even reply, and
+  a label's links are exposed as neither `Hypertext` nor objects with a `link` role), so a
+  click can't be aimed at a word directly. the link click test aims at a fixture entry whose
+  definition is one wide, **gap-free** link — a space between two words belongs to neither
+  link, so a click there follows nothing — and searches down a column for it in 16px steps.
+  the step is measured, not guessed: clicking every 3px shows the band that follows the link
+  is ~24px tall (pane+107..+128), so anything under 21 lands in it. the candidates are tried
+  **nearest that band first** and then outward, which is still a search over the same column
+  — a shifted layout costs a second or third click, not a failure — but the usual run pays
+  one click instead of six, and a click is 0.45s.
 - a popover (the search-scope panel) is a **surface of its own**: its widgets join the
   a11y tree only while it is open, and its x window is *also* named `dictu`, which
   xdotool's case-insensitive `--name '^Dictu$'` matches — so the toplevel is the **lowest**
   matching window id, or keys and clicks get aimed at the popover's origin.
 - a `gtk::MenuButton` shows up as a `push button` wrapping a `toggle button`, and only the
   inner toggle carries the `click` action (`Atspi.Action.do_action`) that opens the popover.
-  a `check box` has **no** action, so it has to be clicked — its `WINDOW` extents are in
-  the toplevel's coordinates even though it lives in another surface. `toggle_scope` clicks,
-  then waits for the state to flip, and reopens the panel if the click missed (a stray click
-  dismisses it).
+  a `check box` has **no** action — measured, exactly zero — so it cannot be driven that way.
+- **drive a check box with the keyboard, not the pointer.** `Atspi.Component.grab_focus` on
+  one fails outright (`atspi_error 1`), but a real `Tab` works, because gtk routes it itself:
+  tab until the box has `FOCUSED`, then press space, then wait for `CHECKED` to flip. every
+  step is a state you can wait for. note the focus chain is the **whole window's** — entry,
+  scroll pane, definition pane, then each dictionary's row *and* its check box — so it is
+  longer than the panel looks, though adjacent boxes are two tabs apart.
+  clicking the box works too and is what `toggle_scope` used to do; it costs **six times**
+  as much (0.673s per flip against 0.111s) because a click needs coordinates, dismisses the
+  popover when it misses, and needs ~0.3s of quiet around it that nothing can be waited on.
+  that quiet is not negotiable: at 0.05s of it the miss rate is 11 in 20, and each miss
+  costs a 3s timeout — cutting the sleeps makes the suite *slower*, which is why they are
+  still there in `click_at`.
+- **ask a node you already have, not the tree.** every question over at-spi is d-bus
+  round trips: walking the window is 14ms closed and 25ms with the popover open, finding
+  the check boxes 38ms, finding the status line among every label 24ms — while asking a
+  node you already hold whether it is focused, checked, or what its name is costs
+  0.1–0.3ms. so `Widgets.status_line` remembers its label (gtk keeps the same accessible
+  when the text changes, and a stale one fails the pattern and falls back to the walk),
+  and `toggle_scope` reads the boxes and the focus chain off **one** `scope_state` walk
+  instead of looking them up per poll. that, and dropping `POLL` to 5ms once the
+  predicates were cheap enough to poll that fast, took the suite from 13.5s to 11s.
+- **a search waits on gtk, not on us.** `dictu --search WORD` does `set_text` on a
+  `gtk::SearchEntry`, which debounces `search-changed` by its own 150ms `search-delay` —
+  so every check that waits for a row pays that, ~2.3s across the suite. it is real
+  behaviour a user feels through the global hotkey too, so it is not the harness's to
+  fix; a forwarded search could skip it, which would be an app change.
+- **turn animations off.** the harness writes `gtk-4.0/settings.ini` with
+  `gtk-enable-animations=false` into the throwaway config. it is a gtk setting, so nothing
+  under test behaves differently, and it is worth about a second of popovers being pretty.
 - don't interleave `dictu --search` with an open popover: the panel is driven by clicks and
   the search box by another process, and the two together are a race not worth chasing.
 - `python3-pyatspi` is **not** installed and isn't needed — `gi.repository.Atspi` works.
@@ -255,6 +321,20 @@ don't mix a symlink with its target between an include and its exclude. point
 `XDG_CONFIG_HOME` at a temp dir to test against a fixture without touching the real one.
 
 ## don't take the desktop down with you
+
+**the ui harness must run on its own d-bus session.** `hack/check.sh` does this
+(`dbus-run-session -- python3 hack/e2e.py`); never invoke `hack/e2e.py` bare. dictu
+registers its accessibility tree on whatever session bus it finds, and the harness then
+enumerates every application on that bus at a 0.04 s poll while it waits — on the user's own
+session that means poking gnome-shell's a11y tree thousands of times per run. **gnome-shell
+46 segfaulted twice under exactly that**, core-dumping and taking every window on the desktop
+with it: 2026-07-27 23:42 and 2026-07-28 18:17, both while the suite was being run
+repeatedly. a private bus costs nothing and removes the class.
+
+and prefer `hack/cli.py` while iterating. it asks the same `Collection` through the command
+line, needs no display, no d-bus and no lock, and answers in 0.8 s against the e2e suite's
+16 s — so there is rarely a reason to run the display harness more than once.
+
 
 **this happened.** on 2026-07-26 systemd-oomd killed the user's GoLand (11 processes) and
 then IBus (4 processes) — their input method, so typing stopped working — because the user

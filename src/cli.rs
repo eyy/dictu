@@ -61,6 +61,12 @@ enum Command {
     Scope,
     /// what a launch loads, and what it costs
     Index,
+    /// time the things a reader waits for: opening the collection, and searching
+    Bench {
+        /// rebuild the index first, to time the cold path rather than the mapped one
+        #[arg(long)]
+        cold: bool,
+    },
     /// one dictionary file's name, size and first entries
     Dump { file: PathBuf },
     /// one word's entries from one file, in the collection or not
@@ -100,6 +106,7 @@ pub fn run(args: &[String]) -> Option<glib::ExitCode> {
         Command::Define { word } => define(&word, json),
         Command::Scope => scope(json),
         Command::Index => index(json),
+        Command::Bench { cold } => bench(cold, json),
         Command::Dump { file } => dump(&file),
         Command::Lookup { file, word, html } => lookup(&file, &word, html),
     })
@@ -148,6 +155,32 @@ struct ScopeOut<'a> {
 struct DictOut<'a> {
     label: &'a str,
     headwords: usize,
+}
+
+#[derive(Serialize)]
+struct BenchOut {
+    headwords: usize,
+    dictionaries: usize,
+    /// how long `Library::open` took — the wait before the window is usable
+    open_ms: u128,
+    /// whether that was a rebuild or a mapped cache
+    cold: bool,
+    /// the high-water mark of this process, which is what the machine feels
+    peak_rss_mb: u64,
+    queries: Vec<QueryOut>,
+}
+
+#[derive(Serialize)]
+struct QueryOut {
+    query: String,
+    rows: usize,
+    /// best of several runs: the floor is the honest number for a hot cache, and
+    /// the mean would mostly measure whatever else the machine was doing.
+    /// nanoseconds because a prefix search is 8-400 µs, and rounding those to
+    /// whole microseconds reported one of them as a flat 0 — a number no
+    /// regression check can ever compare against
+    best_ns: u128,
+    worst_ns: u128,
 }
 
 #[derive(Serialize)]
@@ -355,6 +388,113 @@ fn index(json: bool) -> glib::ExitCode {
         )?;
         Ok(glib::ExitCode::SUCCESS)
     })
+}
+
+/// the queries a reader actually waits on, chosen to span what makes the search
+/// expensive: a one-character prefix walks the widest run, a long latin one walks
+/// a dense paradigm, and greek and hebrew exercise the mark filtering that latin
+/// never touches.
+const BENCH_QUERIES: [&str; 7] = ["a", "rex", "esse", "consuetudino", "λόγος", "מלך", "כאב"];
+
+/// how many times each query runs. the best of them is reported: a search is
+/// deterministic, so a slower run measures the machine, not the code.
+const BENCH_RUNS: usize = 5;
+
+fn bench(cold: bool, json: bool) -> glib::ExitCode {
+    if cold {
+        // the cold path is the one that reads every dictionary and sorts 1.9M
+        // headwords; it only happens with no cache to map, so make that true.
+        let cache = config::cache_dir();
+        if let Err(e) = std::fs::remove_dir_all(&cache)
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            return complain(&format!("could not clear {}: {e}", cache.display()));
+        }
+    }
+
+    let began = std::time::Instant::now();
+    let collection = opened(false);
+    let open_ms = began.elapsed().as_millis();
+
+    let queries = BENCH_QUERIES
+        .iter()
+        .map(|query| {
+            let mut best = u128::MAX;
+            let mut worst = 0;
+            let mut rows = 0;
+            for _ in 0..BENCH_RUNS {
+                let began = std::time::Instant::now();
+                let found = collection.search(query, collection::ROW_LIMIT);
+                let took = began.elapsed().as_nanos();
+                rows = found.len();
+                best = best.min(took);
+                worst = worst.max(took);
+            }
+            QueryOut {
+                query: (*query).to_owned(),
+                rows,
+                best_ns: best,
+                worst_ns: worst,
+            }
+        })
+        .collect();
+
+    let answer = BenchOut {
+        headwords: collection.total_headwords(),
+        dictionaries: collection.dict_count(),
+        open_ms,
+        cold,
+        peak_rss_mb: peak_rss_mb(),
+        queries,
+    };
+
+    printing(|out| {
+        if json {
+            writeln!(out, "{}", serde_json::to_string_pretty(&answer)?)?;
+            return Ok(glib::ExitCode::SUCCESS);
+        }
+        writeln!(
+            out,
+            "{} · {} — opened {} in {} ms, peak {} MB",
+            collection::quantity(answer.headwords, "word", "words"),
+            collection::quantity(answer.dictionaries, "dictionary", "dictionaries"),
+            match cold {
+                true => "cold",
+                false => "warm",
+            },
+            answer.open_ms,
+            answer.peak_rss_mb
+        )?;
+        for query in &answer.queries {
+            writeln!(
+                out,
+                "  {:>14}  {:>8.1} µs   {} rows",
+                query.query,
+                query.best_ns as f64 / 1000.0,
+                query.rows
+            )?;
+        }
+        Ok(glib::ExitCode::SUCCESS)
+    })
+}
+
+/// this process's high-water memory, from `/proc/self/status`. the number that
+/// matters is the peak, not the current: the cold index build allocates far more
+/// than the mapped steady state, and it is the peak that gets a session killed.
+fn peak_rss_mb() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find(|line| line.starts_with("VmHWM:"))?
+                .split_whitespace()
+                .nth(1)?
+                .parse::<u64>()
+                .ok()
+        })
+        .map(|kb| kb / 1024)
+        .unwrap_or(0)
 }
 
 fn dump(path: &Path) -> glib::ExitCode {

@@ -3,8 +3,8 @@
 # on the command line and through the real ui. one command, one verdict.
 #
 #   hack/check.sh              format in place, then everything
-#   hack/check.sh --ci         fail (don't fix) on formatting, everything else same
-#   hack/check.sh --fast       skip the ui e2e (no display needed)
+#   hack/check.sh --ci         fail (don't fix) on formatting, skip the machine-local speed check
+#   hack/check.sh --fast       skip the ui e2e and the speed check (no display needed)
 #
 # exit 0 = every stage passed. anything else = read the output above it.
 
@@ -103,6 +103,22 @@ cli_checks() {
     python3 hack/cli.py
 }
 
+# is anything slower than the last time we looked (see hack/speed.py).
+#
+# release, not debug: the debug binary is several times slower and the ratio
+# between two debug builds is dominated by whichever inlining the optimizer was
+# not doing, so a real regression hides inside the noise. the rebuild is ~7s.
+#
+# this is the one stage that reads the developer's own collection rather than the
+# fixture, because a 13-word fixture cannot tell you anything about opening two
+# million headwords. that makes it machine-local: speed.py skips itself, quietly
+# and successfully, when there is no baseline or the shelf of dictionaries has
+# changed since one was recorded.
+speed() {
+    cargo build --release || return 1
+    python3 hack/speed.py
+}
+
 # drive the real widget tree over at-spi (see hack/e2e.py).
 e2e() {
     # take a machine-wide lock first. dictu is single-instance over d-bus, and this
@@ -129,7 +145,33 @@ e2e() {
         kill "$pid" 2>/dev/null
     done
     sleep 2
-    python3 hack/e2e.py
+    # on a d-bus session of its own. dictu registers its accessibility tree on
+    # whatever session bus it finds, and the harness then enumerates every
+    # application on that bus, at a 0.04s poll, while it waits — which on the
+    # user's own session means poking gnome-shell's a11y tree thousands of times a
+    # run. gnome-shell 46 segfaulted twice under exactly that, taking every window
+    # on the desktop with it (2026-07-27 23:42, 2026-07-28 18:17). inside
+    # `dbus-run-session` the app and the harness share a private bus, at-spi starts
+    # a private registry on it, and gnome-shell is not on the other end of anything.
+    #
+    # the stub costs 25 seconds if you leave it out. gtk asks the private bus for
+    # org.freedesktop.portal.Desktop (libadwaita reads the colour scheme from it);
+    # xdg-desktop-portal then chains to org.freedesktop.secrets, which is
+    # gnome-keyring and is not in a nested session — so that call sits on d-bus's
+    # 25s default timeout before the portal, and therefore the app, gets on with it.
+    # a service file whose Exec fails turns the timeout into an instant error:
+    # 25.4s to 0.9s before the first check.
+    local stub
+    stub=$(mktemp -d) || return 1
+    mkdir -p "$stub/dbus-1/services"
+    printf '[D-BUS Service]\nName=org.freedesktop.secrets\nExec=/bin/false\n' \
+        > "$stub/dbus-1/services/org.freedesktop.secrets.service"
+
+    XDG_DATA_DIRS="$stub:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" \
+        dbus-run-session -- python3 hack/e2e.py
+    local e2e_status=$?
+    rm -rf "$stub"
+    (exit $e2e_status)
     local status=$?
     exec 9>&-
     return $status
@@ -143,6 +185,14 @@ stage "unit tests" unit
 stage "build" build
 stage "smoke: dump the fixture dictionary" smoke_dump
 stage "cli over the fixture" cli_checks
+if [ "$FAST" = 1 ]; then
+    printf '\n\033[33mskipped\033[0m speed vs baseline (--fast)\n'
+elif [ "$CI" = 1 ]; then
+    # the baseline is one machine's dictionaries; elsewhere there is nothing to compare
+    printf '\n\033[33mskipped\033[0m speed vs baseline (--ci)\n'
+else
+    stage "speed vs baseline" speed
+fi
 if [ "$FAST" = 1 ]; then
     printf '\n\033[33mskipped\033[0m ui e2e (--fast)\n'
 elif [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
