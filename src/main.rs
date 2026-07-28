@@ -5,7 +5,7 @@
 // thread, with an "Indexing…" state). the search box queries every dictionary
 // at once; a result shows its definition from each dict that has it.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
@@ -67,12 +67,46 @@ fn main() -> glib::ExitCode {
             .clone();
 
         // the hotkey passes the selected word here; fill the search box with it and
-        // let the results select their first row, so the definition is on screen by
-        // the time you look at the window.
+        // select the first row, so the definition is on screen by the time you look
+        // at the window.
+        //
+        // and search it *now*. `SearchEntry` debounces `search-changed` by 150 ms so
+        // that typing does not re-search on every keystroke — but a word arriving
+        // whole from outside has nothing to coalesce, so waiting that out was lag on
+        // the one path where the reader has already settled on the word.
         if let Some(word) = parse_flag(&argv, "--search") {
-            ui.auto_select.set(true);
-            ui.search.set_text(&word);
+            // the debounced signal still arrives afterwards, and running the search a
+            // second time would rebuild the wordlist and so deselect the row whose
+            // definition is now on screen — so tell the handler it has already been
+            // dealt with.
+            //
+            // armed for *every* non-empty word, including one the box already holds:
+            // `set_text` is a delete followed by an insert, so it emits `changed` even
+            // when the text it leaves behind is identical. arming only on a real change
+            // looked tidier and left the second of two identical searches unguarded,
+            // which is exactly the sequence the e2e suite runs. the one case that emits
+            // nothing is empty replacing empty, and an empty query has no row to lose.
+            if !word.is_empty() {
+                *ui.forwarded.borrow_mut() = Some(word.clone());
+            }
+            // and block the handler across the change itself, so the delete half of
+            // `set_text` — a `search-changed("")` that arrives synchronously, since an
+            // empty box is not debounced — is neither searched for nor able to consume
+            // the guard meant for the insert's debounced signal. it did exactly that
+            // before, which cost a whole-library search on every hotkey press and left
+            // the real signal free to deselect the row.
+            let handler = ui.search_changed.borrow();
+            if let Some(handler) = handler.as_ref() {
+                ui.search.block_signal(handler);
+                ui.search.set_text(&word);
+                ui.search.unblock_signal(handler);
+            } else {
+                ui.search.set_text(&word);
+            }
+            drop(handler);
             ui.search.grab_focus();
+            ui.populate_results(&word);
+            ui.select_first_row();
         }
         ui.window.present();
         0
@@ -122,11 +156,18 @@ struct UiInner {
     /// than the row, because a row is only the dictionaries that were in scope
     /// when it was built — re-selecting one has to be able to bring it back.
     shown: Rc<RefCell<Option<String>>>,
-    /// set when a search arrived from outside (`--search`, i.e. the global hotkey):
-    /// the next set of results selects its first row on its own. a flag rather than a
-    /// timer because `SearchEntry` debounces `search-changed`, so there is no moment
-    /// after `set_text` at which the rows are known to exist yet.
-    auto_select: Rc<Cell<bool>>,
+    /// the `search-changed` handler, so a forwarded search can fill the box without
+    /// that handler seeing the *halves* of the change: `set_text` is a delete followed
+    /// by an insert, and `SearchEntry` debounces a search but not a clearing — so the
+    /// delete arrives as a synchronous `search-changed("")` for a box the reader never
+    /// emptied. filled in once the handler below is connected.
+    search_changed: RefCell<Option<glib::SignalHandlerId>>,
+    /// the word a search arriving from outside (`--search`, i.e. the global hotkey)
+    /// has *already* been searched for, so the debounced `search-changed` that
+    /// follows `set_text` can be ignored rather than rebuilding the same wordlist and
+    /// deselecting the row it just put on screen. cleared by whichever
+    /// `search-changed` arrives first, so it never outlives the one it is about.
+    forwarded: Rc<RefCell<Option<String>>>,
     /// the collection and what the reader has decided about it: which
     /// dictionaries are in scope, whether repeated forms are folded. every
     /// question about words goes through here — and so does every question the
@@ -204,13 +245,6 @@ impl UiInner {
         // the collection writes the line, so the window and the command line cannot
         // drift into describing one search differently.
         self.status.set_text(&collection.status(rows.len(), more));
-
-        // a search fired from the hotkey should land on an answer, not on a list you
-        // still have to click. consumed either way, so a later hand-typed search
-        // doesn't inherit it.
-        if self.auto_select.replace(false) {
-            self.select_first_row();
-        }
     }
 
     /// select the first row, which is what renders its definition. focus stays where
@@ -891,7 +925,8 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
         sections: Rc::new(RefCell::new(Vec::new())),
         words: Rc::new(RefCell::new(Vec::new())),
         shown: Rc::new(RefCell::new(None)),
-        auto_select: Rc::new(Cell::new(false)),
+        forwarded: Rc::new(RefCell::new(None)),
+        search_changed: RefCell::new(None),
         collection: Rc::new(RefCell::new(Collection::empty())),
         scope_list,
         scope_button,
@@ -905,11 +940,21 @@ fn build_ui(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
     ));
 
     // typing searches the whole index; selecting a result shows its def(s).
-    search.connect_search_changed(glib::clone!(
+    let search_changed = search.connect_search_changed(glib::clone!(
         #[weak]
         ui,
-        move |entry| ui.populate_results(&entry.text())
+        move |entry| {
+            let text = entry.text();
+            // a forwarded search ran the moment it arrived (see `connect_command_line`)
+            // and this is only gtk's debounce catching up on it. taking the guard
+            // either way keeps it from outliving the search it belongs to.
+            if ui.forwarded.borrow_mut().take().as_deref() == Some(text.as_str()) {
+                return;
+            }
+            ui.populate_results(&text)
+        }
     ));
+    *ui.search_changed.borrow_mut() = Some(search_changed);
 
     results.connect_row_selected(glib::clone!(
         #[weak]

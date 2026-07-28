@@ -19,7 +19,7 @@ nothing open right now.
 
 ## next — 2026-07-24 feedback
 
-- **[ ] #56 a search from the hotkey waits 150 ms for nothing.** `--search WORD` — the path
+- **[x] #56 a search from the hotkey waits 150 ms for nothing.** `--search WORD` — the path
   the global hotkey takes — sets the search entry's text, and `gtk::SearchEntry` then
   debounces `search-changed` by its own `search-delay`, 150 ms by default. the debounce is
   there so that typing does not re-search on every keystroke; a word arriving complete from
@@ -27,11 +27,29 @@ nothing open right now.
   has already committed to the word. found while profiling #55, where it is ~2.3 s of the
   suite, but the reason to fix it is the app: press the hotkey and the answer is a sixth of a
   second late for no reason.
-  the shape of the fix is to run the search directly after `set_text` on the forwarded path
-  rather than waiting for the signal — noting that `auto_select` exists *because* of this
-  debounce (`UiInner`, "no moment after `set_text` at which the rows are known to exist
-  yet"), so whatever lands has to keep first-row selection working, and must not search
-  twice when the debounced signal arrives anyway.
+  **done:** the forwarded path searches the moment the word arrives and selects the first
+  row itself, so `auto_select` is gone — it existed only because the debounce left no moment
+  at which the rows were known to exist, and now there is one. measured on the e2e suite,
+  interleaved: **12.87 s → 10.2 s**, and the wait for a row after `--search` went from
+  ~150 ms to ~15 ms.
+  the interesting part is what it took, because two fixes that looked right were not.
+  `set_text` is **not one change**: it deletes and then inserts, so it emits `changed`
+  twice, and although `SearchEntry` debounces a search it emits for an *emptied* box
+  immediately. filling the box therefore looks like `search-changed("")` synchronously plus
+  `search-changed("word")` 150 ms later.
+  attempt one armed a guard only when the text actually differed — but delete-then-insert
+  emits even when the result is identical, so the second of the suite's two consecutive
+  `--search aardvark` calls went unguarded. attempt two armed it always, and the
+  synchronous `("")` emission consumed the guard before the real signal arrived, which also
+  meant a whole-library search on every hotkey press. what settled it was tracing the
+  emissions instead of reasoning about them; the fix blocks the handler across `set_text`
+  so neither half is visible, and the guard then only has the debounced signal to swallow.
+  the failure mode is invisible to an assertion made straight after the search — the row is
+  deselected 150 ms later, and `populate_results` leaves the definition pane alone, so the
+  pane still reads correctly while nothing is selected. hence a 35th e2e check that outlasts
+  the debounce and looks again. it is a guard on the new mechanism rather than on the old
+  behaviour: it passes on the pre-#56 code too, where the single debounced search did the
+  selecting. it caught both wrong attempts, which is what it is for.
 - **[ ] #54 warm start is 1.0 s, and #44 measured 0.39 s.** found by #53 the day it was
   written, on the same 15 dictionaries and the same 1,941,344 headwords, so it is a real
   change and not a different bookshelf. the time is all inside `Library::open` — loading
@@ -799,11 +817,11 @@ these are blocked on a decision or an action only you can take. nothing else wai
   ones — and the "16 s" this item started from was partly load. all 34 checks passed on
   every one of the ten runs behind these figures. the whole `hack/check.sh` loop is 15–24 s.
   what is left is mostly not the harness's: **2.3 s is the scope popover** opening and
-  closing four times (~285 ms a transition, animations already off), and **2.3 s is gtk's
+  closing four times (~285 ms a transition, animations already off), and **2.3 s was gtk's
   own `SearchEntry` debounce** — `--search` sets the text and `search-changed` waits out the
-  150 ms `search-delay`. the second is worth thinking about as an *app* change rather than a
-  test one: a search arriving from the global hotkey has nothing to coalesce, so the debounce
-  is lag a user feels too. see #56.
+  150 ms `search-delay`. the second turned out to be an *app* fault rather than a test one
+  and is now fixed in #56: a search arriving from the global hotkey has nothing to coalesce,
+  so that delay was lag the reader felt too.
 
 ## housekeeping
 
