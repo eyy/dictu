@@ -115,6 +115,12 @@ pub(super) fn structure_body(buffer: &gtk::TextBuffer, from: i32, to: i32) {
 /// or roman-numbered one (Liddell, and most glossaries).
 fn starts_a_sense(line: &str) -> bool {
     let line = line.trim_start();
+    // `¶ 1` is how Gaffiot divides its senses, and markup.rs gives each one a line of
+    // its own (#58); the number after it is not followed by a dot, so the digit rule
+    // below would miss it.
+    if line.starts_with('¶') {
+        return true;
+    }
     if let Some(rest) = line.strip_prefix('-') {
         return rest.starts_with(' ');
     }

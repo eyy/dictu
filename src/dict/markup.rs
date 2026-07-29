@@ -185,6 +185,9 @@ fn is_block(name: &str) -> bool {
     )
 }
 
+/// the paragraph mark some dictionaries divide their senses with, in place of markup.
+const PILCROW: char = '¶';
+
 /// accumulates runs, collapsing whitespace and coalescing block breaks: runs of
 /// whitespace become a single space, block boundaries a single newline, and
 /// leading/trailing space/newlines are dropped.
@@ -198,11 +201,34 @@ struct Builder {
 
 impl Builder {
     fn text(&mut self, s: &str, style: Style, href: Option<&str>) {
-        for ch in s.chars() {
+        let mut chars = s.chars().peekable();
+        while let Some(ch) = chars.next() {
+            // `||` divides a sense into sub-paragraphs in Gaffiot, and unlike a pilcrow
+            // it names nothing — so the break it asks for replaces it rather than
+            // joining it. a lone `|` is left alone; it is a real character elsewhere.
+            if ch == '|' && chars.peek() == Some(&'|') {
+                chars.next();
+                self.newline();
+                continue;
+            }
             if ch.is_whitespace() {
                 if self.any_output {
                     self.space_pending = true;
                 }
+            } else if ch == PILCROW {
+                // a pilcrow *is* a paragraph mark, and some dictionaries mark their
+                // senses with one instead of with any markup at all: Gaffiot's entries
+                // are a single inline run divided by `¶ 1`, `¶ 2`, … exactly as its
+                // print edition divides them (#58). without this the whole article
+                // arrives as one paragraph, because there is no block element in it to
+                // break on and nothing downstream can invent one.
+                //
+                // the character is kept rather than swallowed. it is the notation the
+                // dictionary itself uses, a reader of Gaffiot knows it, and the line it
+                // now begins is what marks the sense out as a sense.
+                self.newline();
+                self.flush_pending();
+                self.push(ch, style, href);
             } else {
                 self.flush_pending();
                 self.push(ch, style, href);
@@ -271,6 +297,26 @@ mod tests {
     fn drops_style_and_script_bodies() {
         let text = to_text("<style>a{color:red}</style><b>hi</b><script>x=1</script> there");
         assert_eq!(text, "hi there");
+    }
+
+    #[test]
+    fn a_pilcrow_starts_a_line_and_stays() {
+        // Gaffiot divides its senses with `¶ N` and no markup at all, so this is the
+        // only thing that can turn one article into paragraphs (#58).
+        assert_eq!(
+            to_text("<b> ¶ 1</b> one <b>¶ 2</b> two"),
+            "¶ 1 one\n¶ 2 two"
+        );
+        // no leading newline from a pilcrow that opens the entry
+        assert_eq!(to_text("<b>¶ 1</b> only"), "¶ 1 only");
+    }
+
+    #[test]
+    fn a_double_pipe_breaks_the_line_and_goes() {
+        // a sub-division marker names nothing, so the break replaces it.
+        assert_eq!(to_text("one || two"), "one\ntwo");
+        // a single pipe is a character like any other.
+        assert_eq!(to_text("a | b"), "a | b");
     }
 
     #[test]
