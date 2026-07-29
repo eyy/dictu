@@ -7,7 +7,10 @@ edition = "2024"
 # everyone imports it as `gtk` (and `libadwaita` as `adw`). this is the standard
 # gtk-rs convention, so our code will match the docs and examples you read.
 [dependencies]
-gtk = { package = "gtk4", version = "0.9", features = ["v4_10"] }
+# v4_12 for `ListItem::set_accessible_label` (#57), which is how a wordlist row is
+# named for a screen reader. it raises no floor: adw 1.4 below already requires gtk
+# 4.12, so this only lets us call what is already there.
+gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
 adw = { package = "libadwaita", version = "0.7", features = ["v1_4"] }
 # anyhow: ergonomic application-level error handling. gives us a single Result
 # type and the `?` operator with human-readable context, instead of hand-rolling

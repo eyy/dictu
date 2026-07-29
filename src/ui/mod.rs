@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
-use gtk::{gdk, glib};
+use gtk::{gdk, gio, glib};
 
 use crate::collection::{self, Collection};
 use crate::library::Library;
@@ -17,6 +17,18 @@ use crate::{config, dict, language, library};
 
 mod render;
 use render::{LINK_PREFIX, entry_tag, head_tag, link_tag, source_tag, structure_body, style_tag};
+
+/// one wordlist entry, as the model holds it: the lemma's row, and the label of every
+/// dictionary that has it — resolved once, when the search ran, because the factory
+/// that renders a row has no business knowing about the collection.
+///
+/// carried in a `BoxedAnyObject` rather than a `GObject` subclass with properties:
+/// nothing here is bound, sorted or filtered by gtk (the order is the library's), so
+/// properties would be sixty lines of boilerplate bought for nothing.
+struct Listed {
+    row: library::Row,
+    names: Vec<String>,
+}
 
 /// the collection, shared across signal handlers. it exists from the start and
 /// answers everything before indexing finishes too — `Collection::is_ready` is
@@ -38,7 +50,12 @@ pub(crate) struct UiInner {
     this: Weak<UiInner>,
     window: adw::ApplicationWindow,
     search: gtk::SearchEntry,
-    results: gtk::ListBox,
+    /// the wordlist, and the two objects behind it. the model is the list — appending
+    /// to it *is* showing a row — and the selection is what says which one is current,
+    /// handing back the item itself rather than a position (#57).
+    results: gtk::ListView,
+    model: gio::ListStore,
+    selection: gtk::SingleSelection,
     definition: gtk::TextView,
     status: gtk::Label,
     /// the strip under the definition naming what is still below the fold.
@@ -47,11 +64,6 @@ pub(crate) struct UiInner {
     /// label, and a mark at the line it starts on. marks (not line numbers) because
     /// they survive the buffer being rewritten under them.
     sections: Rc<RefCell<Vec<(String, gtk::TextMark)>>>,
-    /// the wordlist's rows, in order. a row is a box of labels rather than a
-    /// word, so it is found by index rather than read back out of a widget — and
-    /// it carries the spellings each dictionary files it under, which is what the
-    /// definition pane needs to find the entries again (#43).
-    words: Rc<RefCell<Vec<library::Row>>>,
     /// the word the definition pane is showing, so a scope change can render it
     /// again under the new scope: rebuilding the wordlist deselects every row
     /// without telling anyone which one the pane was left on. the word rather
@@ -140,9 +152,7 @@ impl UiInner {
     /// deduping repeated headwords (a word in several dicts appears once; the
     /// per-dict definitions show when it's selected).
     fn populate_results(&self, query: &str) {
-        while let Some(child) = self.results.first_child() {
-            self.results.remove(&child);
-        }
+        self.model.remove_all();
         let collection = self.collection.borrow();
         if !collection.is_ready() {
             return;
@@ -162,24 +172,24 @@ impl UiInner {
         // dictionary that has it (#12). the grouping is the library's: it is the
         // only place that knows which spellings are the same word.
         let (rows, more) = collection.page(query, collection::ROW_LIMIT);
-        // recorded before the widgets exist: appending a row can select it, and
-        // the handler reads this list by index.
-        self.words.replace(rows.clone());
-
-        for row in &rows {
-            let names: Vec<&str> = row
-                .dicts()
-                .iter()
-                .map(|&dict| collection.dict_label(dict))
-                .collect();
-            self.results.append(&word_row(&row.word, &names));
-            // name the row after its word: the row is a box of two labels now, so
-            // without this a screen reader (and the e2e harness) would read the
-            // language tag as part of the entry.
-            if let Some(listed) = self.results.last_child().and_downcast::<gtk::ListBoxRow>() {
-                listed.update_property(&[gtk::accessible::Property::Label(&row.word)]);
-            }
-        }
+        // the model *is* the wordlist. spliced in one go rather than appended row by
+        // row, so the view hears once that the list changed instead of five hundred
+        // times at the row cap.
+        let listed: Vec<glib::BoxedAnyObject> = rows
+            .iter()
+            .map(|row| {
+                let names = row
+                    .dicts()
+                    .iter()
+                    .map(|&dict| collection.dict_label(dict).to_owned())
+                    .collect();
+                glib::BoxedAnyObject::new(Listed {
+                    row: row.clone(),
+                    names,
+                })
+            })
+            .collect();
+        self.model.splice(0, self.model.n_items(), &listed);
 
         if query.is_empty() {
             self.set_message("Type to search all dictionaries.");
@@ -201,8 +211,8 @@ impl UiInner {
     /// it is, so a search arriving from the hotkey shows an answer without taking the
     /// search box away from you mid-typing.
     fn select_first_row(&self) {
-        if let Some(row) = self.results.row_at_index(0) {
-            self.results.select_row(Some(&row));
+        if self.model.n_items() > 0 {
+            self.selection.set_selected(0);
         }
     }
 
@@ -210,9 +220,7 @@ impl UiInner {
     /// navigation takes over from there.
     fn focus_first_row(&self) {
         self.select_first_row();
-        if let Some(row) = self.results.row_at_index(0) {
-            row.grab_focus();
-        }
+        self.results.grab_focus();
     }
 
     /// send a printable keypress to the search box wherever focus happens to be,
@@ -529,7 +537,32 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
     search.set_placeholder_text(Some("Indexing…"));
     search.set_sensitive(false); // enabled once the index finishes building.
 
-    let results = gtk::ListBox::new();
+    // the wordlist is a model with a view over it, not a pile of widgets we rebuild
+    // (#57): appending to the model is what shows a row, and the selection hands back
+    // the item rather than a position, so there is no index to keep honest.
+    let model = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let selection = gtk::SingleSelection::new(Some(model.clone()));
+    // gtk would otherwise select the first item every time the model changes, which
+    // means a definition appearing on screen after every keystroke. selecting a row is
+    // the reader's business, or the hotkey's (see `search_from_outside`).
+    selection.set_autoselect(false);
+    selection.set_can_unselect(true);
+
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        item.set_child(Some(&row_widgets()));
+    });
+    factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        bind_row(item);
+    });
+
+    let results = gtk::ListView::new(Some(selection.clone()), Some(factory));
     results.add_css_class("navigation-sidebar");
     // named so it can be told apart from the scope panel's list, which is another
     // list of the same role.
@@ -683,11 +716,12 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
         window: window.clone(),
         search: search.clone(),
         results: results.clone(),
+        model: model.clone(),
+        selection: selection.clone(),
         definition,
         status,
         fold: fold.clone(),
         sections: Rc::new(RefCell::new(Vec::new())),
-        words: Rc::new(RefCell::new(Vec::new())),
         shown: Rc::new(RefCell::new(None)),
         forwarded: Rc::new(RefCell::new(None)),
         search_changed: RefCell::new(None),
@@ -720,17 +754,20 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
     ));
     *ui.search_changed.borrow_mut() = Some(search_changed);
 
-    results.connect_row_selected(glib::clone!(
+    // the selection hands back the item itself, so the row whose definition is shown is
+    // the row that was chosen — not whatever now sits at the position it used to hold.
+    selection.connect_selected_item_notify(glib::clone!(
         #[weak]
         ui,
-        move |_list, row| {
-            let Some(row) = row else { return };
-            let selected = usize::try_from(row.index())
-                .ok()
-                .and_then(|index| ui.words.borrow().get(index).cloned());
-            if let Some(selected) = selected {
-                ui.show_row(&selected);
-            }
+        move |selection| {
+            let Some(boxed) = selection
+                .selected_item()
+                .and_downcast::<glib::BoxedAnyObject>()
+            else {
+                return;
+            };
+            let listed = boxed.borrow::<Listed>();
+            ui.show_row(&listed.row);
         }
     ));
 
@@ -807,10 +844,7 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
         #[upgrade_or]
         glib::Propagation::Proceed,
         move |_, key, _, _| {
-            let on_first_row = ui
-                .results
-                .selected_row()
-                .is_some_and(|row| row.index() == 0);
+            let on_first_row = ui.selection.selected() == 0;
             if key != gdk::Key::Up || !on_first_row {
                 return glib::Propagation::Proceed;
             }
@@ -897,58 +931,117 @@ fn toolbar_with(header: &adw::HeaderBar, content: &impl IsA<gtk::Widget>) -> adw
 /// dictionary, when the language can't be named (see `language::tag`) — and, when
 /// more than one dictionary has the word, how many. `dicts` is every dictionary
 /// that has it, in index order; the tooltip names them all.
-fn word_row(word: &str, dicts: &[&str]) -> gtk::Box {
-    let label = gtk::Label::builder()
-        .label(word)
+/// the widgets one wordlist row is made of, built empty. a factory reuses these as
+/// the reader scrolls, so they are made once and filled by `bind_row` — which is why
+/// the tag and the count exist even for a row that wants neither, hidden rather than
+/// absent.
+///
+/// three labels, not two: a long dictionary name ellipsizing away must not be able to
+/// take the count with it, since the count is the part that cannot be guessed by
+/// reading the row.
+fn row_widgets() -> gtk::Box {
+    let word = gtk::Label::builder()
         .xalign(0.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
-        .tooltip_text(word)
         .hexpand(true)
         .build();
+
+    let tag = gtk::Label::builder()
+        .xalign(1.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .max_width_chars(12)
+        .build();
+    tag.add_css_class("dim-label");
+    tag.add_css_class("caption");
+
+    let count = gtk::Label::builder().xalign(1.0).build();
+    count.add_css_class("dim-label");
+    count.add_css_class("caption");
 
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     row.set_margin_top(6);
     row.set_margin_bottom(6);
     row.set_margin_start(12);
     row.set_margin_end(12);
-    row.append(&label);
+    row.append(&word);
+    row.append(&tag);
+    row.append(&count);
+    row
+}
+
+/// fill a recycled row from the item it has been bound to.
+fn bind_row(item: &gtk::ListItem) {
+    let Some(boxed) = item.item().and_downcast::<glib::BoxedAnyObject>() else {
+        return;
+    };
+    let Some(row) = item.child().and_downcast::<gtk::Box>() else {
+        return;
+    };
+    let listed = boxed.borrow::<Listed>();
+    let names: Vec<&str> = listed.names.iter().map(String::as_str).collect();
+
+    let Some(word) = row.first_child().and_downcast::<gtk::Label>() else {
+        return;
+    };
+    word.set_label(&listed.row.word);
+    word.set_tooltip_text(Some(&listed.row.word));
 
     // the language, but only while every dictionary agrees on it: `LAT ·2` over a
     // latin and a french dictionary reads as "two latin dictionaries", and the tag
     // is derived from one dictionary while the count spans them all.
-    let named: Vec<&str> = dicts
+    let named: Vec<&str> = names
         .iter()
-        .map(|&d| language::tag(word, d).unwrap_or(d))
+        .map(|&d| language::tag(&listed.row.word, d).unwrap_or(d))
         .collect();
-    if let Some(first) = named
+    let agreed = named
         .first()
-        .filter(|first| named.iter().all(|n| n == *first))
-    {
-        let tag = gtk::Label::builder()
-            .label(*first)
-            .xalign(1.0)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .tooltip_text(dicts.join("\n"))
-            .max_width_chars(12)
-            .build();
-        tag.add_css_class("dim-label");
-        tag.add_css_class("caption");
-        row.append(&tag);
+        .filter(|first| named.iter().all(|n| n == *first));
+    if let Some(tag) = word.next_sibling().and_downcast::<gtk::Label>() {
+        // cleared, not just hidden: these widgets are recycled, so anything left on
+        // one is the *previous* row's — and a hidden label is still in the a11y tree,
+        // where a stale `·2` would be read out under a word that only one dictionary
+        // has. every branch sets every field.
+        match agreed {
+            Some(agreed) => {
+                tag.set_label(agreed);
+                tag.set_tooltip_text(Some(&names.join("\n")));
+                tag.set_visible(true);
+            }
+            None => {
+                tag.set_label("");
+                tag.set_tooltip_text(None);
+                tag.set_visible(false);
+            }
+        }
+        if let Some(count) = tag.next_sibling().and_downcast::<gtk::Label>() {
+            match names.len() > 1 {
+                true => {
+                    count.set_label(&format!("·{}", names.len()));
+                    count.set_tooltip_text(Some(&names.join("\n")));
+                    count.set_visible(true);
+                }
+                false => {
+                    count.set_label("");
+                    count.set_tooltip_text(None);
+                    count.set_visible(false);
+                }
+            }
+        }
     }
 
-    // its own label, so a long dictionary name ellipsizing away cannot take the
-    // count with it — the count is the part that can't be guessed from the row.
-    if dicts.len() > 1 {
-        let count = gtk::Label::builder()
-            .label(format!("·{}", dicts.len()))
-            .xalign(1.0)
-            .tooltip_text(dicts.join("\n"))
-            .build();
-        count.add_css_class("dim-label");
-        count.add_css_class("caption");
-        row.append(&count);
-    }
-    row
+    // the row reads as its word. gtk would otherwise name it from every label inside,
+    // so a screen reader (and the e2e harness) would hear the language tag and the
+    // count as part of the headword.
+    // the row reads as its word. gtk would otherwise name it from every label inside,
+    // so a screen reader (and the e2e harness) would hear the language tag and the
+    // count as part of the headword — while the labels themselves stay in the tree,
+    // because `·2` is information a reader wants, not decoration.
+    //
+    // through `ListItem`, not by reaching for the `GtkListItemWidget` behind it: setting
+    // an accessible property on gtk's own internal widget kills the process with
+    // `gtk_widget_insert_after: assertion 'GTK_IS_WIDGET (widget)' failed` on the next
+    // row it lays out. this is the api that exists for the job.
+    item.set_accessible_label(&listed.row.word);
 }
 
 #[cfg(test)]
