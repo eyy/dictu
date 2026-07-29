@@ -77,7 +77,7 @@ guard.
 | path | what it does |
 | --- | --- |
 | `src/main.rs` | starts the application, and hands a word arriving from the global hotkey to the window. ~80 lines: everything else moved out |
-| `src/ui/mod.rs` | the window — sidebar search + wordlist, definition pane, the scope panel, the off-thread index load, and every signal handler |
+| `src/ui/mod.rs` | the window — sidebar search + wordlist (a `ListView` over a model), definition pane, the scope panel, the off-thread index load, and every signal handler |
 | `src/ui/render.rs` | definition typography: the `TextTag`s a definition is dressed in, and the paragraph structure laid over its body |
 | `src/collection.rs` | the loaded collection plus what the reader has decided about it (which dictionaries are in scope, whether repeated forms are folded), and every query over it. has never heard of gtk, so both front ends ask it the same questions |
 | `src/cli.rs` | the second front end: `search`/`define`/`scope`/`index` ask the collection, `dump`/`lookup` read a file the app was never told about, `--json` on all of them |

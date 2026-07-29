@@ -28,7 +28,7 @@ smoke: dump   reads sample/ end to end, asserts 7 headwords + real definition te
 cli           hack/cli.py — 21 checks driving `dictu search|define|scope|dump|lookup`
               over sample/. no display, no d-bus, under a second
 speed         hack/speed.py — 9 measurements against a recorded baseline, release build
-ui e2e        hack/e2e.py — 35 checks against the real widget tree, over at-spi, 9–13s
+ui e2e        hack/e2e.py — 36 checks against the real widget tree, over at-spi, 9–13s
 ```
 
 the whole loop runs 15–24 seconds, plus ~7 when the speed stage has to rebuild release.
@@ -116,6 +116,14 @@ what you need to know to add a check:
   **nearest that band first** and then outward, which is still a search over the same column
   — a shifted layout costs a second or third click, not a failure — but the usual run pays
   one click instead of six, and a click is 0.45s.
+- **the wordlist is a `ListView` over a model** (#57), so a row is a recycled widget filled
+  from an item, not a widget built per word. two things follow. **never set accessible
+  properties on the `GtkListItemWidget`** behind a `ListItem` — reachable as the row child's
+  `parent()`, and doing it kills the process with `gtk_widget_insert_after: assertion
+  'GTK_IS_WIDGET (widget)' failed` the next time gtk lays out a row. use
+  `ListItem::set_accessible_label`. and **every bind branch must set every field**: hiding a
+  label without clearing its text leaves the previous row's value on a recycled widget, where
+  it is still in the a11y tree.
 - a popover (the search-scope panel) is a **surface of its own**: its widgets join the
   a11y tree only while it is open, and its x window is *also* named `dictu`, which
   xdotool's case-insensitive `--name '^Dictu$'` matches — so the toplevel is the **lowest**

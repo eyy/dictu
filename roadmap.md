@@ -83,7 +83,7 @@ nothing open right now.
   second copy of a file we can already map, which is the mistake the other direction.
   the moral for #53's sake: the number rotted for as long as nothing watched it, and what it
   cost was not subtle — a fifth of a second and 188 MB on every launch, for two files.
-- **[ ] #57 the wordlist should be a model, not a list of widgets we rebuild.** asked whether
+- **[x] #57 the wordlist is a model, not a list of widgets we rebuild.** asked whether
   the ui could be more declarative; of five candidates this is the one worth doing, and it is
   worth doing for correctness rather than for brevity.
   `populate_results` removes every child, builds a `gtk::Box` per row, appends it, then patches
@@ -122,6 +122,44 @@ nothing open right now.
   dependency — a different question from adopting `serde_json`.
   note the irony for whoever picks this up: both of the seriously declarative options require
   *adding* `GObject` boilerplate. declarative here does not mean shorter.
+  **done.** `gtk::ListView` over a `gio::ListStore` of `BoxedAnyObject`, a
+  `SignalListItemFactory` that builds a row once and fills it per item, and the selection
+  handing back the item. `row_at_index`, `selected_row` and the shadow `Vec` are all gone —
+  nothing in the module reaches a row by position any more.
+  **the prediction about the harness was wrong, and pleasantly so: it needed no changes.** the
+  a11y tree came out the same shape a `ListBox` gave — `list item` named by the word, its
+  labels readable inside — and at-spi's `Selection` interface works on a `ListView` too, so
+  `row_words`, `row_tags` and `select_child` all still mean what they meant. 35 checks passed
+  untouched; there are 36 now.
+  **it does crash the process if you name the row the obvious way.** the old code set the
+  row's accessible label with `update_property` on the `ListBoxRow`; the equivalent here is
+  the `GtkListItemWidget` *behind* the `ListItem`, reachable as the child's parent — and
+  setting an accessible property on gtk's own internal widget kills the app with
+  `gtk_widget_insert_after: assertion 'GTK_IS_WIDGET (widget)' failed` the moment it lays out
+  another row. it survived launch and died on the first search, which is what made it look
+  like a factory bug; bisecting the factory down to a single bare label found it.
+  `ListItem::set_accessible_label` is the api for the job. it wants gtk **4.12**, and that
+  bump costs nothing: `adw 1.4`, already required, requires 4.12 itself — the floor was
+  always there, only unnamed.
+  a dead end worth recording: marking the tag and count labels `AccessibleRole::Presentation`
+  also gives the row a clean name, and it *worked* — but it drops them out of the a11y tree
+  entirely, which silences the language tag and the `·2` for a screen reader. that count is
+  the whole point of #12; it is information, not decoration. rejected.
+  **`set_autoselect(false)` is load-bearing.** a `SingleSelection` otherwise selects the first
+  item every time the model changes — so a definition would appear after every keystroke, and
+  choose a word for you. one line, and nothing in the suite would have noticed it going, so
+  there is now a check that a *typed* search picks no row and leaves the hint in the pane. it
+  pairs with #36's check that a *forwarded* search does select. removing the line fails it
+  with `selected=1` and a definition in the pane.
+  and the invariant a recycling factory needs, which the old code never had to think about:
+  **every branch sets every field.** hiding the count without clearing it leaves the previous
+  row's `·2` on a recycled widget — still in the a11y tree, under a word only one dictionary
+  has. the fixture is too small to have reused a row and caught that; it came from reading the
+  code rather than from a failure.
+  cost, since the entry guessed: **not line-neutral** — `ui/mod.rs` 1,019 → 1,112. the setup
+  and bind halves each spell out the whole row, and clearing every field in every branch is
+  more code than appending only the labels a row wanted. worth it for a wordlist that cannot
+  desync from what it is showing.
 - **[ ] #52 give every dictionary a name a person would write.** the labels are folder names
   and they read like it: `bgl-Latin_English_Inflected`, `Middle_Liddell_stardict`,
   `HEB-HEB a hebrew-hebrew dictionary`, `Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)`,

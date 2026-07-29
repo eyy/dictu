@@ -684,6 +684,28 @@ def main():
             f"expected ['sample'], got {alone}",
         )
 
+        # roadmap #57: a search the reader *types* selects nothing. the wordlist is a
+        # model now, and gtk's `SingleSelection` selects the first item every time that
+        # model changes unless told not to — which would put a definition on screen
+        # after every keystroke, and choose one for you. `set_autoselect(false)` is the
+        # single line that stops it, and nothing else here would notice if it went.
+        #
+        # the pane is asserted too, because it is the visible half of the mistake: an
+        # auto-selection replaces this hint with a definition.
+        app_proc.forward("--search", "")  # clear the box, and focus it
+        wait_for(lambda: not [w for w in widgets.row_words() if w] or None, 10, "an empty list")
+        app_proc.type_text("byte")
+        wait_for(lambda: "byte" in widgets.row_words() or None, 10, "the typed byte row")
+        # an absence, so the same rule as the debounce check above: leave it a beat in
+        # which it could have gone wrong rather than asserting on the same instant.
+        time.sleep(0.3)
+        typed = Atspi.Selection.get_n_selected_children(widgets.results)
+        r.check(
+            "a typed search picks no row for you",
+            typed == 0 and "Type to search" in widgets.definition_text(),
+            f"selected={typed}, pane={widgets.definition_text()[:60]!r}",
+        )
+
         # roadmap #36: a search arriving from outside (the global hotkey's
         # `--search`) selects its first result by itself, so the window shows a
         # definition rather than a list to click. focus must stay in the search box.
