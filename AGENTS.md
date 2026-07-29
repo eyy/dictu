@@ -28,7 +28,7 @@ smoke: dump   reads sample/ end to end, asserts 7 headwords + real definition te
 cli           hack/cli.py — 21 checks driving `dictu search|define|scope|dump|lookup`
               over sample/. no display, no d-bus, under a second
 speed         hack/speed.py — 9 measurements against a recorded baseline, release build
-ui e2e        hack/e2e.py — 36 checks against the real widget tree, over at-spi, 9–13s
+ui e2e        hack/e2e.py — 37 checks against the real widget tree, over at-spi, 9–13s
 ```
 
 the whole loop runs 15–24 seconds, plus ~7 when the speed stage has to rebuild release.
@@ -124,6 +124,16 @@ what you need to know to add a check:
   `ListItem::set_accessible_label`. and **every bind branch must set every field**: hiding a
   label without clearing its text leaves the previous row's value on a recycled widget, where
   it is still in the a11y tree.
+- **a popover asks for its natural height, and gets nothing if that exceeds the screen.**
+  the scope panel's dictionary list went unscrolled for a long time: fine with the
+  fixture's two dictionaries, and on the real fifteen gtk mapped nothing at all, so the
+  button silently did nothing (#61). anything in a popover that grows with the collection
+  belongs in a `ScrolledWindow` with `max_content_height`. **and note what this says about
+  the fixture**: 36 checks passed against a panel that could not open.
+- **the accessible description is not the tooltip.** gtk4 does not derive one from the
+  other, so an empty `description` over at-spi says nothing about whether a tooltip
+  appears — the window controls report theirs because gtk sets those explicitly. to check a
+  tooltip, hover it on a private display and take a picture.
 - a popover (the search-scope panel) is a **surface of its own**: its widgets join the
   a11y tree only while it is open, and its x window is *also* named `dictu`, which
   xdotool's case-insensitive `--name '^Dictu$'` matches — so the toplevel is the **lowest**

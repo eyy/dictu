@@ -83,6 +83,83 @@ nothing open right now.
   second copy of a file we can already map, which is the mistake the other direction.
   the moral for #53's sake: the number rotted for as long as nothing watched it, and what it
   cost was not subtle — a fifth of a second and 188 MB on every launch, for two files.
+- **[x] #61 the search-scope button did nothing, and looked like it meant nothing.**
+  reported while testing: "there's a menu button at the top that does nothing at all",
+  then "it should have a tooltip; i had no idea what it should do".
+  **it did nothing because the panel could not be shown.** a popover asks for its natural
+  height, and the dictionary list was appended straight into it with no scroller — fifteen
+  rows of title-plus-subtitle ask for more than a screen, and at that point gtk maps nothing
+  at all. clicking the button did exactly nothing, silently. the list now sits in a
+  `ScrolledWindow` capped at 420px, with the options row left outside it so it cannot scroll
+  away; the panel opens with all 15 dictionaries (16 check boxes).
+  **the tooltip was there all along.** two diagnoses of mine were wrong before a screenshot
+  settled it: the accessible *description* is empty on the button (gtk does not derive one
+  from a tooltip — the Minimize/Maximize/Close descriptions come from gtk setting them
+  explicitly), so that was no proxy; and setting the tooltip on the `MenuButton`'s inner
+  toggle changed nothing, because the outer one already worked. hovering it on a private
+  display and taking a picture shows "Search scope" rendered under the button. what made the
+  button feel meaningless was that pressing it did nothing — a tooltip on a control that
+  appears broken is not read as an explanation.
+  **the fixture could not have caught this**, which is the lesson worth keeping: two
+  dictionaries make a small popover, so all 36 e2e checks passed against a panel that could
+  not open on the real collection. the 37th checks the structure that prevents it — the
+  dictionary list has a scroll-pane ancestor — since the fixture can never reproduce the
+  height itself.
+- **[ ] #62 the ui harness polices the whole machine, and should ask the bus.**
+  `hack/e2e.py` refuses to run when *any* dictu process is alive, and `hack/check.sh` kills
+  them first — both written when the suite shared the user's session bus, where a stray
+  window really would intercept a forwarded `--search`. since #55 gave the harness a private
+  bus that cannot happen: what answers our forwarding is whoever owns `io.github.eyy.Dictu`
+  **on the bus we are talking to**. so the guard should ask
+  `org.freedesktop.DBus.NameHasOwner` instead of scanning `/proc`, and check.sh's
+  kill-and-wait-2s should go with it.
+  worth doing because the current behaviour is actively hostile: it refuses to run while you
+  have the app open to read something, and AGENTS.md records that the stage has twice killed
+  a window mid-use. it also drops the argv special-case for `dump|lookup|search`, which never
+  claim the name anyway — the bus knows that for free. (written and then reverted during #61,
+  where it was only a workaround for a window the user then closed; the diff is small.)
+- **[ ] #60 every dictionary in the definition pane should say its languages.**
+  asked for while testing: each dictionary's heading in the definition pane wants a language
+  chip like the wordlist rows have — `LAT → FR`, `LAT → ENG`, `GRC → FRA` — set to the right
+  of the dictionary's name.
+  the pair is in the titles already: `(Lat-Fra)`, `(Lat-Eng)`, `(Grc-Fra)`, `(Grc-Eng)`,
+  `(Heb-Eng)`, `français-anglais`, `HEB-HEB`. so this wants the same parsing #59 needs for the
+  source language, extended to return both halves — one function, two callers. what neither
+  gets from a title is a dictionary whose name says nothing (`Middle_Liddell_stardict`,
+  `stardic…`, `LSJ sources`), which is where #52's per-dictionary config table becomes the
+  answer: a language pair is exactly the kind of thing a reader should be able to set by hand
+  when the file does not say.
+  the heading is built in `show_row`; a right-aligned chip means the heading becomes a box
+  with the name expanding and the chip packed at the end, styled `dim-label caption` like the
+  wordlist tag so the two read as the same idea.
+- **[ ] #59 a latin word is tagged with its dictionary's name, or with nothing at all.**
+  two reports, one cause. `jactitabundus` shows `Gaffiot 2…` in the wordlist where it should
+  show `LAT`; `Jabolenus` shows a bare `·2` where it should show `LAT ·2`.
+  `language::tag` asks the script first — which settles greek and hebrew and says nothing
+  about latin — and then looks for a language *named* in the dictionary's title. its list
+  holds `"latin"`, `"french"`, `"greek"`; the titles here say `Lat-Fra` and `Lat-Eng`. so
+  Gaffiot and Lewis & Short both answer `None`: a word only Gaffiot has falls back to the
+  dictionary's name, and a word in both is two dictionaries that *disagree*, which hides the
+  tag and leaves only the count. hence one symptom looking like a naming bug and the other
+  like a missing tag.
+  the fix is to teach it the abbreviations the titles actually use — `lat-`, `grc-`, `heb-`,
+  `fra-`, `eng-`, and `heb-heb` — ahead of the full names, and to be careful that a short
+  needle does not match inside an unrelated word. it pays for itself twice over: `rex` then
+  reads `LAT ·3` where today it reads `·3`, because all three of its dictionaries would agree.
+  do this with #60, which needs the same parsing for both halves of the pair.
+- **[~] #58 Gaffiot is a wall of text.** reported while testing, and half fixed on the
+  branch `eyy/58-gaffiot-senses` (commit `8cb2ece`, unmerged).
+  its entries carry no block markup at all: the senses are `<b> ¶ 1</b>`, `¶ 2`, … exactly as
+  the print edition marks them, and `||` divides a sense into sub-paragraphs. so the whole
+  article arrived as one paragraph and `structure_body` had no lines to shape. a pilcrow now
+  starts a line and keeps its character (the number after it names the sense, and a reader of
+  Gaffiot knows the notation); `||` breaks the line and is dropped, since it names nothing.
+  only Gaffiot uses either marker — 6 and 9 in `rex`, 3 and 3 in `amor`, none elsewhere — so
+  the rules are safe. `rex` goes from one paragraph to six senses.
+  **what is left**: a line broken off by `||` lands at body indent (28) while the sense text
+  it belongs to sits at 46, so a sub-division reads as *less* indented than its own sense.
+  `structure_body` should carry the sense it is inside down the following lines, so a
+  continuation aligns under its sense rather than out to the left of it.
 - **[x] #57 the wordlist is a model, not a list of widgets we rebuild.** asked whether
   the ui could be more declarative; of five candidates this is the one worth doing, and it is
   worth doing for correctness rather than for brevity.

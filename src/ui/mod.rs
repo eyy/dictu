@@ -681,6 +681,19 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
     options_list.update_property(&[gtk::accessible::Property::Label("Search options")]);
     options_list.append(&fold_row);
 
+    // the dictionary list scrolls, and that is not a nicety: a popover asks for its
+    // natural height, and fifteen rows of title-plus-subtitle ask for more than a
+    // screen — at which point gtk maps nothing at all and the button appears to do
+    // nothing when pressed (#61). the two-dictionary fixture is small enough that
+    // every e2e check passed while the real collection could not open the panel.
+    // capping it here means the panel fits whatever the collection grows to.
+    let scope_scroll = gtk::ScrolledWindow::builder()
+        .child(&scope_list)
+        .propagate_natural_height(true)
+        .max_content_height(420)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .build();
+
     let scope_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
     scope_box.set_margin_top(6);
     scope_box.set_margin_bottom(6);
@@ -688,7 +701,9 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
     scope_box.set_margin_end(6);
     scope_box.append(&scope_title);
     scope_box.append(&scope_hint);
-    scope_box.append(&scope_list);
+    scope_box.append(&scope_scroll);
+    // outside the scroller: the options belong to the panel, not to the list of
+    // dictionaries, and they should not scroll away under a long collection.
     scope_box.append(&options_list);
 
     let scope_button = gtk::MenuButton::builder()

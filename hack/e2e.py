@@ -805,6 +805,16 @@ def main():
             rows == [("links", "6 headwords"), ("sample", "7 headwords")],
             f"panel rows read {rows}",
         )
+        # roadmap #61: and the list of dictionaries sits inside a scroller, so the panel
+        # fits however many the reader has. a popover asks for its natural height, and
+        # fifteen unscrolled rows ask for more than a screen — at which point gtk maps
+        # nothing and the button looks broken. this fixture has two dictionaries and can
+        # never reproduce that, so what is checked is the structure that prevents it.
+        r.check(
+            "the dictionary list is inside a scroller, so the panel cannot outgrow the screen",
+            scope_list_scrolls(node),
+            "the Dictionaries list has no scroll-pane ancestor",
+        )
 
         # roadmap #12: deselecting a dictionary while its definition is on screen has
         # to take that definition off the screen too. the row's count updates either
@@ -1143,6 +1153,24 @@ def scope_boxes(app):
         for node in descendants(app)
         if node.get_role_name() == "check box" and node.get_name()
     }
+
+
+def scope_list_scrolls(app):
+    """is the panel's dictionary list inside a scroll pane? walked upwards from the
+    list itself, because that is the relationship that matters — a scroller elsewhere
+    in the popover would not bound the thing that grows with the collection."""
+    lists = [n for n in by_role(app, "list") if (n.get_name() or "") == "Dictionaries"]
+    if not lists:
+        return False
+    node = lists[0]
+    for _ in range(6):  # the popover is a few anonymous boxes deep; this is a guard
+        parent = node.get_parent()
+        if parent is None:
+            return False
+        if parent.get_role_name() == "scroll pane":
+            return True
+        node = parent
+    return False
 
 
 def scope_rows(app):
