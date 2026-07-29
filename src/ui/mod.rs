@@ -691,7 +691,13 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
         .child(&scope_list)
         .propagate_natural_height(true)
         .max_content_height(420)
+        // never scrolls sideways — a dictionary name ellipsizes instead — but then the
+        // width cannot be left to the child: an ellipsizing row reports a width that
+        // depends on its height, and gtk says so out loud ("minimum width of 18, but
+        // minimum width for height … is 45. Expect overlapping widgets"). asking for a
+        // width settles it, and it is a popover: it wants a deliberate one anyway.
         .hscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_width(340)
         .build();
 
     let scope_box = gtk::Box::new(gtk::Orientation::Vertical, 8);

@@ -105,6 +105,23 @@ nothing open right now.
   not open on the real collection. the 37th checks the structure that prevents it — the
   dictionary list has a scroll-pane ancestor — since the fixture can never reproduce the
   height itself.
+- **[ ] #63 the speed check compares against a baseline it cannot know the clock of.**
+  it failed during #61 on a change that was a popover's width — and `dictu bench` builds no
+  widgets at all, so the code could not have been the cause. every measurement was ~1.5×
+  the baseline *uniformly*, including a query that takes 0.3 µs, which is the signature of a
+  slower cpu rather than slower code. and so it was: `powersave`, **1,059 MHz average against
+  a 5,200 MHz maximum**, load 2.98 after hours of builds. one query crossed the 1.6×
+  tolerance and the stage went red.
+  so #53 is measuring the machine as much as the app, which is the one thing it was built to
+  avoid. the fix is to make the comparison clock-aware rather than to widen the tolerance
+  until nothing fails: **calibrate**. run a tiny fixed cpu-bound loop in the same process,
+  record its time in the baseline beside everything else, and scale the comparison by how
+  much slower that loop is now — a 5× downclock then shows up as a 5× calibration and the
+  ratios come out flat. failing that, record the governor and average MHz in the baseline and
+  say plainly that a comparison across a different clock is not a comparison.
+  what must not happen is re-recording a baseline to make a red stage green: that turns the
+  check into a rubber stamp. it did the honest thing here — it noticed something changed —
+  it just could not say what.
 - **[ ] #62 the ui harness polices the whole machine, and should ask the bus.**
   `hack/e2e.py` refuses to run when *any* dictu process is alive, and `hack/check.sh` kills
   them first — both written when the suite shared the user's session bus, where a stray
