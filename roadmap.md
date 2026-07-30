@@ -58,7 +58,7 @@ because their notes are what the open ones argue with.
   marker" and the pixels said 336 vs 351. eyeballing a 15px indent in a screenshot is not
   measurement, and I twice concluded the opposite of what was true before writing the
   five-line script that reads the ink.
-- **[ ] #59 a latin word is tagged with its dictionary's name, or with nothing at all.**
+- **[x] #59 a latin word was tagged with its dictionary's name, or with nothing at all.**
   two reports, one cause. `jactitabundus` shows `Gaffiot 2…` in the wordlist where it should
   show `LAT`; `Jabolenus` shows a bare `·2` where it should show `LAT ·2`.
   `language::tag` asks the script first — which settles greek and hebrew and says nothing
@@ -68,11 +68,29 @@ because their notes are what the open ones argue with.
   dictionary's name, and a word in both is two dictionaries that *disagree*, which hides the
   tag and leaves only the count. hence one symptom looking like a naming bug and the other
   like a missing tag.
-  the fix is to teach it the abbreviations the titles actually use — `lat-`, `grc-`, `heb-`,
-  `fra-`, `eng-`, and `heb-heb` — ahead of the full names, and to be careful that a short
-  needle does not match inside an unrelated word. it pays for itself twice over: `rex` then
-  reads `LAT ·3` where today it reads `·3`, because all three of its dictionaries would agree.
-  do this with #60, which needs the same parsing for both halves of the pair.
+  **done, and it needed exactly one needle.** the list already held `grc`, `heb` and
+  `français`, which match the greek, hebrew and french titles as they stand — the whole gap
+  was latin, whose two dictionaries call themselves `Lat-Fra` and `Lat-Eng` while the list
+  knew only "latin". so `lat-` went in, spelt with its dash so that it is the *source* half
+  of a `Src-Tgt` pair and cannot match a target (`Grc-Lat` is a greek dictionary). the
+  entry I wrote predicted five needles; four of them were already there.
+  measured on the real collection, which is where the report came from:
+  | word | before | after |
+  | --- | --- | --- |
+  | `jactitabundus` | `Gaffiot 2016 (Lat-Fra)` | `LAT` |
+  | `Jabolenus` | `·2` | `LAT ·2` |
+  | `rex` | `·3` | `LAT ·3` |
+  hebrew and french rows are unchanged (`מלך` → `HEB ·3`, `maison` → `FR`).
+  the tests are unit tests over the collection's **real titles as string literals** — there
+  is no external data in them, and they are the only place this can be checked, since the
+  `sample/` fixture's two dictionaries name no language at all and never could. one test
+  covers the two reported words; a second walks all fourteen titles, so a future change to
+  the needles cannot quietly unname a dictionary that already worked.
+  and a note against my own process: I ran `cargo test` and then read the tags off the app
+  without rebuilding it, saw the old answers, and briefly believed the fix had not worked.
+  the binary the harness launches is not the one `cargo test` builds. this is the second time
+  in this project — it is in "reviews by angle" as *trace, do not reason*, and it wants a
+  line of its own about stale binaries.
 - **[ ] #62 the ui harness polices the whole machine, and should ask the bus.**
   `hack/e2e.py` refuses to run when *any* dictu process is alive, and `hack/check.sh` kills
   them first — both written when the suite shared the user's session bus, where a stray
