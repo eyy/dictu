@@ -13,6 +13,65 @@ pub fn tag(word: &str, dict_name: &str) -> Option<&'static str> {
     script_tag(word).or_else(|| named_language(dict_name))
 }
 
+/// the language pair a dictionary's title names, when it names one: `(source, target)`.
+///
+/// only where the two sit **directly** either side of a `-` or `_`, which is how these
+/// titles say it: `(Lat-Fra)`, `Grc-Eng`, `français-anglais`, `Latin_English_Inflected`,
+/// `HEB-HEB`. adjacency is the whole rule, and it is what keeps "Hebrew and Aramaic
+/// Lexicon of the Old Testament" from reading as hebrew→aramaic: those two are a pair of
+/// *sources* with three words between them, and a title that only names one language
+/// gets `None` here and a single tag from `tag` above.
+pub fn pair(dict_name: &str) -> Option<(&'static str, &'static str)> {
+    let lower = dict_name.to_lowercase();
+    // chunks are what a hyphen or underscore may join; anything else separates. so
+    // "greek-english lexicon - liddell & scott" offers "greek-english" and nothing else,
+    // and the lone dash between words joins nothing.
+    for chunk in lower.split(|c: char| !(c.is_alphabetic() || c == '-' || c == '_')) {
+        let parts: Vec<Option<&str>> = chunk
+            .split(['-', '_'])
+            .map(|part| PAIRS.iter().find(|(n, _)| *n == part).map(|(_, tag)| *tag))
+            .collect();
+        // the first two adjacent parts that both name a language
+        if let Some(found) = parts.windows(2).find_map(|w| w[0].zip(w[1])) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// a whole word that names a language, for `pair` — codes and names only, so that a
+/// part matches exactly. deliberately not the same table as `NAMES` below: "liddell"
+/// tells you a dictionary is greek but is not a language, and matching it as one half
+/// of a pair would make "Middle_Liddell_stardict" a pair with whatever follows.
+const PAIRS: &[(&str, &str)] = &[
+    ("lat", "LAT"),
+    ("latin", "LAT"),
+    ("grc", "GRC"),
+    ("greek", "GRC"),
+    ("heb", "HEB"),
+    ("hebrew", "HEB"),
+    ("arc", "ARC"),
+    ("aramaic", "ARC"),
+    ("fra", "FR"),
+    ("fre", "FR"),
+    ("french", "FR"),
+    ("français", "FR"),
+    ("eng", "ENG"),
+    ("english", "ENG"),
+    ("anglais", "ENG"),
+    ("deu", "DEU"),
+    ("ger", "DEU"),
+    ("german", "DEU"),
+    ("spa", "SPA"),
+    ("spanish", "SPA"),
+    ("ita", "ITA"),
+    ("italian", "ITA"),
+    ("rus", "RUS"),
+    ("russian", "RUS"),
+    ("ara", "ARA"),
+    ("arabic", "ARA"),
+];
+
 /// the language a word's script names on its own. only for scripts that belong to
 /// one language in practice — latin script says nothing, so it isn't listed.
 fn script_tag(word: &str) -> Option<&'static str> {
@@ -143,6 +202,38 @@ mod tests {
         ] {
             // a latin-script word, so the title is what has to answer
             assert_eq!(tag("word", title), Some(expected), "{title}");
+        }
+    }
+
+    /// roadmap #60: the pair a title names, and — as importantly — the titles that name
+    /// no pair at all, which must not be guessed at.
+    #[test]
+    fn a_title_names_its_language_pair_only_when_it_really_does() {
+        for (title, expected) in [
+            ("Gaffiot 2016 (Lat-Fra)", Some(("LAT", "FR"))),
+            ("Lewis and Short 1879 (Lat-Eng)", Some(("LAT", "ENG"))),
+            ("Bailly 2020 (Grc-Fra)", Some(("GRC", "FR"))),
+            (
+                "Greek-English Lexicon - Liddell & Scott",
+                Some(("GRC", "ENG")),
+            ),
+            (
+                "Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)",
+                Some(("GRC", "ENG")),
+            ),
+            ("Lexicon to Pindar (Grc-Eng)", Some(("GRC", "ENG"))),
+            ("Comprehensive Etymological (Heb-Eng)", Some(("HEB", "ENG"))),
+            ("HEB-HEB a hebrew-hebrew dictionary", Some(("HEB", "HEB"))),
+            ("Larousse Chambers français-anglais", Some(("FR", "ENG"))),
+            ("bgl-Latin_English_Inflected", Some(("LAT", "ENG"))),
+            // and the ones that say nothing: a single language, a proper name, or a
+            // pair of *sources* with words between them.
+            ("Middle_Liddell_stardict", None),
+            ("LSJ sources", None),
+            ("Hebrew and Aramaic Lexicon of the Old Testament", None),
+            ("מילון_אבן_ספיר (BGL)", None),
+        ] {
+            assert_eq!(pair(title), expected, "{title}");
         }
     }
 

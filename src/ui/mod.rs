@@ -16,7 +16,9 @@ use crate::library::Library;
 use crate::{config, dict, language, library};
 
 mod render;
-use render::{LINK_PREFIX, entry_tag, head_tag, link_tag, source_tag, structure_body, style_tag};
+use render::{
+    LINK_PREFIX, entry_tag, head_tag, link_tag, pair_tag, source_tag, structure_body, style_tag,
+};
 
 /// one wordlist entry, as the model holds it: the lemma's row, and the label of every
 /// dictionary that has it — resolved once, when the search ran, because the factory
@@ -465,7 +467,16 @@ impl UiInner {
             self.sections.borrow_mut().push((label.clone(), mark));
             // no blank line: the heading's own space-above is what separates
             // sections, and a literal newline on top of it just leaves a hole.
-            buffer.insert_with_tags(&mut iter, &format!("{label}\n"), &[&source_tag(&buffer)]);
+            buffer.insert_with_tags(&mut iter, label, &[&source_tag(&buffer)]);
+            // and which languages this dictionary goes between, where its title says so
+            // (#60). beside the name rather than at the pane's right edge: a text view
+            // right-aligns a whole line, and pinning a run to the edge means a tab stop
+            // at a pixel that stops being the edge the moment the pane is resized.
+            if let Some((from, to)) = language::pair(label) {
+                let chip = format!("   {from} → {to}");
+                buffer.insert_with_tags(&mut iter, &chip, &[&pair_tag(&buffer)]);
+            }
+            buffer.insert_with_tags(&mut iter, "\n", &[&source_tag(&buffer)]);
 
             for (position, html) in entries.iter().enumerate() {
                 // a word can be filed under dozens of entries in one dictionary
