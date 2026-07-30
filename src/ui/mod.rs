@@ -967,9 +967,8 @@ fn toolbar_with(header: &adw::HeaderBar, content: &impl IsA<gtk::Widget>) -> adw
 /// the tag and the count exist even for a row that wants neither, hidden rather than
 /// absent.
 ///
-/// three labels, not two: a long dictionary name ellipsizing away must not be able to
-/// take the count with it, since the count is the part that cannot be guessed by
-/// reading the row.
+/// two labels: the word, and where it comes from. there was a third holding a `·N`
+/// count of answering dictionaries; #65 replaced it with the languages themselves.
 fn row_widgets() -> gtk::Box {
     let word = gtk::Label::builder()
         .xalign(0.0)
@@ -985,10 +984,6 @@ fn row_widgets() -> gtk::Box {
     tag.add_css_class("dim-label");
     tag.add_css_class("caption");
 
-    let count = gtk::Label::builder().xalign(1.0).build();
-    count.add_css_class("dim-label");
-    count.add_css_class("caption");
-
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     row.set_margin_top(6);
     row.set_margin_bottom(6);
@@ -996,7 +991,6 @@ fn row_widgets() -> gtk::Box {
     row.set_margin_end(12);
     row.append(&word);
     row.append(&tag);
-    row.append(&count);
     row
 }
 
@@ -1017,45 +1011,36 @@ fn bind_row(item: &gtk::ListItem) {
     word.set_label(&listed.row.word);
     word.set_tooltip_text(Some(&listed.row.word));
 
-    // the language, but only while every dictionary agrees on it: `LAT ·2` over a
-    // latin and a french dictionary reads as "two latin dictionaries", and the tag
-    // is derived from one dictionary while the count spans them all.
-    let named: Vec<&str> = names
-        .iter()
-        .map(|&d| language::tag(&listed.row.word, d).unwrap_or(d))
-        .collect();
-    let agreed = named
-        .first()
-        .filter(|first| named.iter().all(|n| n == *first));
+    // which languages answer, and never how many dictionaries did (#65). five latin
+    // dictionaries are still one language and read `LAT`; a latin and a french one read
+    // `LAT FR`, which is the thing worth knowing before clicking. the count that used
+    // to sit here read as a multiplier — `LAT ·2` looks like "latin twice" — and the
+    // number of dictionaries is already answered by the pane and by this tooltip.
+    let mut languages: Vec<&str> = Vec::new();
+    for &dict in &names {
+        // a dictionary whose title names no language falls back to the title, which is
+        // what the fixture's dictionaries and any unnamed one get; #52 gives them names
+        // worth reading.
+        let named = language::tag(&listed.row.word, dict).unwrap_or(dict);
+        if !languages.contains(&named) {
+            languages.push(named);
+        }
+    }
     if let Some(tag) = word.next_sibling().and_downcast::<gtk::Label>() {
-        // cleared, not just hidden: these widgets are recycled, so anything left on
-        // one is the *previous* row's — and a hidden label is still in the a11y tree,
-        // where a stale `·2` would be read out under a word that only one dictionary
-        // has. every branch sets every field.
-        match agreed {
-            Some(agreed) => {
-                tag.set_label(agreed);
+        // cleared, not just hidden: these widgets are recycled, so anything left on one
+        // is the *previous* row's — and a hidden label is still in the a11y tree, where
+        // a stale tag would be read out under a word it has nothing to do with. every
+        // branch sets every field.
+        match languages.is_empty() {
+            false => {
+                tag.set_label(&languages.join(" "));
                 tag.set_tooltip_text(Some(&names.join("\n")));
                 tag.set_visible(true);
             }
-            None => {
+            true => {
                 tag.set_label("");
                 tag.set_tooltip_text(None);
                 tag.set_visible(false);
-            }
-        }
-        if let Some(count) = tag.next_sibling().and_downcast::<gtk::Label>() {
-            match names.len() > 1 {
-                true => {
-                    count.set_label(&format!("·{}", names.len()));
-                    count.set_tooltip_text(Some(&names.join("\n")));
-                    count.set_visible(true);
-                }
-                false => {
-                    count.set_label("");
-                    count.set_tooltip_text(None);
-                    count.set_visible(false);
-                }
             }
         }
     }

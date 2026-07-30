@@ -91,6 +91,25 @@ because their notes are what the open ones argue with.
   the binary the harness launches is not the one `cargo test` builds. this is the second time
   in this project — it is in "reviews by angle" as *trace, do not reason*, and it wants a
   line of its own about stale binaries.
+- **[x] #65 the wordlist tag says which languages, not how many dictionaries.**
+  asked for after reading a row: "i dont want a count there. if its 2 or 5 latin dicts, it
+  should only say lat. if its a latin dict and a french one it should say lat fr".
+  this **reverses the visible half of #12**, and #12 deserves the credit for finding the trap
+  rather than the blame for falling in it: it already knew `LAT ·2` was ambiguous *across*
+  languages, which is why it only showed a tag when every dictionary agreed. what it did not
+  see is that the same string is ambiguous *within* one language — `LAT ·2` reads as "latin
+  twice" — and the person who read it that way is the one the row is for.
+  so the tag is now the set of languages that answer, each once, in the order the
+  dictionaries come: `Jabolenus` and `rex` read **LAT** where they read `LAT ·2` and `LAT ·3`,
+  and `sale` and `pater` read **LAT FR** — three latin dictionaries and Larousse, which is the
+  thing worth knowing before clicking. `מלך` reads `HEB`, `maison` reads `FR`. a dictionary
+  whose title names no language still falls back to the title, and those dedupe too.
+  the count is not lost, only moved off the row: the definition pane shows a section per
+  dictionary, and the tag's tooltip still lists them by name. #60's per-dictionary chips are
+  the same information where there is room for it.
+  the row is one widget lighter for it — two labels instead of three — and the e2e checks that
+  asserted `·2` now assert the language set, which is also where the deduplication is covered:
+  the dictd fixture files "byte" twice and must not say anything twice.
 - **[ ] #62 the ui harness polices the whole machine, and should ask the bus.**
   `hack/e2e.py` refuses to run when *any* dictu process is alive, and `hack/check.sh` kills
   them first — both written when the suite shared the user's session bus, where a stray
