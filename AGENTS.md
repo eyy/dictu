@@ -391,6 +391,49 @@ the cache is derived data and can be cleared, but a full wipe costs a 792 MB reb
 delete only the images from superseded versions (the u32 at byte 8 of a `.didx`/`.dord` is
 its VERSION).
 
+## reviews by angle
+
+the most productive thing in this project's history is not a feature. it is being asked to
+look at the whole of it from one angle and say what is wrong — "is this architecture sound",
+"is it fast", "can this be more declarative", "gaffiot is a wall of text". #46, #53, #57 and
+#61 all began that way, and each turned up something no test was looking for.
+
+so treat an angle review as a real mode of work, with these angles:
+
+| angle | the question it asks | what it found here |
+| --- | --- | --- |
+| **correctness** | what breaks at an edge, and what silently answers wrong | #33's folding deleted findable words |
+| **boundaries** | who knows about whom, and what would a second front end need | #46: `collection` / `cli` / `ui` / `render` |
+| **speed** | what does it cost, measured, and what watches it afterwards | #53, #54: warm start 1.0s → 0.23s |
+| **idiom** | is this the shape the toolkit wants, or ours imposed on it | #57: the wordlist became a model |
+| **fidelity** | run it and read it as a reader would, not as its author | #58, #61, #64 — all found by using it |
+
+what a review is **for** is a numbered backlog item, not a silent fix. an item carries the
+reasoning, the measurement, and — this is the part that pays later — **what was rejected and
+why**: #57 records four declarative options that were not taken, #61 records two diagnoses
+of mine that were wrong. without that, the next person re-litigates it from scratch.
+
+five rules earned the hard way, each of which cost a wasted hour first:
+
+1. **measure interleaved, never before-and-after.** the same unchanged e2e suite reads 8.7s
+   and 12.9s a minute apart on this laptop. a number quoted from "before I changed it" is a
+   number about the machine. #63 exists because even the speed check has this problem.
+2. **test the check by breaking the code.** every guard here has been mutation-tested — a
+   planted 160 µs made 7 speed checks fail, deleting `set_autoselect(false)` failed the new
+   one, dropping the cache payload failed the StarDict test. a check nobody has watched fail
+   is a check nobody should trust.
+3. **the fixture is not the collection.** two dictionaries make a small popover; fifteen make
+   one taller than the screen, which gtk declines to map. all 36 e2e checks passed against a
+   scope panel that could not open. when a bug is about scale, reproduce it against the real
+   shelf on a private display and private bus.
+4. **trace, do not reason.** the pilcrow fix took two wrong guesses about which gtk signal
+   fired; printing the emissions settled it in one run. naming a row's accessible label by
+   poking gtk's internal widget aborts the process — bisecting the factory to a bare label
+   found that, thinking about it did not.
+5. **say when the answer is "no".** "can the ui be more declarative" ended with one change
+   worth making and four worth refusing, including the one that looked most idiomatic. an
+   angle review that always finds work is flattering the question.
+
 ## reach for the crate first
 
 hand-rolled a json escaper and an argument parser here once. a review found four bugs in
