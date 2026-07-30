@@ -124,6 +124,12 @@ what you need to know to add a check:
   `ListItem::set_accessible_label`. and **every bind branch must set every field**: hiding a
   label without clearing its text leaves the previous row's value on a recycled widget, where
   it is still in the a11y tree.
+- **the suite runs beside a window you have open** (#62). it asks the *bus* whether
+  anything owns `io.github.eyy.Dictu` on the session it is talking to, and under
+  `dbus-run-session` that is never the user's app — so nothing is killed and nothing
+  refuses. run it bare and it will refuse, correctly, because then it *is* your session.
+  `hack/check.sh` no longer hunts for processes either; it only takes a machine-wide lock,
+  and that is about memory and displays, not the bus.
 - **a popover asks for its natural height, and gets nothing if that exceeds the screen.**
   the scope panel's dictionary list went unscrolled for a long time: fine with the
   fixture's two dictionaries, and on the real fifteen gtk mapped nothing at all, so the

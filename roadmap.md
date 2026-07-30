@@ -116,7 +116,7 @@ because their notes are what the open ones argue with.
   idiom rather than inventing one — and the glyph was free the moment the count stopped using
   it. the tag's width cap went 12 → 16 characters at the same time: it is there to cut a long
   fallback title, and `LAT · FR · GRC` should not be what it cuts.
-- **[ ] #62 the ui harness polices the whole machine, and should ask the bus.**
+- **[x] #62 the ui harness polices the whole machine no longer; it asks the bus.**
   `hack/e2e.py` refuses to run when *any* dictu process is alive, and `hack/check.sh` kills
   them first — both written when the suite shared the user's session bus, where a stray
   window really would intercept a forwarded `--search`. since #55 gave the harness a private
@@ -124,11 +124,20 @@ because their notes are what the open ones argue with.
   **on the bus we are talking to**. so the guard should ask
   `org.freedesktop.DBus.NameHasOwner` instead of scanning `/proc`, and check.sh's
   kill-and-wait-2s should go with it.
-  worth doing because the current behaviour is actively hostile: it refuses to run while you
-  have the app open to read something, and AGENTS.md records that the stage has twice killed
-  a window mid-use. it also drops the argv special-case for `dump|lookup|search`, which never
-  claim the name anyway — the bus knows that for free. (written and then reverted during #61,
-  where it was only a workaround for a window the user then closed; the diff is small.)
+  worth doing because the old behaviour was actively hostile: it refused to run while you had
+  the app open to read something, and the stage had twice killed a window mid-use. it also
+  drops the argv special-case for `dump|lookup|search`, which never claim the name anyway —
+  the bus knows that for free.
+  **done, and demonstrated both ways.** with a window open on the user's session: the suite
+  runs to 37 passed and the app is the same pid afterwards, where before it either refused or
+  was killed. and run *bare*, sharing that session bus, it still refuses — with a message that
+  now says which name is taken and that another bus would be fine. `check.sh` kills nothing
+  any more; the machine-wide lock stays, but its reason is rewritten to what it actually is:
+  two suites at once is two Xvfb servers, two gtk apps and two real collections of memory on
+  a laptop that is already the limiting factor.
+  the guard is four lines of `NameHasOwner` where it was a `/proc` scan with a special case
+  for three subcommands. it also answers the question the scan only approximated: not "is a
+  dictu running" but "would anything answer *our* forwarding".
 - **[ ] #60 every dictionary in the definition pane should say its languages.**
   asked for while testing: each dictionary's heading in the definition pane wants a language
   chip like the wordlist rows have — `LAT → FR`, `LAT → ENG`, `GRC → FRA` — set to the right
@@ -511,8 +520,8 @@ because their notes are what the open ones argue with.
   was actually slow — the 0.15 s poll interval and the fixed sleeps after every synthetic
   key and click — which took the suite **29.6 s → 17.0 s**, stable over three runs.
   so the migration's value is not speed. it is that `hack/cli.py` needs **no display, no
-  d-bus and no machine-wide lock**, so it runs while the app is open (the e2e stage kills
-  stray instances, which has twice killed a window mid-use), and that data assertions are
+  d-bus and no machine-wide lock**, so it runs while the app is open (the e2e stage used to kill
+  stray instances, which twice killed a window mid-use — #62 ended that), and that data assertions are
   now cheap enough to be generous with: it covers exit codes, json shape, `define`, `dump`,
   limit semantics and folding, none of which the at-spi suite ever checked.
   what stays at-spi is what needs widgets: focus, keyboard routing, the scope popover, link

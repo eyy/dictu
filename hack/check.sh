@@ -121,30 +121,24 @@ speed() {
 
 # drive the real widget tree over at-spi (see hack/e2e.py).
 e2e() {
-    # take a machine-wide lock first. dictu is single-instance over d-bus, and this
-    # stage kills stray instances to make sure the one it talks to is its own — so
-    # two runs at once (several worktrees, or an agent per branch) kill each other's
-    # app mid-test and fail for no reason. the lock is on the whole machine, not the
-    # checkout, because the thing being contended is the session bus.
+    # take a machine-wide lock first. not for the bus — each run gets its own below —
+    # but because two suites at once is two Xvfb servers, two gtk apps and two real
+    # collections' worth of memory on a laptop that is already the limiting factor.
+    # the lock is on the machine rather than the checkout so it also covers a second
+    # worktree, which is where the contention actually comes from.
     exec 9>"${TMPDIR:-/tmp}/dictu-e2e.lock"
     if ! flock -w 900 9; then
         echo "e2e: gave up waiting for another run to finish" >&2
         return 1
     fi
 
-    # it refuses to run beside another window, whose single-instance forwarding
-    # would answer with the wrong config. clear the way first — windows only: a
-    # `dictu dump|lookup|search` short-circuits before gtk, so it never claims the
-    # d-bus name, and a cli search over a real collection runs for half a minute.
-    # the subcommand is read positionally, exactly as main() dispatches it: a
-    # substring match would spare `dictu --search dump`, which IS a window.
-    for pid in $(pgrep -x dictu); do
-        case "$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | sed -n 2p)" in
-            dump|lookup|search) continue ;;
-        esac
-        kill "$pid" 2>/dev/null
-    done
-    sleep 2
+    # nothing is killed here any more (#62). this stage used to hunt down every dictu
+    # on the machine, because it shared the user's session bus and a stray window
+    # really would have answered its forwarding — and it twice killed a window
+    # somebody was reading. the private bus below makes the whole question moot: the
+    # only instance that can intercept ours is one on our own bus, and hack/e2e.py
+    # asks the bus that directly.
+    #
     # on a d-bus session of its own. dictu registers its accessibility tree on
     # whatever session bus it finds, and the harness then enumerates every
     # application on that bus, at a 0.04s poll, while it waits — which on the
