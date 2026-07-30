@@ -138,7 +138,7 @@ because their notes are what the open ones argue with.
   the guard is four lines of `NameHasOwner` where it was a `/proc` scan with a special case
   for three subcommands. it also answers the question the scan only approximated: not "is a
   dictu running" but "would anything answer *our* forwarding".
-- **[ ] #60 every dictionary in the definition pane should say its languages.**
+- **[x] #60 every dictionary in the definition pane says its languages.**
   asked for while testing: each dictionary's heading in the definition pane wants a language
   chip like the wordlist rows have — `LAT → FR`, `LAT → ENG`, `GRC → FRA` — set to the right
   of the dictionary's name.
@@ -149,9 +149,30 @@ because their notes are what the open ones argue with.
   `stardic…`, `LSJ sources`), which is where #52's per-dictionary config table becomes the
   answer: a language pair is exactly the kind of thing a reader should be able to set by hand
   when the file does not say.
-  the heading is built in `show_row`; a right-aligned chip means the heading becomes a box
-  with the name expanding and the chip packed at the end, styled `dim-label caption` like the
-  wordlist tag so the two read as the same idea.
+  **done.** `language::pair` reads the pair off the title and the heading carries it: the
+  pane now reads `bgl-Latin_English_Inflected  LAT → ENG`, `Gaffiot 2016 (Lat-Fra)  LAT → FR`.
+  the chip is its own tag — dimmer than the heading and *not* letter-spaced, because the
+  heading is spaced out like a label and a three-letter code spaced out like that reads as
+  three letters rather than one word.
+  **adjacency is the whole parsing rule**, and it is what makes the parser safe: the two
+  languages must sit either side of one `-` or `_`, which is how every title here says it
+  (`(Lat-Fra)`, `Grc-Eng`, `français-anglais`, `Latin_English_Inflected`, `HEB-HEB`). the
+  first thing that tried to be cleverer than that read "Hebrew and Aramaic Lexicon of the Old
+  Testament" as hebrew→aramaic; those are two *sources* with three words between them. four
+  of the fifteen name no pair at all — that one, `Middle_Liddell_stardict`, `LSJ sources` and
+  `מילון_אבן_ספיר (BGL)` — and get no chip rather than a guess. all fourteen titles, pair and
+  no-pair alike, are a unit test.
+  the pair table is deliberately **not** the one `tag` uses: "liddell" tells you a dictionary
+  is greek but is not a language, and matching it as half of a pair would make
+  `Middle_Liddell_stardict` a pair with whatever came next.
+  **beside the name, not at the pane's right edge**, which is what was asked for — a text view
+  right-aligns a whole line, and pinning a run to the edge needs a tab stop at a pixel that
+  stops being the edge the moment the pane is resized. worth revisiting only if the heading
+  ever becomes a widget rather than a line of text.
+  and an honest note on value: for a title like `Gaffiot 2016 (Lat-Fra)` the chip says what
+  the name already said. it earns its place on the four that name no pair in prose and on the
+  ones whose names are folder names — and it will earn it everywhere after #52, when the
+  heading reads "Gaffiot" and the languages are no longer hiding in a parenthesis.
 - **[ ] #64 group the dictionaries by source language.**
   the scope panel lists fifteen dictionaries in one flat alphabetical run, so the languages
   are interleaved: Bailly (Grc-Fra), then bgl-Latin_English_Inflected, then two Hebrew

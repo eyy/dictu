@@ -49,6 +49,24 @@ pub(super) fn head_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
 /// the dim, small label marking which dictionary a definition came from. the
 /// generous space above it is what separates one dictionary's answer from the
 /// next; the letter spacing makes it read as a heading rather than as text.
+/// the language pair beside a dictionary's heading — `LAT → FR` (#60). the same
+/// pixels-above as the heading it shares a line with, so the line does not shift, and
+/// no letter-spacing: the heading is spaced out like a label, and a language code
+/// spaced out like that reads as three letters rather than one word.
+pub(super) fn pair_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
+    buffer.tag_table().lookup("pair").unwrap_or_else(|| {
+        let tag = gtk::TextTag::builder()
+            .name("pair")
+            .scale(0.85)
+            .foreground("#6a6a6a")
+            .pixels_above_lines(22)
+            .pixels_below_lines(10)
+            .build();
+        buffer.tag_table().add(&tag);
+        tag
+    })
+}
+
 pub(super) fn source_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
     buffer.tag_table().lookup("source").unwrap_or_else(|| {
         let tag = gtk::TextTag::builder()
