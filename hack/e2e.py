@@ -48,7 +48,7 @@ import time
 import gi
 
 gi.require_version("Atspi", "2.0")
-from gi.repository import Atspi  # noqa: E402  (must follow require_version)
+from gi.repository import Atspi, Gio, GLib  # noqa: E402  (must follow require_version)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BINARY = os.path.join(REPO, "target", "debug", "dictu")
@@ -66,6 +66,9 @@ LINK_WORDS = ["cf", "qv", "ext", "only", "byte", "λόγος"]
 IDLE_STATUS = "13 words · 2 dictionaries"
 
 APP_NAME = "dictu"
+# the name the window claims on the session bus. whoever owns it answers a forwarded
+# `--search`, which is the only thing that could intercept ours.
+APP_ID = "io.github.eyy.Dictu"
 # the status line always starts with a count, which is how we pick it out of the
 # window's other labels.
 COUNT_LINE = re.compile(r"^[\d,]+\+? (word|result|dictionar)")
@@ -543,13 +546,14 @@ def main():
     if "--open-scope" in sys.argv:
         return open_scope_only()
 
-    # a stale instance would swallow our single-instance forwarding and answer
-    # with the wrong config, so refuse to run alongside one.
-    stale = running_windows()
-    if stale:
+    # an instance on *our* bus would swallow the single-instance forwarding and answer
+    # with the wrong config, so refuse to run beside one. a window on the user's own
+    # session bus is none of our business (#62).
+    if another_instance_owns_the_name():
         print(
-            f"e2e: another dictu window is running (pid {stale[0]}) — "
-            "stop it first, it would intercept the single-instance forwarding",
+            f"e2e: something already owns {APP_ID} on this bus — stop it first, it "
+            "would intercept the single-instance forwarding. (a window on another bus "
+            "is fine; run this under dbus-run-session and it will be.)",
             file=sys.stderr,
         )
         return 1
@@ -1074,23 +1078,38 @@ def main():
     return 1 if r.failed else 0
 
 
-def running_windows():
-    """pids of dictu processes that would answer our single-instance forwarding.
-    `dictu dump|lookup|search …` short-circuits before any gtk setup, so it never
-    claims the d-bus name — worth telling apart, since a cli search over a real
-    collection runs for half a minute and would otherwise block the whole suite."""
-    pids = subprocess.run(["pgrep", "-x", "dictu"], capture_output=True, text=True).stdout.split()
-    windows = []
-    for pid in pids:
-        try:
-            with open(f"/proc/{pid}/cmdline", "rb") as fh:
-                argv = fh.read().decode(errors="replace").split("\0")
-        except OSError:
-            continue  # it exited while we looked.
-        if argv[1:2] and argv[1] in ("dump", "lookup", "search"):
-            continue
-        windows.append(pid)
-    return windows
+def another_instance_owns_the_name():
+    """would anything else answer our single-instance forwarding?
+
+    asked of the **bus**, not of the process table (#62). what could intercept a
+    forwarded `--search` is whoever owns the application id on the session bus we are
+    talking to — and this suite runs on a private one, so a dictu the user has open on
+    their own session cannot intercept anything of ours. the previous version scanned
+    every process on the machine and refused to run beside a window somebody was
+    reading, which it did twice in one afternoon.
+
+    it also drops a special case for free: `dictu dump|lookup|search` short-circuits
+    before gtk and never claims the name, so the bus tells those apart without anyone
+    having to read argv for them."""
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        reply = bus.call_sync(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "NameHasOwner",
+            GLib.Variant("(s)", (APP_ID,)),
+            GLib.VariantType("(b)"),
+            Gio.DBusCallFlags.NONE,
+            5000,
+            None,
+        )
+        return bool(reply.unpack()[0])
+    except Exception as err:
+        # no bus at all is a real failure, but it is the app launch below that should
+        # report it rather than this guard.
+        log(f"could not ask the bus who owns {APP_ID}: {err}")
+        return False
 
 
 def safe(fn, *args):
