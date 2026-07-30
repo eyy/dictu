@@ -657,20 +657,22 @@ def main():
             f"expected ['sample'], got {fallback}",
         )
 
-        # roadmap #12: a row names every dictionary that has its word, not just the
-        # first one found. "byte" is in both fixtures — and filed twice in the dictd
-        # one, which must still count as one dictionary answering.
+        # roadmap #65: the tag names every *language* that answers, and never how many
+        # dictionaries did. "byte" is in both fixtures — and filed twice in the dictd
+        # one, which must not make it say anything twice. neither fixture names a
+        # language, so each falls back to its own title, and the two are listed once
+        # each: this is also the check that the fallback deduplicates.
         # wait for the row itself before reading its tag: the search entry debounces,
         # so a tag read straight after `forward` can still be the last query's.
         app_proc.forward("--search", "byte")
         wait_for(lambda: [w for w in widgets.row_words() if w] == ["byte"] or None, 10, "the byte row")
         both = widgets.row_tags()
         r.check(
-            "a row counts every dictionary that has the word",
-            both == ["·2"],
-            f"expected ['·2'], got {both}",
+            "the tag names each source that answers, once, and no count",
+            both == ["links sample"] or both == ["sample links"],
+            f"expected the two fixture names and no ·N, got {both}",
         )
-        # and a word only one dictionary has says nothing about a count.
+        # and one dictionary is named on its own, with nothing appended.
         app_proc.forward("--search", "aardvark")
         wait_for(
             lambda: [w for w in widgets.row_words() if w] == ["aardvark"] or None,
@@ -679,7 +681,7 @@ def main():
         )
         alone = widgets.row_tags()
         r.check(
-            "one dictionary is left uncounted",
+            "a single source is named alone",
             alone == ["sample"],
             f"expected ['sample'], got {alone}",
         )
