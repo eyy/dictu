@@ -413,7 +413,7 @@ reasoning, the measurement, and — this is the part that pays later — **what 
 why**: #57 records four declarative options that were not taken, #61 records two diagnoses
 of mine that were wrong. without that, the next person re-litigates it from scratch.
 
-five rules earned the hard way, each of which cost a wasted hour first:
+six rules earned the hard way, each of which cost a wasted hour first:
 
 1. **measure interleaved, never before-and-after.** the same unchanged e2e suite reads 8.7s
    and 12.9s a minute apart on this laptop. a number quoted from "before I changed it" is a
@@ -426,11 +426,15 @@ five rules earned the hard way, each of which cost a wasted hour first:
    one taller than the screen, which gtk declines to map. all 36 e2e checks passed against a
    scope panel that could not open. when a bug is about scale, reproduce it against the real
    shelf on a private display and private bus.
-4. **trace, do not reason.** the pilcrow fix took two wrong guesses about which gtk signal
+4. **rebuild before you believe the app.** `cargo test` does not build the binary the
+   harness launches, and a stale `target/debug/dictu` answers the *old* way while your new
+   tests pass — which reads exactly like a fix that did not work. it has cost an hour twice.
+   if a measurement contradicts a passing test, check the mtime before the logic.
+5. **trace, do not reason.** the pilcrow fix took two wrong guesses about which gtk signal
    fired; printing the emissions settled it in one run. naming a row's accessible label by
    poking gtk's internal widget aborts the process — bisecting the factory to a bare label
    found that, thinking about it did not.
-5. **say when the answer is "no".** "can the ui be more declarative" ended with one change
+6. **say when the answer is "no".** "can the ui be more declarative" ended with one change
    worth making and four worth refusing, including the one that looked most idiomatic. an
    angle review that always finds work is flattering the question.
 

@@ -35,7 +35,19 @@ fn script_tag(word: &str) -> Option<&'static str> {
 fn named_language(dict_name: &str) -> Option<&'static str> {
     let name = dict_name.to_lowercase();
     // (needle, tag), most specific first.
+    //
+    // the abbreviated forms matter as much as the full ones: a title is as likely to
+    // say `(Lat-Fra)` as "Latin", and until it was taught the short one this could not
+    // name Gaffiot or Lewis & Short at all — so a latin word showed its dictionary's
+    // folder name, or, where two of them had it, nothing but a count, because two
+    // dictionaries that both answer `None` are two that "disagree" (#59).
+    //
+    // `lat-` is spelt with its dash so it is the *source* half of a `Src-Tgt` pair and
+    // cannot match a target: `Grc-Lat` is a greek dictionary. the greek, hebrew and
+    // french titles here need no such entry — `grc`, `heb` and `français` below already
+    // match them — which is why this group has one member rather than five.
     const NAMES: &[(&str, &str)] = &[
+        ("lat-", "LAT"),
         ("latin", "LAT"),
         ("french", "FR"),
         ("français", "FR"),
@@ -84,6 +96,54 @@ mod tests {
         // the source language wins over the target: headwords are french here.
         assert_eq!(tag("maison", "French - English"), Some("FR"));
         assert_eq!(tag("D. H. Lys.", "Ref_LSJ"), Some("GRC"));
+    }
+
+    /// roadmap #59, both symptoms of it. the collection's latin dictionaries call
+    /// themselves "Lat-Fra" and "Lat-Eng" rather than "latin", so `jactitabundus` — a
+    /// word only Gaffiot has — was tagged with the dictionary's *name*, and `Jabolenus`,
+    /// which two of them have, showed a bare count because the two "disagreed" about a
+    /// language neither had managed to name.
+    #[test]
+    fn an_abbreviated_source_language_still_names_it() {
+        assert_eq!(tag("jactitabundus", "Gaffiot 2016 (Lat-Fra)"), Some("LAT"));
+        assert_eq!(
+            tag("Jabolenus", "Lewis and Short 1879 (Lat-Eng)"),
+            Some("LAT")
+        );
+        // and the third latin dictionary already agreed, which is what makes the row
+        // read "LAT ·3" rather than "·3".
+        assert_eq!(tag("rex", "bgl-Latin_English_Inflected"), Some("LAT"));
+    }
+
+    /// the whole shelf, by the titles it actually carries — so a change to the needles
+    /// cannot quietly unname a dictionary that was already named.
+    #[test]
+    fn every_dictionary_in_the_collection_is_named() {
+        for (title, expected) in [
+            ("Gaffiot 2016 (Lat-Fra)", "LAT"),
+            ("Lewis and Short 1879 (Lat-Eng)", "LAT"),
+            ("bgl-Latin_English_Inflected", "LAT"),
+            ("Bailly 2020 (Grc-Fra)", "GRC"),
+            ("Greek-English Lexicon - Liddell & Scott", "GRC"),
+            (
+                "Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)",
+                "GRC",
+            ),
+            ("Lexicon to Pindar (Grc-Eng)", "GRC"),
+            ("Middle_Liddell_stardict", "GRC"),
+            ("LSJ sources", "GRC"),
+            (
+                "Comprehensive Etymological Dictionary of the Hebrew Language (Heb-Eng)",
+                "HEB",
+            ),
+            ("Etymological ABBRV (Heb-Eng)", "HEB"),
+            ("HEB-HEB a hebrew-hebrew dictionary", "HEB"),
+            ("Hebrew and Aramaic Lexicon of the Old Testament", "HEB"),
+            ("Larousse Chambers français-anglais", "FR"),
+        ] {
+            // a latin-script word, so the title is what has to answer
+            assert_eq!(tag("word", title), Some(expected), "{title}");
+        }
     }
 
     #[test]
