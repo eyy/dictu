@@ -135,6 +135,27 @@ nothing open right now.
   a window mid-use. it also drops the argv special-case for `dump|lookup|search`, which never
   claim the name anyway — the bus knows that for free. (written and then reverted during #61,
   where it was only a workaround for a window the user then closed; the diff is small.)
+- **[ ] #64 group the dictionaries by source language.**
+  the scope panel lists fifteen dictionaries in one flat alphabetical run, so the languages
+  are interleaved: Bailly (Grc-Fra), then bgl-Latin_English_Inflected, then two Hebrew
+  etymological ones, then Gaffiot (Lat-Fra), then two Greek lexica, then a hebrew-hebrew dictionary. a
+  reader narrowing a search thinks "the Greek ones" or "just Klein", never "the ones starting
+  with B", and the list is now long enough that finding one costs a scroll and a scan.
+  wants **#59 first**: grouping by source language means knowing it, and today the tagger
+  cannot even name Gaffiot's. once it can, `build_scope` fills `scope_list` in one pass and
+  can just as easily fill a group per language — `gtk::ListBox` takes a header function, or
+  the panel becomes one `adw::PreferencesGroup` per language with its own title (GRC, LAT,
+  HEB, FR), which is the shape libadwaita is built for and reads better in a popover.
+  two things to decide rather than assume. **what a group is called** for a dictionary whose
+  source is its own target — a hebrew-hebrew dictionary is HEB-HEB, a Hebrew dictionary of Hebrew — and for
+  the ones whose titles say nothing at all (`Middle_Liddell_stardict`, `LSJ sources`), which
+  is #52's config table again. and **how this meets #45**: if the reader can order the
+  dictionaries by hand, does their order sort the groups, sort within a group, or replace the
+  grouping? cheapest coherent answer is that grouping is the panel's layout and #45's rank
+  orders *within* a group, but that is a decision, not an obvious truth.
+  note this is about the *panel*. the order dictionaries answer in — which section comes first
+  in the definition pane — is #45, and the two should not be conflated: one is where a control
+  sits, the other is what the reader reads first.
 - **[ ] #60 every dictionary in the definition pane should say its languages.**
   asked for while testing: each dictionary's heading in the definition pane wants a language
   chip like the wordlist rows have — `LAT → FR`, `LAT → ENG`, `GRC → FRA` — set to the right
