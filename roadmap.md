@@ -19,6 +19,222 @@ nothing open right now.
 
 ## next — 2026-07-24 feedback
 
+**this section is in the order it makes sense to do it in, not the order it arrived.**
+finish what is started, then the small thing that unblocks three others, then the tools
+that lie to you, then the features. the reasoning per item is in the item; what the order
+encodes is: #59 (a dictionary's source language) is what #60, #64 and half of #52 are all
+waiting on, so it is worth more than its size; #52 and #45 share one config table and must
+land together; #63 and #62 are cheap and stop the feedback loop fighting whoever runs it.
+completed items keep their place at the end of the section rather than moving to `## done`,
+because their notes are what the open ones argue with.
+
+
+- **[~] #58 Gaffiot is a wall of text.** reported while testing, and half fixed on the
+  branch `eyy/58-gaffiot-senses` (commit `8cb2ece`, unmerged).
+  its entries carry no block markup at all: the senses are `<b> ¶ 1</b>`, `¶ 2`, … exactly as
+  the print edition marks them, and `||` divides a sense into sub-paragraphs. so the whole
+  article arrived as one paragraph and `structure_body` had no lines to shape. a pilcrow now
+  starts a line and keeps its character (the number after it names the sense, and a reader of
+  Gaffiot knows the notation); `||` breaks the line and is dropped, since it names nothing.
+  only Gaffiot uses either marker — 6 and 9 in `rex`, 3 and 3 in `amor`, none elsewhere — so
+  the rules are safe. `rex` goes from one paragraph to six senses.
+  **what is left**: a line broken off by `||` lands at body indent (28) while the sense text
+  it belongs to sits at 46, so a sub-division reads as *less* indented than its own sense.
+  `structure_body` should carry the sense it is inside down the following lines, so a
+  continuation aligns under its sense rather than out to the left of it.
+- **[ ] #59 a latin word is tagged with its dictionary's name, or with nothing at all.**
+  two reports, one cause. `jactitabundus` shows `Gaffiot 2…` in the wordlist where it should
+  show `LAT`; `Jabolenus` shows a bare `·2` where it should show `LAT ·2`.
+  `language::tag` asks the script first — which settles greek and hebrew and says nothing
+  about latin — and then looks for a language *named* in the dictionary's title. its list
+  holds `"latin"`, `"french"`, `"greek"`; the titles here say `Lat-Fra` and `Lat-Eng`. so
+  Gaffiot and Lewis & Short both answer `None`: a word only Gaffiot has falls back to the
+  dictionary's name, and a word in both is two dictionaries that *disagree*, which hides the
+  tag and leaves only the count. hence one symptom looking like a naming bug and the other
+  like a missing tag.
+  the fix is to teach it the abbreviations the titles actually use — `lat-`, `grc-`, `heb-`,
+  `fra-`, `eng-`, and `heb-heb` — ahead of the full names, and to be careful that a short
+  needle does not match inside an unrelated word. it pays for itself twice over: `rex` then
+  reads `LAT ·3` where today it reads `·3`, because all three of its dictionaries would agree.
+  do this with #60, which needs the same parsing for both halves of the pair.
+- **[ ] #62 the ui harness polices the whole machine, and should ask the bus.**
+  `hack/e2e.py` refuses to run when *any* dictu process is alive, and `hack/check.sh` kills
+  them first — both written when the suite shared the user's session bus, where a stray
+  window really would intercept a forwarded `--search`. since #55 gave the harness a private
+  bus that cannot happen: what answers our forwarding is whoever owns `io.github.eyy.Dictu`
+  **on the bus we are talking to**. so the guard should ask
+  `org.freedesktop.DBus.NameHasOwner` instead of scanning `/proc`, and check.sh's
+  kill-and-wait-2s should go with it.
+  worth doing because the current behaviour is actively hostile: it refuses to run while you
+  have the app open to read something, and AGENTS.md records that the stage has twice killed
+  a window mid-use. it also drops the argv special-case for `dump|lookup|search`, which never
+  claim the name anyway — the bus knows that for free. (written and then reverted during #61,
+  where it was only a workaround for a window the user then closed; the diff is small.)
+- **[ ] #60 every dictionary in the definition pane should say its languages.**
+  asked for while testing: each dictionary's heading in the definition pane wants a language
+  chip like the wordlist rows have — `LAT → FR`, `LAT → ENG`, `GRC → FRA` — set to the right
+  of the dictionary's name.
+  the pair is in the titles already: `(Lat-Fra)`, `(Lat-Eng)`, `(Grc-Fra)`, `(Grc-Eng)`,
+  `(Heb-Eng)`, `français-anglais`, `HEB-HEB`. so this wants the same parsing #59 needs for the
+  source language, extended to return both halves — one function, two callers. what neither
+  gets from a title is a dictionary whose name says nothing (`Middle_Liddell_stardict`,
+  `stardic…`, `LSJ sources`), which is where #52's per-dictionary config table becomes the
+  answer: a language pair is exactly the kind of thing a reader should be able to set by hand
+  when the file does not say.
+  the heading is built in `show_row`; a right-aligned chip means the heading becomes a box
+  with the name expanding and the chip packed at the end, styled `dim-label caption` like the
+  wordlist tag so the two read as the same idea.
+- **[ ] #64 group the dictionaries by source language.**
+  the scope panel lists fifteen dictionaries in one flat alphabetical run, so the languages
+  are interleaved: Bailly (Grc-Fra), then bgl-Latin_English_Inflected, then two Hebrew
+  etymological ones, then Gaffiot (Lat-Fra), then two Greek lexica, then a hebrew-hebrew dictionary. a
+  reader narrowing a search thinks "the Greek ones" or "just Klein", never "the ones starting
+  with B", and the list is now long enough that finding one costs a scroll and a scan.
+  wants **#59 first**: grouping by source language means knowing it, and today the tagger
+  cannot even name Gaffiot's. once it can, `build_scope` fills `scope_list` in one pass and
+  can just as easily fill a group per language — `gtk::ListBox` takes a header function, or
+  the panel becomes one `adw::PreferencesGroup` per language with its own title (GRC, LAT,
+  HEB, FR), which is the shape libadwaita is built for and reads better in a popover.
+  two things to decide rather than assume. **what a group is called** for a dictionary whose
+  source is its own target — a hebrew-hebrew dictionary is HEB-HEB, a Hebrew dictionary of Hebrew — and for
+  the ones whose titles say nothing at all (`Middle_Liddell_stardict`, `LSJ sources`), which
+  is #52's config table again. and **how this meets #45**: if the reader can order the
+  dictionaries by hand, does their order sort the groups, sort within a group, or replace the
+  grouping? cheapest coherent answer is that grouping is the panel's layout and #45's rank
+  orders *within* a group, but that is a decision, not an obvious truth.
+  note this is about the *panel*. the order dictionaries answer in — which section comes first
+  in the definition pane — is #45, and the two should not be conflated: one is where a control
+  sits, the other is what the reader reads first.
+- **[ ] #63 the speed check compares against a baseline it cannot know the clock of.**
+  it failed during #61 on a change that was a popover's width — and `dictu bench` builds no
+  widgets at all, so the code could not have been the cause. every measurement was ~1.5×
+  the baseline *uniformly*, including a query that takes 0.3 µs, which is the signature of a
+  slower cpu rather than slower code. and so it was: `powersave`, **1,059 MHz average against
+  a 5,200 MHz maximum**, load 2.98 after hours of builds. one query crossed the 1.6×
+  tolerance and the stage went red.
+  so #53 is measuring the machine as much as the app, which is the one thing it was built to
+  avoid. the fix is to make the comparison clock-aware rather than to widen the tolerance
+  until nothing fails: **calibrate**. run a tiny fixed cpu-bound loop in the same process,
+  record its time in the baseline beside everything else, and scale the comparison by how
+  much slower that loop is now — a 5× downclock then shows up as a 5× calibration and the
+  ratios come out flat. failing that, record the governor and average MHz in the baseline and
+  say plainly that a comparison across a different clock is not a comparison.
+  what must not happen is re-recording a baseline to make a red stage green: that turns the
+  check into a rubber stamp. it did the honest thing here — it noticed something changed —
+  it just could not say what.
+- **[ ] #52 give every dictionary a name a person would write.** the labels are folder names
+  and they read like it: `bgl-Latin_English_Inflected`, `Middle_Liddell_stardict`,
+  `HEB-HEB a hebrew-hebrew dictionary`, `Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)`,
+  `מילון_אבן_ספיר (BGL)`. they are the heading over every definition and the tag on every
+  row, so they are read more often than anything else in the app.
+  **this wants the same config structure #45 does.** a name is a per-dictionary preference,
+  exactly like a rank, and `dictionary_dirs` is a list of *paths* with nowhere to hang one.
+  a table keyed by path — `[dictionary."…/Middle_Liddell_stardict"] name = "Middle Liddell"`,
+  with #45's `order` beside it — gives both a home, and #38 made writing that file safe.
+  do the two together or the second will want the first rewritten.
+  a name is not enough on its own: the wordlist tag is ellipsized at 12 characters, so
+  something long needs a short form too (`Liddell & Scott` → `LSJ`). the language tag already
+  covers greek and hebrew rows, which is why this is mostly felt on latin and french ones.
+  a first cut, to argue with rather than adopt:
+  Whitaker's Words · Lewis & Short · Gaffiot · Bailly · Liddell & Scott (LSJ) ·
+  Middle Liddell · Dodson (NT Greek) · Lexicon to Pindar · LSJ sources · Klein Etymological ·
+  Klein abbreviations · HALOT · a hebrew-hebrew dictionary · Even Sapir · Larousse.
+
+- **[ ] #45 let the user order the dictionaries, and sort results by that order.**
+  the scope panel lists dictionaries in scan order (`config::scan` sorts by label) and the
+  wordlist inherits whatever the merged index hands back, so which dictionary answers first
+  is an accident. it should be a preference: drag the list into the order you trust, and
+  have both the rows and the definition pane's sections follow it. two parts — a reorderable
+  list in the panel, and an ordering the search respects — and the second is the one with
+  teeth: results are ordered by key today, and dictionary rank has to sort *within* a word
+  without breaking #12's attribution or the row limit. the order persists in **its own key**,
+  written by the app — not by reordering `dictionary_dirs`, which is hand-written and
+  commented, and which #38 deliberately only ever appends to.
+
+- **[ ] #49 back and forward.** there is real navigation now and no way to retrace it: a
+  definition can be reached by typing, by picking a row, by the global hotkey, and — since
+  #20 — by clicking a link inside another definition, which also rewrites the search box.
+  follow two cross-references and the way back is gone.
+  what a history entry has to hold is the whole question. the pane shows a *row*, but a row
+  is built from a query under a scope, so remembering only the word would send you back to a
+  definition beside a wordlist that no longer contains it — the exact inconsistency #43 and
+  #33 were spent closing. an entry is at least the query text and the word shown; whether it
+  also pins the scope and the fold setting is the design decision.
+  the plumbing exists: `UiInner::shown` already tracks the word the pane is on, and
+  `show_word`/`resolve` are the single door every navigation goes through. buttons belong at
+  the start of the header bar, gnome-style, and should answer `Alt+Left`/`Alt+Right` and the
+  mouse's back/forward buttons too — those are how anyone actually uses this.
+
+- **[ ] #51 triple-click any word to look it up.** #20 made *links* clickable, which covers
+  the cross-references a dictionary chose to mark. everything else in a definition is inert —
+  and in these dictionaries most of what you want next is inert: a latin gloss inside a greek
+  entry, a hebrew cognate in Klein, a word in a quotation. the global hotkey already does
+  this for text anywhere else on the desktop by reading the primary selection; inside our own
+  window it should not need a round trip through the clipboard.
+  the click plumbing is there — `link_at`/`follow_link` already intercept in the capture
+  phase, because the textview's own drag-select otherwise eats the release. a third press is
+  another arm of the same handler, claiming the sequence so gtk does not also select the
+  line, and landing in `show_word`, which resolves by bare key and so copes with an inflected
+  or pointed form.
+  two things to get right. **what a word is**: gtk's own boundaries are pango's, which is
+  what makes this work for `λόγος` and for hebrew with niqqud, but they will also stop at the
+  dots in `Cic. Rep.` and split `rēgis` if the macron is decomposed — worth testing on real
+  entries rather than english. and **what it does**: links fill the search box as well as the
+  pane, so the wordlist agrees with what is shown; a triple-click should do the same rather
+  than inventing a second kind of navigation.
+
+- **[ ] #47 resolve a citation where it is written.** LSJ's prose is mostly references —
+  `Cic. Rep. 2, 30`, `Hdt. 2, 35`, `Alex.Aphr. in Metaph.` — and the collection already
+  holds the key that decodes them: `LSJ sources`, 2,042 entries mapping each abbreviation to
+  its author and work (`Alexander Aphrodisiensis Philosophus, in Aristotelis Metaphysica`).
+  today that is a second search you have to run by hand, in a wordlist that also has to show
+  you the citation rows. resolving them in place — a hover, or the underline treatment #20
+  already built for links — turns a wall of abbreviations into readable prose.
+  the interesting parts, none of which are the tooltip:
+  1. **finding them in rendered text.** matching has to be longest-first (`Cic. Rep.` before
+     `Cic.`), tolerant of the spacing the two sides disagree on (the key is `Alex. Aphr.`,
+     LSJ writes `Alex.Aphr.`), and conservative — a rule that fires on `a` or `id.` makes
+     the pane unreadable in the other direction. require a dot and a minimum length.
+  2. **which dictionary's abbreviations.** this key is LSJ's. Bailly and Gaffiot cite in
+     french with their own lists, and Lewis & Short has a third. the map has to be chosen
+     per dictionary section, not applied globally, or Gaffiot's `Pl.` (Plaute) will be
+     resolved with LSJ's `Pl.` (Plato).
+  3. **whether `LSJ sources` should still be a dictionary.** it is one today, so searching
+     `Cic` returns seven citation rows before any word. once its content is reachable inside
+     definitions, the honest answer may be that it belongs in the index but not the
+     wordlist — which is a new idea for the app (a dictionary that answers but does not
+     list) and worth deciding deliberately.
+
+- **[ ] #48 a logo.** the app has no icon: the shell shows a generic placeholder in the
+  dash, the alt-tab switcher and the window list, which is also what a user sees before they
+  see anything else. needs an app icon under the id it already claims
+  (`io.github.eyy.Dictu`), in the hicolor theme, plus a `.desktop` file so the shell can find
+  it — today the app is launched from a terminal and never installed. an `adw::AboutWindow`
+  would then have somewhere to put it.
+  wanted: a full-colour icon and a symbolic one, both svg, following the gnome icon
+  guidelines rather than a photograph shrunk down. the subject picks itself — this is a tool
+  for reading greek, latin and hebrew — but resist a scroll or a quill: every dictionary app
+  has one.
+
+- **[ ] #50 an english–english dictionary, oxford if it can be had.** the collection reads
+  *into* english and has nothing that defines english itself: thirteen of the fifteen
+  dictionaries are greek, latin or hebrew, and the other two are french. every gloss lands
+  in a language the app cannot then explain.
+  **oxford is the ask and probably the one thing that cannot be bought as data** — the same
+  wall #44 hit with every post-1950 lexicon. the OED is a subscription, and the Oxford
+  Dictionary of English ships inside other people's apps (Apple's Dictionary.app licenses it)
+  rather than as a file anyone sells. worth checking properly rather than assuming, since
+  that is what the #44 research was for; if it exists at a price, say the price.
+  what certainly exists, free and in formats we already read: **GCIDE** (Webster's 1913 plus
+  decades of GNU revisions, dictd, superb prose and blind to anything after ~1990),
+  **WordNet** (modern, complete, terse to the point of curt, and structured as synsets rather
+  than articles), the **Century Dictionary** (public domain, enormous, scanned), and English
+  **Wiktionary**, which #37 already brings in for five other languages and would cover the
+  modern vocabulary the others miss.
+  the honest shape of the answer is probably "one old and good plus one modern and thin",
+  the way Lewis & Short now sits beside Whitaker — so measure the overlap before installing
+  three of them.
+
 - **[x] #56 a search from the hotkey waits 150 ms for nothing.** `--search WORD` — the path
   the global hotkey takes — sets the search entry's text, and `gtk::SearchEntry` then
   debounces `search-changed` by its own `search-delay`, 150 ms by default. the debounce is
@@ -105,99 +321,6 @@ nothing open right now.
   not open on the real collection. the 37th checks the structure that prevents it — the
   dictionary list has a scroll-pane ancestor — since the fixture can never reproduce the
   height itself.
-- **[ ] #63 the speed check compares against a baseline it cannot know the clock of.**
-  it failed during #61 on a change that was a popover's width — and `dictu bench` builds no
-  widgets at all, so the code could not have been the cause. every measurement was ~1.5×
-  the baseline *uniformly*, including a query that takes 0.3 µs, which is the signature of a
-  slower cpu rather than slower code. and so it was: `powersave`, **1,059 MHz average against
-  a 5,200 MHz maximum**, load 2.98 after hours of builds. one query crossed the 1.6×
-  tolerance and the stage went red.
-  so #53 is measuring the machine as much as the app, which is the one thing it was built to
-  avoid. the fix is to make the comparison clock-aware rather than to widen the tolerance
-  until nothing fails: **calibrate**. run a tiny fixed cpu-bound loop in the same process,
-  record its time in the baseline beside everything else, and scale the comparison by how
-  much slower that loop is now — a 5× downclock then shows up as a 5× calibration and the
-  ratios come out flat. failing that, record the governor and average MHz in the baseline and
-  say plainly that a comparison across a different clock is not a comparison.
-  what must not happen is re-recording a baseline to make a red stage green: that turns the
-  check into a rubber stamp. it did the honest thing here — it noticed something changed —
-  it just could not say what.
-- **[ ] #62 the ui harness polices the whole machine, and should ask the bus.**
-  `hack/e2e.py` refuses to run when *any* dictu process is alive, and `hack/check.sh` kills
-  them first — both written when the suite shared the user's session bus, where a stray
-  window really would intercept a forwarded `--search`. since #55 gave the harness a private
-  bus that cannot happen: what answers our forwarding is whoever owns `io.github.eyy.Dictu`
-  **on the bus we are talking to**. so the guard should ask
-  `org.freedesktop.DBus.NameHasOwner` instead of scanning `/proc`, and check.sh's
-  kill-and-wait-2s should go with it.
-  worth doing because the current behaviour is actively hostile: it refuses to run while you
-  have the app open to read something, and AGENTS.md records that the stage has twice killed
-  a window mid-use. it also drops the argv special-case for `dump|lookup|search`, which never
-  claim the name anyway — the bus knows that for free. (written and then reverted during #61,
-  where it was only a workaround for a window the user then closed; the diff is small.)
-- **[ ] #64 group the dictionaries by source language.**
-  the scope panel lists fifteen dictionaries in one flat alphabetical run, so the languages
-  are interleaved: Bailly (Grc-Fra), then bgl-Latin_English_Inflected, then two Hebrew
-  etymological ones, then Gaffiot (Lat-Fra), then two Greek lexica, then a hebrew-hebrew dictionary. a
-  reader narrowing a search thinks "the Greek ones" or "just Klein", never "the ones starting
-  with B", and the list is now long enough that finding one costs a scroll and a scan.
-  wants **#59 first**: grouping by source language means knowing it, and today the tagger
-  cannot even name Gaffiot's. once it can, `build_scope` fills `scope_list` in one pass and
-  can just as easily fill a group per language — `gtk::ListBox` takes a header function, or
-  the panel becomes one `adw::PreferencesGroup` per language with its own title (GRC, LAT,
-  HEB, FR), which is the shape libadwaita is built for and reads better in a popover.
-  two things to decide rather than assume. **what a group is called** for a dictionary whose
-  source is its own target — a hebrew-hebrew dictionary is HEB-HEB, a Hebrew dictionary of Hebrew — and for
-  the ones whose titles say nothing at all (`Middle_Liddell_stardict`, `LSJ sources`), which
-  is #52's config table again. and **how this meets #45**: if the reader can order the
-  dictionaries by hand, does their order sort the groups, sort within a group, or replace the
-  grouping? cheapest coherent answer is that grouping is the panel's layout and #45's rank
-  orders *within* a group, but that is a decision, not an obvious truth.
-  note this is about the *panel*. the order dictionaries answer in — which section comes first
-  in the definition pane — is #45, and the two should not be conflated: one is where a control
-  sits, the other is what the reader reads first.
-- **[ ] #60 every dictionary in the definition pane should say its languages.**
-  asked for while testing: each dictionary's heading in the definition pane wants a language
-  chip like the wordlist rows have — `LAT → FR`, `LAT → ENG`, `GRC → FRA` — set to the right
-  of the dictionary's name.
-  the pair is in the titles already: `(Lat-Fra)`, `(Lat-Eng)`, `(Grc-Fra)`, `(Grc-Eng)`,
-  `(Heb-Eng)`, `français-anglais`, `HEB-HEB`. so this wants the same parsing #59 needs for the
-  source language, extended to return both halves — one function, two callers. what neither
-  gets from a title is a dictionary whose name says nothing (`Middle_Liddell_stardict`,
-  `stardic…`, `LSJ sources`), which is where #52's per-dictionary config table becomes the
-  answer: a language pair is exactly the kind of thing a reader should be able to set by hand
-  when the file does not say.
-  the heading is built in `show_row`; a right-aligned chip means the heading becomes a box
-  with the name expanding and the chip packed at the end, styled `dim-label caption` like the
-  wordlist tag so the two read as the same idea.
-- **[ ] #59 a latin word is tagged with its dictionary's name, or with nothing at all.**
-  two reports, one cause. `jactitabundus` shows `Gaffiot 2…` in the wordlist where it should
-  show `LAT`; `Jabolenus` shows a bare `·2` where it should show `LAT ·2`.
-  `language::tag` asks the script first — which settles greek and hebrew and says nothing
-  about latin — and then looks for a language *named* in the dictionary's title. its list
-  holds `"latin"`, `"french"`, `"greek"`; the titles here say `Lat-Fra` and `Lat-Eng`. so
-  Gaffiot and Lewis & Short both answer `None`: a word only Gaffiot has falls back to the
-  dictionary's name, and a word in both is two dictionaries that *disagree*, which hides the
-  tag and leaves only the count. hence one symptom looking like a naming bug and the other
-  like a missing tag.
-  the fix is to teach it the abbreviations the titles actually use — `lat-`, `grc-`, `heb-`,
-  `fra-`, `eng-`, and `heb-heb` — ahead of the full names, and to be careful that a short
-  needle does not match inside an unrelated word. it pays for itself twice over: `rex` then
-  reads `LAT ·3` where today it reads `·3`, because all three of its dictionaries would agree.
-  do this with #60, which needs the same parsing for both halves of the pair.
-- **[~] #58 Gaffiot is a wall of text.** reported while testing, and half fixed on the
-  branch `eyy/58-gaffiot-senses` (commit `8cb2ece`, unmerged).
-  its entries carry no block markup at all: the senses are `<b> ¶ 1</b>`, `¶ 2`, … exactly as
-  the print edition marks them, and `||` divides a sense into sub-paragraphs. so the whole
-  article arrived as one paragraph and `structure_body` had no lines to shape. a pilcrow now
-  starts a line and keeps its character (the number after it names the sense, and a reader of
-  Gaffiot knows the notation); `||` breaks the line and is dropped, since it names nothing.
-  only Gaffiot uses either marker — 6 and 9 in `rex`, 3 and 3 in `amor`, none elsewhere — so
-  the rules are safe. `rex` goes from one paragraph to six senses.
-  **what is left**: a line broken off by `||` lands at body indent (28) while the sense text
-  it belongs to sits at 46, so a sub-division reads as *less* indented than its own sense.
-  `structure_body` should carry the sense it is inside down the following lines, so a
-  continuation aligns under its sense rather than out to the left of it.
 - **[x] #57 the wordlist is a model, not a list of widgets we rebuild.** asked whether
   the ui could be more declarative; of five candidates this is the one worth doing, and it is
   worth doing for correctness rather than for brevity.
@@ -275,108 +398,6 @@ nothing open right now.
   and bind halves each spell out the whole row, and clearing every field in every branch is
   more code than appending only the labels a row wanted. worth it for a wordlist that cannot
   desync from what it is showing.
-- **[ ] #52 give every dictionary a name a person would write.** the labels are folder names
-  and they read like it: `bgl-Latin_English_Inflected`, `Middle_Liddell_stardict`,
-  `HEB-HEB a hebrew-hebrew dictionary`, `Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)`,
-  `מילון_אבן_ספיר (BGL)`. they are the heading over every definition and the tag on every
-  row, so they are read more often than anything else in the app.
-  **this wants the same config structure #45 does.** a name is a per-dictionary preference,
-  exactly like a rank, and `dictionary_dirs` is a list of *paths* with nowhere to hang one.
-  a table keyed by path — `[dictionary."…/Middle_Liddell_stardict"] name = "Middle Liddell"`,
-  with #45's `order` beside it — gives both a home, and #38 made writing that file safe.
-  do the two together or the second will want the first rewritten.
-  a name is not enough on its own: the wordlist tag is ellipsized at 12 characters, so
-  something long needs a short form too (`Liddell & Scott` → `LSJ`). the language tag already
-  covers greek and hebrew rows, which is why this is mostly felt on latin and french ones.
-  a first cut, to argue with rather than adopt:
-  Whitaker's Words · Lewis & Short · Gaffiot · Bailly · Liddell & Scott (LSJ) ·
-  Middle Liddell · Dodson (NT Greek) · Lexicon to Pindar · LSJ sources · Klein Etymological ·
-  Klein abbreviations · HALOT · a hebrew-hebrew dictionary · Even Sapir · Larousse.
-
-- **[ ] #51 triple-click any word to look it up.** #20 made *links* clickable, which covers
-  the cross-references a dictionary chose to mark. everything else in a definition is inert —
-  and in these dictionaries most of what you want next is inert: a latin gloss inside a greek
-  entry, a hebrew cognate in Klein, a word in a quotation. the global hotkey already does
-  this for text anywhere else on the desktop by reading the primary selection; inside our own
-  window it should not need a round trip through the clipboard.
-  the click plumbing is there — `link_at`/`follow_link` already intercept in the capture
-  phase, because the textview's own drag-select otherwise eats the release. a third press is
-  another arm of the same handler, claiming the sequence so gtk does not also select the
-  line, and landing in `show_word`, which resolves by bare key and so copes with an inflected
-  or pointed form.
-  two things to get right. **what a word is**: gtk's own boundaries are pango's, which is
-  what makes this work for `λόγος` and for hebrew with niqqud, but they will also stop at the
-  dots in `Cic. Rep.` and split `rēgis` if the macron is decomposed — worth testing on real
-  entries rather than english. and **what it does**: links fill the search box as well as the
-  pane, so the wordlist agrees with what is shown; a triple-click should do the same rather
-  than inventing a second kind of navigation.
-
-- **[ ] #50 an english–english dictionary, oxford if it can be had.** the collection reads
-  *into* english and has nothing that defines english itself: thirteen of the fifteen
-  dictionaries are greek, latin or hebrew, and the other two are french. every gloss lands
-  in a language the app cannot then explain.
-  **oxford is the ask and probably the one thing that cannot be bought as data** — the same
-  wall #44 hit with every post-1950 lexicon. the OED is a subscription, and the Oxford
-  Dictionary of English ships inside other people's apps (Apple's Dictionary.app licenses it)
-  rather than as a file anyone sells. worth checking properly rather than assuming, since
-  that is what the #44 research was for; if it exists at a price, say the price.
-  what certainly exists, free and in formats we already read: **GCIDE** (Webster's 1913 plus
-  decades of GNU revisions, dictd, superb prose and blind to anything after ~1990),
-  **WordNet** (modern, complete, terse to the point of curt, and structured as synsets rather
-  than articles), the **Century Dictionary** (public domain, enormous, scanned), and English
-  **Wiktionary**, which #37 already brings in for five other languages and would cover the
-  modern vocabulary the others miss.
-  the honest shape of the answer is probably "one old and good plus one modern and thin",
-  the way Lewis & Short now sits beside Whitaker — so measure the overlap before installing
-  three of them.
-
-- **[ ] #49 back and forward.** there is real navigation now and no way to retrace it: a
-  definition can be reached by typing, by picking a row, by the global hotkey, and — since
-  #20 — by clicking a link inside another definition, which also rewrites the search box.
-  follow two cross-references and the way back is gone.
-  what a history entry has to hold is the whole question. the pane shows a *row*, but a row
-  is built from a query under a scope, so remembering only the word would send you back to a
-  definition beside a wordlist that no longer contains it — the exact inconsistency #43 and
-  #33 were spent closing. an entry is at least the query text and the word shown; whether it
-  also pins the scope and the fold setting is the design decision.
-  the plumbing exists: `UiInner::shown` already tracks the word the pane is on, and
-  `show_word`/`resolve` are the single door every navigation goes through. buttons belong at
-  the start of the header bar, gnome-style, and should answer `Alt+Left`/`Alt+Right` and the
-  mouse's back/forward buttons too — those are how anyone actually uses this.
-
-- **[ ] #48 a logo.** the app has no icon: the shell shows a generic placeholder in the
-  dash, the alt-tab switcher and the window list, which is also what a user sees before they
-  see anything else. needs an app icon under the id it already claims
-  (`io.github.eyy.Dictu`), in the hicolor theme, plus a `.desktop` file so the shell can find
-  it — today the app is launched from a terminal and never installed. an `adw::AboutWindow`
-  would then have somewhere to put it.
-  wanted: a full-colour icon and a symbolic one, both svg, following the gnome icon
-  guidelines rather than a photograph shrunk down. the subject picks itself — this is a tool
-  for reading greek, latin and hebrew — but resist a scroll or a quill: every dictionary app
-  has one.
-
-- **[ ] #47 resolve a citation where it is written.** LSJ's prose is mostly references —
-  `Cic. Rep. 2, 30`, `Hdt. 2, 35`, `Alex.Aphr. in Metaph.` — and the collection already
-  holds the key that decodes them: `LSJ sources`, 2,042 entries mapping each abbreviation to
-  its author and work (`Alexander Aphrodisiensis Philosophus, in Aristotelis Metaphysica`).
-  today that is a second search you have to run by hand, in a wordlist that also has to show
-  you the citation rows. resolving them in place — a hover, or the underline treatment #20
-  already built for links — turns a wall of abbreviations into readable prose.
-  the interesting parts, none of which are the tooltip:
-  1. **finding them in rendered text.** matching has to be longest-first (`Cic. Rep.` before
-     `Cic.`), tolerant of the spacing the two sides disagree on (the key is `Alex. Aphr.`,
-     LSJ writes `Alex.Aphr.`), and conservative — a rule that fires on `a` or `id.` makes
-     the pane unreadable in the other direction. require a dot and a minimum length.
-  2. **which dictionary's abbreviations.** this key is LSJ's. Bailly and Gaffiot cite in
-     french with their own lists, and Lewis & Short has a third. the map has to be chosen
-     per dictionary section, not applied globally, or Gaffiot's `Pl.` (Plaute) will be
-     resolved with LSJ's `Pl.` (Plato).
-  3. **whether `LSJ sources` should still be a dictionary.** it is one today, so searching
-     `Cic` returns seven citation rows before any word. once its content is reachable inside
-     definitions, the honest answer may be that it belongs in the index but not the
-     wordlist — which is a new idea for the app (a dictionary that answers but does not
-     list) and worth deciding deliberately.
-
 - **[x] #46 architectural review: draw the module boundaries properly.** the first two
   steps are done, by building the cli you suggested — and it worked as an argument-settler:
   every question the window asks about words now goes through one place, because the command
@@ -446,17 +467,6 @@ nothing open right now.
   struct threading a dozen widgets between two modules to avoid that would be ceremony. if it
   is split later, the boundary to want is a `build` that returns the widget tree and a `ui`
   that owns it and reacts — not one that knows the struct's insides.
-
-- **[ ] #45 let the user order the dictionaries, and sort results by that order.**
-  the scope panel lists dictionaries in scan order (`config::scan` sorts by label) and the
-  wordlist inherits whatever the merged index hands back, so which dictionary answers first
-  is an accident. it should be a preference: drag the list into the order you trust, and
-  have both the rows and the definition pane's sections follow it. two parts — a reorderable
-  list in the panel, and an ordering the search respects — and the second is the one with
-  teeth: results are ordered by key today, and dictionary rank has to sort *within* a word
-  without breaking #12's attribution or the row limit. the order persists in **its own key**,
-  written by the app — not by reordering `dictionary_dirs`, which is hand-written and
-  commented, and which #38 deliberately only ever appends to.
 
 ## deferred — needs you
 
