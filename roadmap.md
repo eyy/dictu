@@ -29,8 +29,7 @@ completed items keep their place at the end of the section rather than moving to
 because their notes are what the open ones argue with.
 
 
-- **[~] #58 Gaffiot is a wall of text.** reported while testing, and half fixed on the
-  branch `eyy/58-gaffiot-senses` (commit `8cb2ece`, unmerged).
+- **[x] #58 Gaffiot was a wall of text.** reported while testing.
   its entries carry no block markup at all: the senses are `<b> ¶ 1</b>`, `¶ 2`, … exactly as
   the print edition marks them, and `||` divides a sense into sub-paragraphs. so the whole
   article arrived as one paragraph and `structure_body` had no lines to shape. a pilcrow now
@@ -38,10 +37,27 @@ because their notes are what the open ones argue with.
   Gaffiot knows the notation); `||` breaks the line and is dropped, since it names nothing.
   only Gaffiot uses either marker — 6 and 9 in `rex`, 3 and 3 in `amor`, none elsewhere — so
   the rules are safe. `rex` goes from one paragraph to six senses.
-  **what is left**: a line broken off by `||` lands at body indent (28) while the sense text
-  it belongs to sits at 46, so a sub-division reads as *less* indented than its own sense.
-  `structure_body` should carry the sense it is inside down the following lines, so a
-  continuation aligns under its sense rather than out to the left of it.
+  **and then the indent, which took four wrong attempts.** a `||` line landed at the body
+  margin, reading as though it had escaped the sense it belongs to, so `structure_body` now
+  carries the current sense down the lines that follow it — one call covers one entry, so the
+  state cannot leak between articles — and tags them with a margin of their own.
+  what made it slow is that gtk renders these paragraphs **16px to the left of what the tag
+  asks for**, and at-spi reports the tag's own value either way, so it cannot adjudicate
+  between them. the 16 is the sense's hanging indent, applied to the paragraph after it as
+  well. saying `.indent(0)` on the continuation tag does not override it; nor does removing
+  the body tag from the line first, which was the attempt that should have settled it by
+  removing the conflict altogether. what does work is asking for `SENSE_MARGIN + SENSE_HANG`
+  and letting the leak subtract the hang back off — verified at the pixel, twice: asking 46
+  rendered at 336, asking 62 renders at 351, and the sense's own wrapped text is at 351.
+  it is written as that sum rather than as `62` so the two stay tied, and the comment says
+  plainly that the mechanism is measured and not understood. **the lesson is the one already
+  written under "reviews by angle": trace, do not reason.** three of the four attempts were
+  reasoning about tag priority, and the thing that produced an answer was measuring the
+  leftmost inked pixel of every line at two different tag values.
+  a caution for whoever revisits it: my eye read the first screenshot as "aligned with the
+  marker" and the pixels said 336 vs 351. eyeballing a 15px indent in a screenshot is not
+  measurement, and I twice concluded the opposite of what was true before writing the
+  five-line script that reads the ink.
 - **[ ] #59 a latin word is tagged with its dictionary's name, or with nothing at all.**
   two reports, one cause. `jactitabundus` shows `Gaffiot 2…` in the wordlist where it should
   show `LAT`; `Jabolenus` shows a bare `·2` where it should show `LAT ·2`.
