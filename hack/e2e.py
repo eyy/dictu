@@ -669,8 +669,8 @@ def main():
         both = widgets.row_tags()
         r.check(
             "the tag names each source that answers, once, and no count",
-            both == ["links sample"] or both == ["sample links"],
-            f"expected the two fixture names and no ·N, got {both}",
+            both == ["links · sample"] or both == ["sample · links"],
+            f"expected the two fixture names separated, and no count, got {both}",
         )
         # and one dictionary is named on its own, with nothing appended.
         app_proc.forward("--search", "aardvark")

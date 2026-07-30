@@ -110,6 +110,12 @@ because their notes are what the open ones argue with.
   the row is one widget lighter for it — two labels instead of three — and the e2e checks that
   asserted `·2` now assert the language set, which is also where the deduplication is covered:
   the dictd fixture files "byte" twice and must not say anything twice.
+  **and then the separator**, because "LAT FR" joined by a plain space read as one word — "too
+  close to each other". they are joined by ` · ` now, which is the separator the status line
+  already uses between facts ("1,941,344 words · 15 dictionaries"), so the row borrows an
+  idiom rather than inventing one — and the glyph was free the moment the count stopped using
+  it. the tag's width cap went 12 → 16 characters at the same time: it is there to cut a long
+  fallback title, and `LAT · FR · GRC` should not be what it cuts.
 - **[ ] #62 the ui harness polices the whole machine, and should ask the bus.**
   `hack/e2e.py` refuses to run when *any* dictu process is alive, and `hack/check.sh` kills
   them first — both written when the suite shared the user's session bus, where a stray
