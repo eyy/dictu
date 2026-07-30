@@ -321,6 +321,17 @@ because their notes are what the open ones argue with.
   not open on the real collection. the 37th checks the structure that prevents it — the
   dictionary list has a scroll-pane ancestor — since the fixture can never reproduce the
   height itself.
+  **and a tail this item was closed too early on.** the scroller introduced a warning on
+  every launch — `GtkBox reports a minimum width of 14, but minimum width for height …
+  Expect overlapping widgets` — which `min_content_width` on the scroller did not cure; it
+  only delayed it past the moment I checked the log, and I said the log was clean when it was
+  merely clean *yet*. the cause was a row, not the scroller: `adw::ActionRow` wraps a long
+  title, "Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)" ran to two lines, and a
+  wrapping label's width depends on its height — a contradiction inside a list that never
+  scrolls sideways. `title_lines(1)` and `subtitle_lines(1)` fix it at the source: the rows
+  are uniform height, one more dictionary fits, and long names ellipsize until #52 gives them
+  names worth showing. the fixture does not reproduce this either (its two titles are short),
+  so the repro is the real collection with the panel open — 1 critical before, 0 after.
 - **[x] #57 the wordlist is a model, not a list of widgets we rebuild.** asked whether
   the ui could be more declarative; of five candidates this is the one worth doing, and it is
   worth doing for correctness rather than for brevity.
