@@ -347,6 +347,16 @@ impl UiInner {
                 .title(glib::markup_escape_text(label))
                 .subtitle(collection::quantity(headwords, "headword", "headwords"))
                 .activatable_widget(&check)
+                // one line each, ellipsized rather than reflowed. two reasons, and the
+                // second is the one that bites: a folder-name title like "Greek-English
+                // Lexicon by John Jeffrey Dodson (Grc-Eng)" wrapped to two lines, so the
+                // rows had ragged heights — and a wrapping label's width depends on its
+                // height, which inside a list that never scrolls sideways is a
+                // contradiction gtk reports on every launch ("reports a minimum width of
+                // 14, but minimum width for height … Expect overlapping widgets").
+                // ellipsis is a stopgap for names this long; #52 gives them real ones.
+                .title_lines(1)
+                .subtitle_lines(1)
                 .build();
             row.add_prefix(&check);
             // weakly, like every other handler (#8): this checkbox lives in the
