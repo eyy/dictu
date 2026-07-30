@@ -83,6 +83,43 @@ pub(super) fn entry_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
     })
 }
 
+/// where a sense's text sits, and how far its marker hangs out to the left of it.
+/// named because `within_sense_tag` has to be expressed in terms of them — see there.
+const SENSE_MARGIN: i32 = 46;
+const SENSE_HANG: i32 = 16;
+
+/// a line that continues the sense above it — Gaffiot's `||` sub-divisions, which
+/// markup.rs breaks onto their own lines and whose marker it drops. left margin only:
+/// it aligns with where the sense's own wrapped text sits (46), so a sub-division
+/// reads as *inside* its sense. without it such a line falls back to the body margin
+/// (28) and reads as though it had escaped the sense it belongs to.
+fn within_sense_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
+    buffer
+        .tag_table()
+        .lookup("within-sense")
+        .unwrap_or_else(|| {
+            let tag = gtk::TextTag::builder()
+                .name("within-sense")
+                // `SENSE_MARGIN + SENSE_HANG`, not `SENSE_MARGIN`, and the reason is
+                // measured rather than understood: the hanging indent of the sense above
+                // is applied to this paragraph too, so what gets rendered is always this
+                // number minus `SENSE_HANG`. asking for 46 put these lines at 30 — out to
+                // the *left* of the sense's own wrapped text, the opposite of belonging
+                // to it — and asking for 62 lands them exactly on it (measured at the
+                // pixel: 351, against the sense's 351).
+                //
+                // stating `.indent(0)` here does not override it, and at-spi reports this
+                // tag's own values either way, so it cannot adjudicate. expressed as a
+                // sum so the two stay tied: change the hang and this follows.
+                .left_margin(SENSE_MARGIN + SENSE_HANG)
+                .indent(0)
+                .pixels_above_lines(4)
+                .build();
+            buffer.tag_table().add(&tag);
+            tag
+        })
+}
+
 /// give one dictionary's definition its shape: the whole body sits indented under
 /// its heading, and each sense inside it gets a hanging indent plus air above, so
 /// senses read as a list instead of one paragraph. `from`/`to` are line indices.
@@ -90,12 +127,17 @@ pub(super) fn structure_body(buffer: &gtk::TextBuffer, from: i32, to: i32) {
     let (Some(start), Some(end)) = (buffer.iter_at_line(from), buffer.iter_at_line(to)) else {
         return;
     };
-    // create the body tag before the sense tag: gtk resolves conflicting tags by
-    // insertion order, so the sense indent has to be the later of the two.
+    // create the body tag before the other two: gtk resolves conflicting tags by
+    // insertion order, so the deeper indents have to be the later ones.
     let body = body_tag(buffer);
     let sense = sense_tag(buffer);
+    let within = within_sense_tag(buffer);
     buffer.apply_tag(&body, &start, &end);
 
+    // a sense owns the lines under it until the next one starts, which is what lets a
+    // sub-division line up with its own sense rather than out at the body margin. one
+    // call covers one entry, so this begins outside any sense every time.
+    let mut in_sense = false;
     for line in from..to {
         let Some(line_start) = buffer.iter_at_line(line) else {
             continue;
@@ -105,8 +147,18 @@ pub(super) fn structure_body(buffer: &gtk::TextBuffer, from: i32, to: i32) {
             line_end.forward_to_line_end();
         }
         let text = buffer.text(&line_start, &line_end, false);
+        // whichever margin a line gets, it gets exactly one: `body` covers the range
+        // and is then taken off the lines that carry their own. leaving both on a line
+        // and trusting tag priority to settle it does not work — measured, the
+        // paragraph came out at 30 (46 minus the sense's hanging indent) no matter what
+        // this tag said, including when it said indent(0) explicitly.
         if starts_a_sense(&text) {
+            buffer.remove_tag(&body, &line_start, &line_end);
             buffer.apply_tag(&sense, &line_start, &line_end);
+            in_sense = true;
+        } else if in_sense && !text.trim().is_empty() {
+            buffer.remove_tag(&body, &line_start, &line_end);
+            buffer.apply_tag(&within, &line_start, &line_end);
         }
     }
 }
@@ -115,6 +167,12 @@ pub(super) fn structure_body(buffer: &gtk::TextBuffer, from: i32, to: i32) {
 /// or roman-numbered one (Liddell, and most glossaries).
 fn starts_a_sense(line: &str) -> bool {
     let line = line.trim_start();
+    // `¶ 1` is how Gaffiot divides its senses, and markup.rs gives each one a line of
+    // its own (#58); the number after it is not followed by a dot, so the digit rule
+    // below would miss it.
+    if line.starts_with('¶') {
+        return true;
+    }
     if let Some(rest) = line.strip_prefix('-') {
         return rest.starts_with(' ');
     }
@@ -145,8 +203,8 @@ fn sense_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
     buffer.tag_table().lookup("sense").unwrap_or_else(|| {
         let tag = gtk::TextTag::builder()
             .name("sense")
-            .left_margin(46)
-            .indent(-16)
+            .left_margin(SENSE_MARGIN)
+            .indent(-SENSE_HANG)
             .pixels_above_lines(10)
             .build();
         buffer.tag_table().add(&tag);
