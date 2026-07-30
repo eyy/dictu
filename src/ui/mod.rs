@@ -979,7 +979,9 @@ fn row_widgets() -> gtk::Box {
     let tag = gtk::Label::builder()
         .xalign(1.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
-        .max_width_chars(12)
+        // wide enough for "LAT · FR · GRC"; the cap is for a long fallback title, and
+        // the language codes should never be the thing that gets cut.
+        .max_width_chars(16)
         .build();
     tag.add_css_class("dim-label");
     tag.add_css_class("caption");
@@ -1033,7 +1035,11 @@ fn bind_row(item: &gtk::ListItem) {
         // branch sets every field.
         match languages.is_empty() {
             false => {
-                tag.set_label(&languages.join(" "));
+                // separated the way the status line separates its facts ("1,941,344
+                // words · 15 dictionaries"), because a plain space read as one word:
+                // "LAT FR" was too close together to see as two languages. the glyph is
+                // free again now that no count uses it.
+                tag.set_label(&languages.join(" · "));
                 tag.set_tooltip_text(Some(&names.join("\n")));
                 tag.set_visible(true);
             }
