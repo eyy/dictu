@@ -21,7 +21,7 @@ the command line, then by driving the real ui. exit 0 means all of it passed.
 ```
 format        cargo fmt (in place; --ci fails instead of fixing)
 clippy        cargo clippy --all-targets -- -D warnings
-unit tests    cargo test — 110 tests, all in-tree, no external data
+unit tests    cargo test — 115 tests, all in-tree, no external data
 build         cargo build
 smoke: dump   reads sample/ end to end, asserts 7 headwords + real definition text,
               and that a closed pipe kills neither the output nor the process
