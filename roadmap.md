@@ -440,6 +440,32 @@ because their notes are what the open ones argue with.
   and **record the provenance beside the asset**: shelfmark, folio, library, licence. many
   libraries assert rights over their scans of public-domain originals, and "strictly for
   private use" is a reason to note where a picture came from, not a reason not to.
+  **found, and it is the right page: St John's College MS 235, Fragments 62 & 68** —
+  catalogued as "John of Garland, *Dictionarius* (binding fragments)", Anglo-Norman and
+  latin, **between 1300 and 1315**, digitised by the Bodleian at ~2940×1975 across four
+  images (62r/v, 68r/v).
+  ```
+  object   digital.bodleian.ox.ac.uk/objects/4021d35f-e1df-409f-a5b9-96dfa8cd417b/
+  record   medieval.bodleian.ox.ac.uk/catalog/manuscript_12542
+  manifest iiif.bodleian.ox.ac.uk/iiif/manifest/4021d35f-e1df-409f-a5b9-96dfa8cd417b.json
+  62r      iiif.bodleian.ox.ac.uk/iiif/image/3b4ed413-f9bd-460f-a857-2d6e5f592d22
+  ```
+  **fragment 62 recto carries the incipit**, in the lower right column: a red initial
+  followed by `ictionarius ū iste libellus adicionib[us] magis` — the word itself, in a hand
+  of about 1310 — and the line above it has `dictionarius` again, abbreviated with a macron.
+  the region on 62r is roughly `1875,1345,380,120` in the IIIF image's own coordinates.
+  **but the initial cannot be the icon: it reads as an O.** it is a lombardic *D*, whose
+  stem is absorbed into the bowl, so what survives at 48 px — where an icon actually lives —
+  is a plain oval. checked at 300, 192 and 48 px before believing it. an icon whose whole
+  job is to say *dictionary* must not read as the wrong letter, so this rules out the
+  cheapest use of the find rather than the find itself.
+  **and the photograph is claimed**: the manifest states no licence and attributes "Photo: ©
+  The President and Fellows of St John's College, Oxford". the manuscript is 700 years old;
+  the scan is not, which matters the moment anything leaves this machine.
+  so the find is best used as a **wordmark** — the incipit line in the about window and the
+  README, cited to the shelfmark — with the *icon* redrawn from it: the same hand, the stem
+  straightened until a D reads as a D at 48 px. that also settles the symbolic variant, which
+  a photograph could never have been.
 
 - **[ ] #50 an english–english dictionary, oxford if it can be had.** the collection reads
   *into* english and has nothing that defines english itself: thirteen of the fifteen
