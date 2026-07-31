@@ -19,6 +19,7 @@ mod index_cache;
 mod keys;
 mod language;
 mod library;
+mod shortcut;
 mod ui;
 
 const APP_ID: &str = "io.github.eyy.Dictu";

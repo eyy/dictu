@@ -13,7 +13,7 @@ use gtk::{gdk, gio, glib};
 
 use crate::collection::{self, Collection};
 use crate::library::Library;
-use crate::{config, dict, language, library};
+use crate::{config, dict, language, library, shortcut};
 
 mod render;
 use render::{
@@ -741,7 +741,19 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
         .build();
     scope_button.update_property(&[gtk::accessible::Property::Label("Search scope")]);
 
+    // a primary menu, because the window had nowhere to put anything that is not a
+    // dictionary: the header carried the scope button and nothing else (#67).
+    let menu = gio::Menu::new();
+    menu.append(Some("Preferences"), Some("win.preferences"));
+    let menu_button = gtk::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Main menu")
+        .menu_model(&menu)
+        .build();
+    menu_button.update_property(&[gtk::accessible::Property::Label("Main menu")]);
+
     let header = adw::HeaderBar::new();
+    header.pack_end(&menu_button);
     header.pack_end(&scope_button);
     let window = adw::ApplicationWindow::builder()
         .application(app)
@@ -750,6 +762,14 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
         .default_height(600)
         .content(&toolbar_with(&header, &split))
         .build();
+
+    let preferences_action = gio::SimpleAction::new("preferences", None);
+    preferences_action.connect_activate(glib::clone!(
+        #[weak]
+        window,
+        move |_, _| preferences(&window).present()
+    ));
+    window.add_action(&preferences_action);
 
     // new_cyclic so the ui can hold a weak handle to itself; every closure below
     // captures `#[weak] ui` and quietly does nothing once the ui is gone.
@@ -1075,6 +1095,160 @@ fn bind_row(item: &gtk::ListItem) {
     // `gtk_widget_insert_after: assertion 'GTK_IS_WIDGET (widget)' failed` on the next
     // row it lays out. this is the api that exists for the job.
     item.set_accessible_label(&listed.row.word);
+}
+
+/// the preferences window: what the global shortcut is, and how to change it (#67).
+///
+/// the shortcut is GNOME's, not ours — see `crate::shortcut` — so this window reads the
+/// reader's own configuration and writes it back. on a desktop that stores shortcuts some
+/// other way it says so instead of offering a control that could not work.
+fn preferences(parent: &adw::ApplicationWindow) -> adw::PreferencesWindow {
+    let window = adw::PreferencesWindow::builder()
+        .transient_for(parent)
+        .modal(true)
+        .title("Preferences")
+        .default_width(520)
+        .default_height(320)
+        .build();
+
+    let page = adw::PreferencesPage::new();
+    let group = adw::PreferencesGroup::builder()
+        .title("Global shortcut")
+        .description(
+            "Looks up whatever is selected, from any application. \
+             This is a GNOME shortcut, so changing it here changes it for the desktop.",
+        )
+        .build();
+
+    let row = adw::ActionRow::builder()
+        .title("Look up the selection")
+        .title_lines(1)
+        .build();
+    let value = gtk::Label::builder().build();
+    value.add_css_class("dim-label");
+    let button = gtk::Button::builder()
+        .label("Change…")
+        .valign(gtk::Align::Center)
+        .build();
+    row.add_suffix(&value);
+    row.add_suffix(&button);
+    group.add(&row);
+    page.add(&group);
+    window.add(&page);
+
+    // shown, not assumed: whatever dconf holds right now, or the plain truth that there
+    // is nothing bound yet.
+    let refresh = {
+        let value = value.clone();
+        let row = row.clone();
+        move || match shortcut::current() {
+            Some(current) => {
+                value.set_label(&current.accelerator);
+                row.set_subtitle(&current.command);
+            }
+            None => {
+                value.set_label("None");
+                row.set_subtitle("no shortcut is bound yet");
+            }
+        }
+    };
+    refresh();
+
+    if !shortcut::available() {
+        value.set_label("unavailable");
+        row.set_subtitle("this desktop does not store shortcuts in GNOME's media-keys schema");
+        button.set_sensitive(false);
+        return window;
+    }
+
+    button.connect_clicked(glib::clone!(
+        #[weak]
+        window,
+        #[strong]
+        refresh,
+        move |button| {
+            capture_shortcut(&window, button, refresh.clone());
+        }
+    ));
+    window
+}
+
+/// take the next key combination the reader presses and make it the shortcut.
+///
+/// gtk4 has no widget for this, so it is a key controller on a small modal: the first
+/// combination that is not a bare modifier wins, Escape leaves things alone, and one that
+/// would swallow ordinary typing is refused with a reason rather than written.
+fn capture_shortcut(
+    parent: &adw::PreferencesWindow,
+    button: &gtk::Button,
+    refresh: impl Fn() + Clone + 'static,
+) {
+    let dialog = adw::MessageDialog::builder()
+        .transient_for(parent)
+        .modal(true)
+        .heading("Press the new shortcut")
+        .body("Hold a modifier — Super, Control or Alt — and press a key. Escape cancels.")
+        .build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.set_close_response("cancel");
+
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(glib::clone!(
+        #[weak]
+        dialog,
+        #[weak]
+        button,
+        #[upgrade_or]
+        glib::Propagation::Proceed,
+        move |_, key, _, state| {
+            if key == gdk::Key::Escape {
+                dialog.close();
+                return glib::Propagation::Stop;
+            }
+            // a modifier on its own is the reader still reaching for the key.
+            if matches!(
+                key,
+                gdk::Key::Control_L
+                    | gdk::Key::Control_R
+                    | gdk::Key::Alt_L
+                    | gdk::Key::Alt_R
+                    | gdk::Key::Super_L
+                    | gdk::Key::Super_R
+                    | gdk::Key::Shift_L
+                    | gdk::Key::Shift_R
+            ) {
+                return glib::Propagation::Stop;
+            }
+            let wanted = state & gtk::accelerator_get_default_mod_mask();
+            let accelerator = gtk::accelerator_name(key, wanted);
+            if !shortcut::sensible(&accelerator) {
+                dialog.set_body(&format!(
+                    "{accelerator} would swallow that key everywhere. \
+                     Hold Super, Control or Alt as well — or use a function key."
+                ));
+                return glib::Propagation::Stop;
+            }
+            let command = shortcut::current().map(|c| c.command).unwrap_or_else(|| {
+                // nothing bound yet: bind the script that reads the selection, which is
+                // what the shortcut is for. #66's installer is what puts it there.
+                format!(
+                    "{}/.local/bin/dictu-lookup",
+                    glib::home_dir().to_string_lossy()
+                )
+            });
+            match shortcut::set(&accelerator, &command) {
+                Ok(()) => {
+                    refresh();
+                    dialog.close();
+                }
+                Err(err) => dialog.set_body(&format!("could not set it: {err:#}")),
+            }
+            let _ = button;
+            glib::Propagation::Stop
+        }
+    ));
+    dialog.add_controller(keys);
+    dialog.present();
 }
 
 #[cfg(test)]

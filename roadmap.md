@@ -195,7 +195,7 @@ because their notes are what the open ones argue with.
   `desktop-file-validate`, and `gtk-launch io.github.eyy.Dictu` starts the app.
   **the icon is still #48.** the entry names `io.github.eyy.Dictu` and no such icon is
   installed, so the grid shows a placeholder next to the name until one is.
-- **[ ] #67 show the global shortcut in the app, and let it be changed there.**
+- **[x] #67 the app shows the global shortcut, and can change it.**
   asked for with #66: "i want to see and be able to redefine the global shortcut in the
   setting menu." today the shortcut is invisible from inside dictu — it is a GNOME custom
   keybinding, set up by hand outside the app, and the only way to find out what it is is
@@ -212,11 +212,49 @@ because their notes are what the open ones argue with.
   has no "record a shortcut" widget, so it means a key controller that takes the next
   combination and formats it as an accelerator (`<Super>F2`), and refusing the ones that
   would be absurd (a bare letter, a modifier alone).
-  two things to decide rather than assume: whether the app should offer to *create* the
-  keybinding when none exists (it should, but that means writing a new `custom%d` path into a
-  list other applications share, so it must append rather than replace), and what it does
-  when the chosen combination is already taken by something else — GNOME will happily let two
-  entries claim one key and then honour neither predictably.
+  **done.** the header bar has a primary menu now (it had only the scope button), and
+  Preferences shows one row: what the shortcut is, what it runs, and a Change… button. it
+  reads `<Super>F2` and `/home/you/.local/bin/dictu-lookup` off dconf — the reader's own
+  configuration, not a copy of it — and writing goes back to the same place, so the Settings
+  app agrees with us and always will.
+  the plumbing is `src/shortcut.rs`, which is gtk-free apart from `gio`: `available` (is this
+  even a GNOME desktop), `current`, `set`, and `sensible`. it **appends** to
+  `custom-keybindings` when nothing is bound rather than writing over `custom0`, because that
+  list belongs to every application that has ever added a shortcut — Albert owns `custom0`
+  on this machine.
+  `sensible` refuses what GNOME would accept without comment: a bare letter, which would
+  swallow that letter everywhere on the desktop, and a lone modifier. a function key stands
+  alone because nothing else wants one. it parses the accelerator itself rather than calling
+  `gtk::accelerator_parse`, which needs gtk initialised and would have made a rule about
+  strings into a test that only runs with a display.
+  **verified without touching the binding**: drive the capture dialog and press the key it is
+  *already* on. the dialog closes only on a successful write, so a close plus an unchanged
+  dconf value is the write path proved harmlessly. `<Super>F2` before, `<Super>F2` after.
+  **two at-spi gaps found on the way**, both worth knowing before anyone writes an e2e check
+  here: a `gio::Menu` item in a popover is exposed with an empty accessible name, and an
+  `adw::ActionRow` *suffix* widget is not exposed at all — the Change… button is invisible to
+  the harness, which is why that verification went through the keyboard.
+  still open, and deliberately: what to do when the chosen combination is already taken by
+  something else. GNOME will let two entries claim one key and then honour neither
+  predictably, and detecting that means reading every binding in every media-keys schema, not
+  just the custom ones.
+- **[ ] #69 when nothing is searched, show the dictionaries.**
+  asked for: "when nothing is searched, i want to see a list of my dicts". the wordlist is
+  empty until you type, and the pane says "Type to search all dictionaries." — which is a
+  hint where there could be the collection itself: fifteen dictionaries, each with its
+  headword count, which is the one moment there is room to show them.
+  the material is already there and already assembled twice: `Collection::dict_count` and
+  `dict_label`/`dict_headwords` feed the scope panel's rows, and `library_size` writes the
+  status line. so this is a question of *what the empty state is for* rather than of new data.
+  worth deciding before building: is the list the **wordlist** (rows in the sidebar, so
+  clicking one could scope the search to it, which is #45/#64 territory) or the **definition
+  pane** (a proper cover page — the collection, its size, maybe when it was last indexed)?
+  the pane is where there is room to be generous, and it is already what shows a message
+  today. the sidebar is where a *list* belongs, and the wordlist is a model now (#57), so
+  putting dictionaries in it means a second item type or a separate model to swap in.
+  and it should say something true when there is nothing: no dictionaries configured is a
+  different empty state from nothing typed, and #61 showed how much a control that looks
+  broken costs — the same applies to a window that looks empty.
 - **[ ] #68 online dictionaries — Urban Dictionary, etymonline.**
   asked for: the collection is fifteen files on disk, and some of what a reader wants next is
   only online. Urban Dictionary for what no lexicon will admit exists, and **etymonline** —

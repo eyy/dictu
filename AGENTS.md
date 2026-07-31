@@ -136,6 +136,12 @@ what you need to know to add a check:
   button silently did nothing (#61). anything in a popover that grows with the collection
   belongs in a `ScrolledWindow` with `max_content_height`. **and note what this says about
   the fixture**: 36 checks passed against a panel that could not open.
+- **two things at-spi does not show you.** a `gio::Menu` item inside a popover comes
+  through with an **empty accessible name** — the primary menu's "Preferences" is a `menu
+  item` called `''` — and an `adw::ActionRow` **suffix** widget is not in the tree at all,
+  so the Preferences window's "Change…" button cannot be found or activated through the
+  bus (#67). where that bites, drive the keyboard instead and watch for something that *is*
+  exposed: the capture dialog's heading, in that case.
 - **the accessible description is not the tooltip.** gtk4 does not derive one from the
   other, so an empty `description` over at-spi says nothing about whether a tooltip
   appears — the window controls report theirs because gtk sets those explicitly. to check a
