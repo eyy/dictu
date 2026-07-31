@@ -238,7 +238,9 @@ because their notes are what the open ones argue with.
   something else. GNOME will let two entries claim one key and then honour neither
   predictably, and detecting that means reading every binding in every media-keys schema, not
   just the custom ones.
-- **[ ] #69 when nothing is searched, show the dictionaries.**
+- **[ ] #69 when nothing is searched, show the dictionaries.** *(the empty pane is no longer
+  empty — #48 put the incipit there — so this is now a question of what goes **beside** it,
+  or below it, rather than what fills a blank.)*
   asked for: "when nothing is searched, i want to see a list of my dicts". the wordlist is
   empty until you type, and the pane says "Type to search all dictionaries." — which is a
   hint where there could be the collection itself: fifteen dictionaries, each with its
@@ -407,7 +409,7 @@ because their notes are what the open ones argue with.
      wordlist — which is a new idea for the app (a dictionary that answers but does not
      list) and worth deciding deliberately.
 
-- **[ ] #48 a logo.** the app has no icon: the shell shows a generic placeholder in the
+- **[x] #48 a logo — the word itself, from the manuscript that named it.** the app had no icon: the shell shows a generic placeholder in the
   dash, the alt-tab switcher and the window list, which is also what a user sees before they
   see anything else. needs an app icon under the id it already claims
   (`io.github.eyy.Dictu`), in the hicolor theme, plus a `.desktop` file so the shell can find
@@ -466,6 +468,27 @@ because their notes are what the open ones argue with.
   README, cited to the shelfmark — with the *icon* redrawn from it: the same hand, the stem
   straightened until a D reads as a D at 48 px. that also settles the symbolic variant, which
   a photograph could never have been.
+  **done, and the choice went the other way: legibility is not critical here.** the icon is a
+  square detail of the page — the abbreviated `dcōnarius` with its macron above, the red
+  initial's bowl below — at 48/64/128/256 px in the hicolor theme, installed by
+  `hack/desktop/install.sh` under the id #66's entry already names. the initial is still an
+  O-shape at icon size; that was ruled a feature rather than a fault, since what the icon has
+  to be is *a scrap of that manuscript*, not a letter.
+  **and the whole incipit is the app's opening page**: with nothing searched, the definition
+  pane shows the picture, the latin, a plain gloss of it, the date, and the credit. it replaces
+  a one-line hint that said "Type to search all dictionaries." — which the search box's own
+  placeholder already says.
+  the licence turned out to be **CC BY-NC 4.0** (Digital Bodleian's terms), not the
+  all-rights-reserved the manifest's attribution suggested — so the picture may be used with
+  attribution, which is *why the credit is on the page* rather than only in
+  `assets/ATTRIBUTION.md`: on a non-commercial licence attribution is a condition, so an e2e
+  check asserts the credit line is still there. a redesign that quietly dropped it would be a
+  licence breach rather than a visual regression.
+  two limitations, both recorded rather than hidden. a `TextView` does **not** scale an inline
+  paintable — it draws it at its own size and clips the rest — so the asset is stored at 520 px
+  to sit inside the pane at the default window width; narrow the window far enough and its
+  right edge goes. and there is still **no symbolic variant**, because a photograph cannot be
+  one; the shell falls back to the colour icon where it wants a symbol.
 
 - **[ ] #50 an english–english dictionary, oxford if it can be had.** the collection reads
   *into* english and has nothing that defines english itself: thirteen of the fifteen

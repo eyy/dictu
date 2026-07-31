@@ -49,6 +49,38 @@ pub(super) fn head_tag(buffer: &gtk::TextBuffer) -> gtk::TextTag {
 /// the dim, small label marking which dictionary a definition came from. the
 /// generous space above it is what separates one dictionary's answer from the
 /// next; the letter spacing makes it read as a heading rather than as text.
+/// the opening page's three voices: the manuscript's own latin, a plain gloss of it, and
+/// the credit its licence requires (#48). the latin is set larger and italic because it
+/// is a quotation of the picture above it; the credit is small and dim because it must be
+/// there rather than read.
+pub(super) fn cover_tag(buffer: &gtk::TextBuffer, kind: &str) -> gtk::TextTag {
+    let name = format!("cover-{kind}");
+    buffer.tag_table().lookup(&name).unwrap_or_else(|| {
+        let mut builder = gtk::TextTag::builder()
+            .name(&name)
+            .left_margin(28)
+            .right_margin(28);
+        builder = match kind {
+            "latin" => builder
+                .style(gtk::pango::Style::Italic)
+                .scale(1.15 * BODY_SCALE)
+                .pixels_above_lines(18),
+            "gloss" => builder
+                .scale(0.95 * BODY_SCALE)
+                .foreground("#b0b0b0")
+                .pixels_above_lines(8),
+            // the credit line, and the source note above it
+            _ => builder
+                .scale(0.8 * BODY_SCALE)
+                .foreground("#7a7a7a")
+                .pixels_above_lines(16),
+        };
+        let tag = builder.build();
+        buffer.tag_table().add(&tag);
+        tag
+    })
+}
+
 /// the language pair beside a dictionary's heading — `LAT → FR` (#60). the same
 /// pixels-above as the heading it shares a line with, so the line does not shift, and
 /// no letter-spacing: the heading is spaced out like a label, and a language code

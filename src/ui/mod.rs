@@ -17,8 +17,21 @@ use crate::{config, dict, language, library, shortcut};
 
 mod render;
 use render::{
-    LINK_PREFIX, entry_tag, head_tag, link_tag, pair_tag, source_tag, structure_body, style_tag,
+    LINK_PREFIX, cover_tag, entry_tag, head_tag, link_tag, pair_tag, source_tag, structure_body,
+    style_tag,
 };
+
+/// the opening page's picture: the incipit of Garland's *Dictionarius*, cut from the
+/// Bodleian's IIIF image of St John's College MS 235. baked into the binary rather than
+/// installed beside it, so a build run from anywhere still has its own front page.
+/// see `assets/ATTRIBUTION.md` — the licence is CC BY-NC and the credit is on the page.
+///
+/// stored at 520px wide because a `TextView` does **not** scale an inline paintable: it
+/// draws it at its own size and clips whatever does not fit. 520 sits inside the pane at
+/// the default window width with its margins to spare. narrow the window far enough and
+/// the right edge goes — the honest fix is a child widget that can shrink, and it is not
+/// worth the resize plumbing for a picture nobody looks at while dragging a window edge.
+const INCIPIT: &[u8] = include_bytes!("../../assets/incipit-62r.jpg");
 
 /// one wordlist entry, as the model holds it: the lemma's row, and the label of every
 /// dictionary that has it — resolved once, when the search ran, because the factory
@@ -145,6 +158,47 @@ impl UiInner {
         self.select_first_row();
     }
 
+    /// the opening page: the incipit of the book that named the whole idea (#48).
+    ///
+    /// John of Garland wrote his *Dictionarius* in Paris about 1200 — a list of the trades
+    /// his students saw in the street, latin with old french between the lines — and this
+    /// line is where the word "dictionary" comes from. the picture is a detail of a copy
+    /// made a century later that survived by being used as binding waste.
+    ///
+    /// the credit is on the page rather than only in `assets/ATTRIBUTION.md` because the
+    /// licence is CC BY-NC: attribution is a condition, not a courtesy.
+    fn show_cover(&self) {
+        let buffer = self.definition.buffer();
+        buffer.set_text("");
+        let mut iter = buffer.start_iter();
+
+        // a decoding failure is not worth a blank page: the words carry it alone.
+        if let Ok(picture) = gdk::Texture::from_bytes(&glib::Bytes::from_static(INCIPIT)) {
+            buffer.insert_paintable(&mut iter, &picture);
+            buffer.insert(&mut iter, "\n");
+        }
+        buffer.insert_with_tags(
+            &mut iter,
+            "Dictionarius dicitur iste libellus a dictionibus magis necessarias, \
+             quas tenet quilibet scolaris…\n",
+            &[&cover_tag(&buffer, "latin")],
+        );
+        buffer.insert_with_tags(
+            &mut iter,
+            "“This little book is called a dictionarius, from the more necessary words \
+             that every scholar keeps…”\n",
+            &[&cover_tag(&buffer, "gloss")],
+        );
+        buffer.insert_with_tags(
+            &mut iter,
+            "John of Garland, Dictionarius — Paris, c. 1200; this copy c. 1300–1315.\n\
+             St John's College MS 235 (fragment 62r), Bodleian Libraries, University of \
+             Oxford. Photo © The President and Fellows of St John's College, Oxford, \
+             CC BY-NC 4.0.",
+            &[&cover_tag(&buffer, "credit")],
+        );
+    }
+
     /// plain message in the definition pane (hint / "no definition").
     fn set_message(&self, text: &str) {
         self.definition.buffer().set_text(text);
@@ -194,7 +248,7 @@ impl UiInner {
         self.model.splice(0, self.model.n_items(), &listed);
 
         if query.is_empty() {
-            self.set_message("Type to search all dictionaries.");
+            self.show_cover();
             // deliberately without the folded note: folding drops rows from a
             // result set, never headwords from the library, so the size is the one
             // count it cannot change.
@@ -966,7 +1020,8 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
             ui.search
                 .set_placeholder_text(Some("Search all dictionaries…"));
             ui.show_library_size();
-            ui.set_message("Type to search all dictionaries.");
+            // the opening page, now that there is a collection to open it in front of.
+            ui.show_cover();
             // a word may already be waiting: firing the hotkey with nothing running
             // starts the app AND fills the search box, and that search ran while
             // there was no index to search, so it found nothing. run it again now
