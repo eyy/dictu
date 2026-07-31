@@ -413,10 +413,33 @@ because their notes are what the open ones argue with.
   (`io.github.eyy.Dictu`), in the hicolor theme, plus a `.desktop` file so the shell can find
   it — today the app is launched from a terminal and never installed. an `adw::AboutWindow`
   would then have somewhere to put it.
-  wanted: a full-colour icon and a symbolic one, both svg, following the gnome icon
-  guidelines rather than a photograph shrunk down. the subject picks itself — this is a tool
-  for reading greek, latin and hebrew — but resist a scroll or a quill: every dictionary app
-  has one.
+  **the subject is decided: the word itself, from a manuscript or an inscription** — `dictu`
+  or `dictionarius`.
+  of the two, **`dictionarius` is the stronger**, because it is where the word came from:
+  John of Garland's *Dictionarius* (Paris, c. 1200) is the first book to carry the name. he
+  wrote it for his students as a list of the trades they saw in the street, in latin **with
+  Old French glosses between the lines** — which is very close to what this app is for, and
+  makes the icon a small argument rather than a decoration. it survives in ~26 copies.
+  `dictu` is harder to find in stone: it mostly occurs inside a phrase (*mirabile dictu*), so
+  epigraphy is the less promising half of the brief.
+  **where to look**, none of it a single search away: Digital Bodleian catalogues copies of
+  the *Dictionarius* (`medieval.bodleian.ox.ac.uk/catalog/work_2560`, which refuses automated
+  fetches — browse it), the Biblissima IIIF aggregator, Gallica, e-codices. Wikimedia Commons
+  has only three Johannes de Garlandia items and **none of the *Dictionarius***; the closest
+  is Biblioteca Medicea Laurenziana Plut. 25 sin. 5, a 13th-century *Synonyma* bound with
+  Villedieu's *Doctrinale* — the right hand and the wrong word.
+  **what makes this harder than picking a picture.** an app icon is read at 32–64 px in the
+  dash, the switcher and the window list, so a manuscript *page* becomes grey mush: the asset
+  has to be a **tight crop of one word, or of the initial D**, at high contrast. and gnome
+  wants two icons, full-colour *and* symbolic — a photograph cannot be symbolic, so the
+  symbolic one has to be a **redrawn letterform** tracing the same hand. so the deliverable
+  is two things from one source: a cropped image, and a monochrome redraw of its lettering.
+  the installation side is already done: #66's `.desktop` names `io.github.eyy.Dictu`, so an
+  icon of that name in the hicolor theme is picked up by the shell with no further work — and
+  until one exists the grid shows a placeholder beside the name.
+  and **record the provenance beside the asset**: shelfmark, folio, library, licence. many
+  libraries assert rights over their scans of public-domain originals, and "strictly for
+  private use" is a reason to note where a picture came from, not a reason not to.
 
 - **[ ] #50 an english–english dictionary, oxford if it can be had.** the collection reads
   *into* english and has nothing that defines english itself: thirteen of the fifteen
