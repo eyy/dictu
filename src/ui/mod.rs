@@ -135,9 +135,13 @@ impl UiInner {
         // tidier and left the second of two identical searches unguarded, which is
         // exactly the sequence the e2e suite runs. the one case that emits nothing is
         // empty replacing empty, and an empty query has no row to lose.
-        if !word.is_empty() {
-            *self.forwarded.borrow_mut() = Some(word.to_owned());
-        }
+        // set unconditionally, so an empty word *clears* a guard left over from a previous
+        // one. it has to: the emission that would otherwise clear it is the synchronous
+        // `search-changed("")` an emptied box sends, and that is precisely the one the
+        // block below hides from us. leaving it armed meant a word searched from the
+        // hotkey, cleared, and then typed again by hand was swallowed — the search simply
+        // did not happen, and the wordlist sat there empty with the word in the box.
+        *self.forwarded.borrow_mut() = (!word.is_empty()).then(|| word.to_owned());
         // and block the handler across the change itself, so the delete half of
         // `set_text` — a `search-changed("")` that arrives synchronously, since an
         // empty box is not debounced — is neither searched for nor able to consume the
@@ -162,6 +166,10 @@ impl UiInner {
     /// show the opening page — the incipit of the book that named the whole idea (#48).
     fn show_cover(&self) {
         self.pane.set_visible_child_name("cover");
+        // the strip lives *below* the stack, not inside it, so switching pages does not
+        // take it with us: without this it sits under the opening page still announcing
+        // "1 more definition below" about a definition nobody can see.
+        self.fold.set_visible(false);
     }
 
     /// show the definition pane, which every method that writes into it wants.
@@ -451,6 +459,10 @@ impl UiInner {
             // last word's definition sitting there under a new heading.
             None => {
                 self.shown.replace(None);
+                // this writes into the definition buffer, so that is the page to be on —
+                // otherwise the message lands behind the opening page and the window
+                // looks like it ignored the word.
+                self.show_pane();
                 let buffer = self.definition.buffer();
                 self.clear_sections(&buffer);
                 buffer.set_text(&format!("No definition for “{word}”."));

@@ -275,6 +275,29 @@ because their notes are what the open ones argue with.
   files in Dropbox; the honest default is off, with the reader turning it on per source.
   no scraping questions until that is settled: etymonline has no public api and its terms
   matter, Urban Dictionary has an unofficial one that comes and goes.
+- **[ ] #71 remember the scope: autosave it, and restore it next time.**
+  asked for: changes in the search-scope panel should be written to the config and be there
+  again next launch. today they are not — the panel's own hint says so out loud: "Narrows
+  **this session's** searches. What gets loaded at all is config.toml's business."
+  so this changes a stated contract, and that hint has to change with it. it also needs a
+  home in the file: scope is a per-dictionary flag, exactly like #52's name and #45's rank,
+  so it wants the same table keyed by path rather than a fourth list of paths. **do it with
+  #45/#52 or it will be rewritten by them.**
+  #38 already made writing `config.toml` safe (append-only, comments kept), so the writing
+  is not the problem. the questions are *when* — a write per checkbox click is a write per
+  click, so debounce it or save on close — and what happens when the file disagrees with
+  the disk: a remembered exclusion for a dictionary that is no longer there must be kept
+  rather than dropped, or unplugging a drive silently forgets the reader's choice.
+  and one honest thing to decide: "narrow this session" is a *useful* mode. if scope becomes
+  permanent, the panel probably needs both — a persistent choice, and a way to try something
+  without committing to it.
+- **[ ] #70 Ctrl+Q should close the app.**
+  asked for, and it is the one shortcut every gnome application has. the window has no
+  accelerators of its own at all today: `Escape`, `Ctrl+W` and `Ctrl+Q` all do nothing.
+  small — an `app.quit` action with `set_accels_for_action`, which also puts it in the
+  shell's own shortcut list — but worth doing as a set rather than one key at a time, and
+  worth deciding whether `Escape` clears the search box (useful) or closes the window
+  (surprising, given the search box is where focus usually is).
 - **[ ] #64 group the dictionaries by source language.**
   the scope panel lists fifteen dictionaries in one flat alphabetical run, so the languages
   are interleaved: Bailly (Grc-Fra), then bgl-Latin_English_Inflected, then two Hebrew
@@ -552,7 +575,17 @@ because their notes are what the open ones argue with.
   pane still reads correctly while nothing is selected. hence a 35th e2e check that outlasts
   the debounce and looks again. it is a guard on the new mechanism rather than on the old
   behaviour: it passes on the pre-#56 code too, where the single debounced search did the
-  selecting. it caught both wrong attempts, which is what it is for.
+  selecting. it caught both wrong attempts, which is what it is for.  **and a bug of its own, found the next day by an unrelated check.** the guard was armed
+  only for a non-empty word and never *cleared* for an empty one — so after a hotkey search
+  for `byte`, clearing the box and typing `byte` again by hand did nothing at all: the
+  wordlist sat empty with the word in the box. same asymmetry as the rest of this item: the
+  emission that would have cleared the guard is the synchronous `search-changed("")` an
+  emptied box sends, which is precisely the one the block hides from us. it is set
+  unconditionally now, so an empty word clears what a previous one left behind.
+  how it surfaced is the part worth keeping: not by review, but because a *cover-page* check
+  happened to search a word, clear it, and then type the same word — a sequence no test had
+  ever run. the bisect that found it took four trials, each differing by one step.
+
 - **[x] #54 warm start was 1.0 s, and #44 measured 0.39 s — it is 0.23 s now.** found by
   #53 the day it was written, on the same 15 dictionaries and the same 1,941,344 headwords.
   **warm open 1.0 s → 0.23 s and peak RSS 360 MB → 172 MB**, so it ended up well past the
