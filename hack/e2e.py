@@ -400,11 +400,25 @@ class Widgets:
         if not lists:
             raise LookupError("no wordlist in the widget tree")
         self.results = lists[0]
-        views = by_role(app, "text")
-        if not views:
-            raise LookupError("no definition pane in the widget tree")
-        self.definition = views[0]
+        # NOT resolved here: the definition pane shares a `gtk::Stack` with the opening
+        # page (#48), and a stack shows only its visible child to at-spi — so with the
+        # fixture, which indexes in milliseconds, the cover is already up and the text
+        # view is nowhere to be found. it appears the moment anything is shown in it, so
+        # it is looked up on use instead of at construction.
+        self._definition = None
         self._status = None  # see status_line: the label, once we have found it
+
+    @property
+    def definition(self):
+        """the definition pane, resolved on first use — see `__init__`."""
+        if self._definition is None:
+            views = by_role(self.app, "text")
+            if not views:
+                raise LookupError(
+                    "no definition pane in the widget tree — is the opening page showing?"
+                )
+            self._definition = views[0]
+        return self._definition
 
     def row_words(self):
         """the words in the wordlist. a row is a box holding the word and a dim
@@ -440,6 +454,11 @@ class Widgets:
             if "below:" in name and node.get_state_set().contains(Atspi.StateType.SHOWING):
                 return name
         return ""
+
+    def cover_text(self):
+        """the opening page's words. it is a page of labels rather than text in the
+        definition buffer (#48), so this reads them off the window instead."""
+        return " | ".join(self.status_text())
 
     def status_line(self):
         """the dim count line under the wordlist, e.g. "6 words · 1 dictionary"
@@ -697,7 +716,7 @@ def main():
         # rather than a visual regression.
         app_proc.forward("--search", "")
         cover = wait_for(
-            lambda: widgets.definition_text() if "Dictionarius dicitur" in widgets.definition_text() else None,
+            lambda: widgets.cover_text() if "Dictionarius dicitur" in widgets.cover_text() else None,
             10,
             "the opening page",
         )
@@ -727,8 +746,8 @@ def main():
         # auto-selection would have replaced the incipit with an entry.
         r.check(
             "a typed search picks no row for you",
-            typed == 0 and "Dictionarius dicitur" in widgets.definition_text(),
-            f"selected={typed}, pane={widgets.definition_text()[:60]!r}",
+            typed == 0 and "Dictionarius dicitur" in widgets.cover_text(),
+            f"selected={typed}, cover shown={('Dictionarius dicitur' in widgets.cover_text())}",
         )
 
         # roadmap #36: a search arriving from outside (the global hotkey's
