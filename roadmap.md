@@ -212,7 +212,8 @@ because their notes are what the open ones argue with.
   has no "record a shortcut" widget, so it means a key controller that takes the next
   combination and formats it as an accelerator (`<Super>F2`), and refusing the ones that
   would be absurd (a bare letter, a modifier alone).
-  **done.** the header bar has a primary menu now (it had only the scope button), and
+  **done.** the header bar carries a **cog** beside the scope button, both at the start —
+  it began as a hamburger with one item in it, which is a menu asking to be a button — and
   Preferences shows one row: what the shortcut is, what it runs, and a Change… button. it
   reads `<Super>F2` and `/home/you/.local/bin/dictu-lookup` off dconf — the reader's own
   configuration, not a copy of it — and writing goes back to the same place, so the Settings

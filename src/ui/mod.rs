@@ -791,20 +791,23 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
         .build();
     scope_button.update_property(&[gtk::accessible::Property::Label("Search scope")]);
 
-    // a primary menu, because the window had nowhere to put anything that is not a
-    // dictionary: the header carried the scope button and nothing else (#67).
-    let menu = gio::Menu::new();
-    menu.append(Some("Preferences"), Some("win.preferences"));
-    let menu_button = gtk::MenuButton::builder()
-        .icon_name("open-menu-symbolic")
-        .tooltip_text("Main menu")
-        .menu_model(&menu)
+    // a cog, and it opens preferences on the first press. it began as a menu with one
+    // item in it, which is a menu asking to be a button (#67): the window has exactly one
+    // thing to configure, so a hamburger only added a step to reach it.
+    let settings_button = gtk::Button::builder()
+        .icon_name("emblem-system-symbolic")
+        .tooltip_text("Preferences")
+        // the window action the button stands for, so the same thing happens however it
+        // is reached — the button, or `activate-action` from anywhere else.
+        .action_name("win.preferences")
         .build();
-    menu_button.update_property(&[gtk::accessible::Property::Label("Main menu")]);
+    settings_button.update_property(&[gtk::accessible::Property::Label("Preferences")]);
 
+    // both at the start: the scope filter is used often enough to sit leftmost, with the
+    // cog beside it. the window's own controls keep the other end to themselves.
     let header = adw::HeaderBar::new();
-    header.pack_end(&menu_button);
-    header.pack_end(&scope_button);
+    header.pack_start(&scope_button);
+    header.pack_start(&settings_button);
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Dictu")
