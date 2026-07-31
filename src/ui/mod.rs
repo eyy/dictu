@@ -17,8 +17,7 @@ use crate::{config, dict, language, library, shortcut};
 
 mod render;
 use render::{
-    LINK_PREFIX, cover_tag, entry_tag, head_tag, link_tag, pair_tag, source_tag, structure_body,
-    style_tag,
+    LINK_PREFIX, entry_tag, head_tag, link_tag, pair_tag, source_tag, structure_body, style_tag,
 };
 
 /// the opening page's picture: the incipit of Garland's *Dictionarius*, cut from the
@@ -72,6 +71,8 @@ pub(crate) struct UiInner {
     model: gio::ListStore,
     selection: gtk::SingleSelection,
     definition: gtk::TextView,
+    /// the opening page and the definition pane, one shown at a time (#48).
+    pane: gtk::Stack,
     status: gtk::Label,
     /// the strip under the definition naming what is still below the fold.
     fold: gtk::Label,
@@ -158,49 +159,19 @@ impl UiInner {
         self.select_first_row();
     }
 
-    /// the opening page: the incipit of the book that named the whole idea (#48).
-    ///
-    /// John of Garland wrote his *Dictionarius* in Paris about 1200 — a list of the trades
-    /// his students saw in the street, latin with old french between the lines — and this
-    /// line is where the word "dictionary" comes from. the picture is a detail of a copy
-    /// made a century later that survived by being used as binding waste.
-    ///
-    /// the credit is on the page rather than only in `assets/ATTRIBUTION.md` because the
-    /// licence is CC BY-NC: attribution is a condition, not a courtesy.
+    /// show the opening page — the incipit of the book that named the whole idea (#48).
     fn show_cover(&self) {
-        let buffer = self.definition.buffer();
-        buffer.set_text("");
-        let mut iter = buffer.start_iter();
+        self.pane.set_visible_child_name("cover");
+    }
 
-        // a decoding failure is not worth a blank page: the words carry it alone.
-        if let Ok(picture) = gdk::Texture::from_bytes(&glib::Bytes::from_static(INCIPIT)) {
-            buffer.insert_paintable(&mut iter, &picture);
-            buffer.insert(&mut iter, "\n");
-        }
-        buffer.insert_with_tags(
-            &mut iter,
-            "Dictionarius dicitur iste libellus a dictionibus magis necessarias, \
-             quas tenet quilibet scolaris…\n",
-            &[&cover_tag(&buffer, "latin")],
-        );
-        buffer.insert_with_tags(
-            &mut iter,
-            "“This little book is called a dictionarius, from the more necessary words \
-             that every scholar keeps…”\n",
-            &[&cover_tag(&buffer, "gloss")],
-        );
-        buffer.insert_with_tags(
-            &mut iter,
-            "John of Garland, Dictionarius — Paris, c. 1200; this copy c. 1300–1315.\n\
-             St John's College MS 235 (fragment 62r), Bodleian Libraries, University of \
-             Oxford. Photo © The President and Fellows of St John's College, Oxford, \
-             CC BY-NC 4.0.",
-            &[&cover_tag(&buffer, "credit")],
-        );
+    /// show the definition pane, which every method that writes into it wants.
+    fn show_pane(&self) {
+        self.pane.set_visible_child_name("definition");
     }
 
     /// plain message in the definition pane (hint / "no definition").
     fn set_message(&self, text: &str) {
+        self.show_pane();
         self.definition.buffer().set_text(text);
     }
 
@@ -489,6 +460,7 @@ impl UiInner {
     }
 
     fn show_row(&self, row: &library::Row) {
+        self.show_pane();
         let word = row.word.as_str();
         let collection = self.collection.borrow();
         if !collection.is_ready() {
@@ -696,8 +668,32 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
         .build();
     fold.add_css_class("dim-label");
 
+    // the opening page is a *widget*, not text in the buffer (#48). a `TextView` draws an
+    // inline paintable at its own size and clips the rest, so a picture in there could
+    // neither centre itself nor shrink; a `Picture` in a box does both for free, and a
+    // label can carry a real link.
+    // clamped, because a `Picture` set to `Contain` scales *up* to whatever it is given:
+    // on a wide pane the incipit grew to fill it instead of sitting at its own size. the
+    // clamp caps the page at the picture's natural width and centres it, and below that
+    // width everything — picture and prose — shrinks together.
+    let clamp = adw::Clamp::builder()
+        .maximum_size(560)
+        .tightening_threshold(420)
+        .child(&cover_page())
+        .build();
+    let cover_scroll = gtk::ScrolledWindow::new();
+    cover_scroll.set_child(Some(&clamp));
+    cover_scroll.set_hexpand(true);
+    cover_scroll.set_vexpand(true);
+
+    // one or the other, never both: the opening page until there is something to read.
+    let pane = gtk::Stack::new();
+    pane.add_named(&cover_scroll, Some("cover"));
+    pane.add_named(&def_scroll, Some("definition"));
+    pane.set_visible_child_name("definition");
+
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&def_scroll);
+    content.append(&pane);
     content.append(&fold);
 
     // adw::OverlaySplitView: idiomatic sidebar+content (handles csd sizing).
@@ -835,6 +831,7 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
         model: model.clone(),
         selection: selection.clone(),
         definition,
+        pane,
         status,
         fold: fold.clone(),
         sections: Rc::new(RefCell::new(Vec::new())),
@@ -1048,6 +1045,91 @@ fn toolbar_with(header: &adw::HeaderBar, content: &impl IsA<gtk::Widget>) -> adw
 /// dictionary, when the language can't be named (see `language::tag`) — and, when
 /// more than one dictionary has the word, how many. `dicts` is every dictionary
 /// that has it, in index order; the tooltip names them all.
+/// the opening page: the incipit of the book that named the whole idea (#48).
+///
+/// John of Garland wrote his *Dictionarius* in Paris about 1200 — a list of the trades his
+/// students saw in the street, latin with old french between the lines — and that line is
+/// where the word "dictionary" comes from. the picture is a detail of a copy made a century
+/// later which survived by being used as binding waste.
+///
+/// widgets rather than text in the definition buffer, which is what lets the picture centre
+/// itself and shrink with the pane: `can_shrink` plus `Contain` scales it down to whatever
+/// width there is, and its natural 520px is the ceiling, so a wide pane centres it instead
+/// of stretching it.
+///
+/// the credit is on the page, not only in `assets/ATTRIBUTION.md`: the licence is CC BY-NC,
+/// so attribution is a condition rather than a courtesy — and it carries the link to the
+/// page the picture came from, so the claim is checkable rather than asserted.
+fn cover_page() -> gtk::Box {
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    page.set_margin_top(28);
+    page.set_margin_bottom(28);
+    page.set_margin_start(24);
+    page.set_margin_end(24);
+    page.set_valign(gtk::Align::Center);
+
+    if let Ok(texture) = gdk::Texture::from_bytes(&glib::Bytes::from_static(INCIPIT)) {
+        let picture = gtk::Picture::for_paintable(&texture);
+        picture.set_can_shrink(true);
+        picture.set_content_fit(gtk::ContentFit::Contain);
+        picture.set_halign(gtk::Align::Center);
+        // its own aspect ratio, so shrinking the pane shortens it rather than squashing it
+        picture.set_height_request(80);
+        picture.add_css_class("card");
+        page.append(&picture);
+    }
+
+    let latin = label(
+        "Dictionarius dicitur iste libellus a dictionibus magis necessarias, \
+                       quas tenet quilibet scolaris…",
+    );
+    latin.add_css_class("title-4");
+    latin.set_attributes(Some(&{
+        let attrs = gtk::pango::AttrList::new();
+        attrs.insert(gtk::pango::AttrInt::new_style(gtk::pango::Style::Italic));
+        attrs
+    }));
+    page.append(&latin);
+
+    let gloss = label(
+        "“This little book is called a dictionarius, from the more necessary words \
+         that every scholar keeps…”",
+    );
+    gloss.add_css_class("dim-label");
+    page.append(&gloss);
+
+    let source = label("John of Garland, Dictionarius — Paris, c. 1200; this copy c. 1300–1315.");
+    source.add_css_class("dim-label");
+    source.add_css_class("caption");
+    page.append(&source);
+
+    // markup, so the shelfmark is a link: gtk opens it for us on activation.
+    let credit = label("");
+    credit.set_use_markup(true);
+    credit.set_markup(
+        "<a href=\"https://digital.bodleian.ox.ac.uk/objects/\
+         4021d35f-e1df-409f-a5b9-96dfa8cd417b/\">St John's College MS 235, fragment 62r</a> \
+         · Bodleian Libraries, University of Oxford · Photo © The President and Fellows of \
+         St John's College, Oxford · CC BY-NC 4.0",
+    );
+    credit.add_css_class("dim-label");
+    credit.add_css_class("caption");
+    page.append(&credit);
+
+    page
+}
+
+/// a wrapped, centred label of the width a page of prose wants.
+fn label(text: &str) -> gtk::Label {
+    gtk::Label::builder()
+        .label(text)
+        .wrap(true)
+        .justify(gtk::Justification::Center)
+        .max_width_chars(58)
+        .halign(gtk::Align::Center)
+        .build()
+}
+
 /// the widgets one wordlist row is made of, built empty. a factory reuses these as
 /// the reader scrolls, so they are made once and filled by `bind_row` — which is why
 /// the tag and the count exist even for a row that wants neither, hidden rather than

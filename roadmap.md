@@ -484,11 +484,23 @@ because their notes are what the open ones argue with.
   `assets/ATTRIBUTION.md`: on a non-commercial licence attribution is a condition, so an e2e
   check asserts the credit line is still there. a redesign that quietly dropped it would be a
   licence breach rather than a visual regression.
-  two limitations, both recorded rather than hidden. a `TextView` does **not** scale an inline
-  paintable — it draws it at its own size and clips the rest — so the asset is stored at 520 px
-  to sit inside the pane at the default window width; narrow the window far enough and its
-  right edge goes. and there is still **no symbolic variant**, because a photograph cannot be
-  one; the shell falls back to the colour icon where it wants a symbol.
+  **and then it became a page rather than text**, because the picture had to centre when the
+  pane is widened and shrink when it is narrowed — which text in a `TextView` cannot do: it
+  draws an inline paintable at its own size and clips the rest. so the opening page is now
+  widgets in a `gtk::Stack` beside the definition pane, one shown at a time: a `Picture` that
+  `can_shrink`, a clamp, and labels. the shelfmark is a **link** to the Bodleian page the
+  picture came from, so the credit is checkable rather than merely asserted.
+  **`adw::Clamp` is what makes it behave.** a `Picture` set to `Contain` scales *up* as well as
+  down, so on a 1500 px pane the incipit grew to fill it instead of sitting at its own size —
+  seen in a screenshot, not reasoned about. clamped to 560 it centres at natural size when
+  there is room and shrinks with everything else when there is not, verified at 620, 900 and
+  1500 px.
+  two things it cost, both worth knowing. **a `gtk::Stack` shows only its visible child to
+  at-spi**, so the harness could no longer find the definition pane at construction — with the
+  fixture, which indexes in milliseconds, the cover is already up — and `Widgets.definition` is
+  now resolved on use instead. and the icon still has **no symbolic variant**, because a
+  photograph cannot be one; the shell falls back to the colour icon where it wants a symbol.
+  the icon has rounded corners at each size, cut with a mask rather than drawn.
 
 - **[ ] #50 an english–english dictionary, oxford if it can be had.** the collection reads
   *into* english and has nothing that defines english itself: thirteen of the fifteen
