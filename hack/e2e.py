@@ -690,6 +690,23 @@ def main():
             f"expected ['sample'], got {alone}",
         )
 
+        # roadmap #48: with nothing searched the pane is the opening page — the incipit
+        # of the book that named the idea, its gloss, and the credit its licence
+        # requires. the credit is asserted too: CC BY-NC means attribution is a
+        # condition, so a silent redesign that dropped it would be a licence breach
+        # rather than a visual regression.
+        app_proc.forward("--search", "")
+        cover = wait_for(
+            lambda: widgets.definition_text() if "Dictionarius dicitur" in widgets.definition_text() else None,
+            10,
+            "the opening page",
+        )
+        r.check(
+            "with nothing searched the pane shows the incipit, and credits it",
+            "quilibet scolaris" in cover and "CC BY-NC 4.0" in cover,
+            f"pane read {cover[:110]!r}",
+        )
+
         # roadmap #57: a search the reader *types* selects nothing. the wordlist is a
         # model now, and gtk's `SingleSelection` selects the first item every time that
         # model changes unless told not to — which would put a definition on screen
@@ -706,9 +723,11 @@ def main():
         # which it could have gone wrong rather than asserting on the same instant.
         time.sleep(0.3)
         typed = Atspi.Selection.get_n_selected_children(widgets.results)
+        # the pane still holds the opening page (#48) rather than a definition: an
+        # auto-selection would have replaced the incipit with an entry.
         r.check(
             "a typed search picks no row for you",
-            typed == 0 and "Type to search" in widgets.definition_text(),
+            typed == 0 and "Dictionarius dicitur" in widgets.definition_text(),
             f"selected={typed}, pane={widgets.definition_text()[:60]!r}",
         )
 

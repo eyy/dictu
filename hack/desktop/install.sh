@@ -18,8 +18,13 @@ LAUNCHER="$HOME/.local/bin/dictu"
 ENTRY="$HOME/.local/share/applications/$APP_ID.desktop"
 HOTKEY="$HOME/.local/bin/dictu-lookup"
 
+ICONS="$HOME/.local/share/icons/hicolor"
+
 if [ "${1:-}" = "--remove" ]; then
     rm -fv "$LAUNCHER" "$ENTRY"
+    for size in 48 64 128 256; do
+        rm -fv "$ICONS/${size}x${size}/apps/$APP_ID.png"
+    done
     command -v update-desktop-database >/dev/null 2>&1 &&
         update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
     echo "removed. the shortcut still points at the launcher path; rerun without --remove to restore it."
@@ -34,6 +39,18 @@ echo "wrote $LAUNCHER"
 
 sed "s|@LAUNCHER@|$LAUNCHER|g" "$REPO/hack/desktop/dictu.desktop.in" > "$ENTRY"
 echo "wrote $ENTRY"
+
+# the icon the entry names, at the sizes the shell asks for. a detail of the manuscript
+# that gave "dictionary" its name — see assets/ATTRIBUTION.md, and note the licence is
+# CC BY-NC, which is why the credit is on the app's own opening page.
+for size in 48 64 128 256; do
+    install -Dm644 "$REPO/assets/icons/$APP_ID-$size.png" \
+        "$ICONS/${size}x${size}/apps/$APP_ID.png"
+done
+echo "wrote $ICONS/{48,64,128,256}x*/apps/$APP_ID.png"
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -f -t "$ICONS" 2>/dev/null || true
+fi
 
 # the shell caches this directory; without it the entry can take a re-login to show.
 if command -v update-desktop-database >/dev/null 2>&1; then
@@ -57,8 +74,5 @@ else
     echo "note: no $HOTKEY — the global shortcut is set up outside this repo" >&2
 fi
 
-cat <<NOTE
-
-the icon is still #48's job: the entry names $APP_ID and no such icon is
-installed, so the grid shows a placeholder until one is.
-NOTE
+echo
+echo "done. the grid entry, the icon and the shortcut all point at the latest build."
