@@ -173,6 +173,67 @@ because their notes are what the open ones argue with.
   the name already said. it earns its place on the four that name no pair in prose and on the
   ones whose names are folder names — and it will earn it everywhere after #52, when the
   heading reads "Gaffiot" and the languages are no longer hiding in a parenthesis.
+- **[x] #66 dictu is in the application grid, and everything leads to the latest build.**
+  asked for: "i want dictu to appear in the application screen on my ubuntu; it should always
+  lead to the latest build. the shortcut as well."
+  the repo now owns three files under `hack/desktop/`: a launcher, a `.desktop` entry, and an
+  installer that puts both under `$HOME` and can take them out again. run
+  `hack/desktop/install.sh`.
+  **"the latest build" is taken literally.** the launcher picks the newer of
+  `target/release/dictu` and `target/debug/dictu` by mtime, so `cargo build` and
+  `cargo build --release` each take effect the moment they finish and nobody edits a path.
+  verified by flipping the two mtimes and watching which one it resolves to. with nothing
+  built it says so through `notify-send`, because a launch from the grid has no terminal to
+  complain into.
+  the shortcut leads there too. it runs a script of its own —
+  `~/.local/bin/dictu-lookup`, which reads the primary selection before handing the word
+  over — and that script hard-coded the debug binary; the installer repoints its `DICTU=`
+  line at the launcher. so the grid and the hotkey can no longer disagree about which build
+  is current.
+  the entry is templated rather than committed with a path in it (`@REPO@`, `@LAUNCHER@`),
+  so nothing in the repository names a home directory. it validates against
+  `desktop-file-validate`, and `gtk-launch io.github.eyy.Dictu` starts the app.
+  **the icon is still #48.** the entry names `io.github.eyy.Dictu` and no such icon is
+  installed, so the grid shows a placeholder next to the name until one is.
+- **[ ] #67 show the global shortcut in the app, and let it be changed there.**
+  asked for with #66: "i want to see and be able to redefine the global shortcut in the
+  setting menu." today the shortcut is invisible from inside dictu — it is a GNOME custom
+  keybinding, set up by hand outside the app, and the only way to find out what it is is
+  `gsettings` or the Settings app. (it is `<Super>F2`; AGENTS.md said `Super+\` for weeks,
+  which is exactly the kind of thing a window that showed you would have prevented.)
+  it is readable and writable: `org.gnome.settings-daemon.plugins.media-keys`
+  `custom-keybindings` is a list of paths, each with `name`, `command` and `binding` under
+  `…media-keys.custom-keybinding`. so the app can find the entry whose `command` is our
+  launcher-based script, show its `binding`, and rewrite it — creating the entry if there
+  is none, which is also how this stops being a manual setup step for a fresh machine.
+  wants a **primary menu** in the header bar, which the window does not have yet: the header
+  carries only the scope button. so this is a small amount of new furniture — menu button,
+  `adw::PreferencesDialog`, a shortcut row — plus the capture, which is the fiddly half: gtk4
+  has no "record a shortcut" widget, so it means a key controller that takes the next
+  combination and formats it as an accelerator (`<Super>F2`), and refusing the ones that
+  would be absurd (a bare letter, a modifier alone).
+  two things to decide rather than assume: whether the app should offer to *create* the
+  keybinding when none exists (it should, but that means writing a new `custom%d` path into a
+  list other applications share, so it must append rather than replace), and what it does
+  when the chosen combination is already taken by something else — GNOME will happily let two
+  entries claim one key and then honour neither predictably.
+- **[ ] #68 online dictionaries — Urban Dictionary, etymonline.**
+  asked for: the collection is fifteen files on disk, and some of what a reader wants next is
+  only online. Urban Dictionary for what no lexicon will admit exists, and **etymonline** —
+  the Online Etymology Dictionary — which for english is the thing Klein is for hebrew, and
+  which this collection has no equivalent of at all.
+  the shape is the question, not the fetching. dictu is an *offline* dictionary whose whole
+  performance story is mmapped local files, so an online source is a different kind of thing:
+  it can fail, it is slow enough to need a spinner, and it must never make the wordlist wait.
+  so it is probably **not** another `Dictionary` implementation behind the same trait — that
+  trait promises `lookup(word) -> Vec<html>` synchronously, and a network call behind it would
+  block the search that #56 just made instant. more likely a section in the definition pane
+  that arrives late, on its own, after the local answers are already on screen.
+  and it needs deciding whether a lookup leaves the machine at all by default. a dictionary
+  that phones home for every word you read is a different privacy proposition from fifteen
+  files in Dropbox; the honest default is off, with the reader turning it on per source.
+  no scraping questions until that is settled: etymonline has no public api and its terms
+  matter, Urban Dictionary has an unofficial one that comes and goes.
 - **[ ] #64 group the dictionaries by source language.**
   the scope panel lists fifteen dictionaries in one flat alphabetical run, so the languages
   are interleaved: Bailly (Grc-Fra), then bgl-Latin_English_Inflected, then two Hebrew

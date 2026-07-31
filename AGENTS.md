@@ -305,9 +305,16 @@ this collection, most of it the decoded text of the DSL dictionaries — and is 
 data: `rm -rf ~/.cache/dictu` costs one slow launch and nothing else, which is also how you
 force the cold path when timing it. dictu says so on stderr if it can't write there.
 
-**global hotkey:** `Super+\` → `~/.local/bin/dictu-lookup`, which reads the primary
-selection (`wl-paste --primary --no-newline`) and execs `dictu --search "$word"`. it
-hard-codes the debug binary path, so it follows `cargo build`.
+**global hotkey:** `<Super>F2` → `~/.local/bin/dictu-lookup`, which reads the primary
+selection (`wl-paste --primary --no-newline`) and execs `dictu --search "$word"`. it is a
+GNOME custom keybinding (`org.gnome.settings-daemon.plugins.media-keys custom-keybindings`,
+`custom1` here), set up outside the app — #67 is to make the app show and change it.
+
+**the application grid:** `hack/desktop/install.sh` installs a `.desktop` entry and a
+launcher at `~/.local/bin/dictu` that runs whichever of the release and debug binaries was
+built last, so the grid and the hotkey always lead to the latest build (#66). it also
+repoints the hotkey script's `DICTU=` line at that launcher. `--remove` undoes both. the
+icon it names is not installed yet, so the grid shows a placeholder (#48).
 
 ## no-gui verification
 

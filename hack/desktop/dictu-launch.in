@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# launch whichever dictu was built most recently.
+#
+# the point is that the application grid and the global shortcut both lead to the
+# latest build without anyone editing a path: this picks the newer of the release
+# and debug binaries by mtime, so `cargo build` and `cargo build --release` each
+# take effect the moment they finish. installed by hack/desktop/install.sh, which
+# is what substitutes the repository path below.
+set -euo pipefail
+
+REPO="@REPO@"
+
+newest=""
+for candidate in "$REPO/target/release/dictu" "$REPO/target/debug/dictu"; do
+    [ -x "$candidate" ] || continue
+    if [ -z "$newest" ] || [ "$candidate" -nt "$newest" ]; then
+        newest="$candidate"
+    fi
+done
+
+if [ -z "$newest" ]; then
+    # a desktop launch has no terminal to complain into, so say it where it shows.
+    command -v notify-send >/dev/null 2>&1 &&
+        notify-send "dictu" "no build found under $REPO/target — run cargo build"
+    echo "dictu: nothing built under $REPO/target" >&2
+    exit 1
+fi
+
+exec "$newest" "$@"

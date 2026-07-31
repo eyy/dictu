@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Dictu
+GenericName=Dictionary
+Comment=Offline dictionary for Latin, Greek and Hebrew
+Exec=@LAUNCHER@
+Icon=io.github.eyy.Dictu
+Terminal=false
+Categories=Education;Languages;Dictionary;
+Keywords=dictionary;lexicon;latin;greek;hebrew;definition;
+StartupNotify=true
+StartupWMClass=dictu
