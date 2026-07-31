@@ -224,10 +224,24 @@ because their notes are what the open ones argue with.
   a name is not enough on its own: the wordlist tag is ellipsized at 12 characters, so
   something long needs a short form too (`Liddell & Scott` → `LSJ`). the language tag already
   covers greek and hebrew rows, which is why this is mostly felt on latin and french ones.
+  **the name should not carry the language pair, because #60's chip now does.** every heading
+  shows `LAT → FR` beside the name, so `Gaffiot 2016 (Lat-Fra)` says it twice — the name is
+  where the *work* goes, the chip is where the languages go. so the names below drop the pair
+  wherever it is only a pair, and keep it wherever it is part of the title or says something
+  the chip cannot: "Greek-English Lexicon" is what Liddell & Scott is *called*, and "NT Greek"
+  after Dodson is a dialect rather than a language.
+  and this has to be a hand-written name rather than a strip of the folder name, which is the
+  cheap version and does not survive its three obvious cases: `(Lat-Fra)` comes off cleanly,
+  `bgl-Latin_English_Inflected` becomes `bgl-_Inflected`, and `Greek-English Lexicon - Liddell
+  & Scott` loses the beginning of the work's own title. the chip is derived; the name is not
+  derivable, which is the whole reason #52 exists.
   a first cut, to argue with rather than adopt:
   Whitaker's Words · Lewis & Short · Gaffiot · Bailly · Liddell & Scott (LSJ) ·
   Middle Liddell · Dodson (NT Greek) · Lexicon to Pindar · LSJ sources · Klein Etymological ·
   Klein abbreviations · HALOT · a hebrew-hebrew dictionary · Even Sapir · Larousse.
+  with the pair dropped, that list is also what the *pane* headings read — `Gaffiot`
+  `LAT → FR` rather than `Gaffiot 2016 (Lat-Fra)` `LAT → FR` — which is when #60's chip stops
+  repeating anything and starts being the only place the languages are said.
 
 - **[ ] #45 let the user order the dictionaries, and sort results by that order.**
   the scope panel lists dictionaries in scan order (`config::scan` sorts by label) and the
