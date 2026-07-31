@@ -275,6 +275,32 @@ because their notes are what the open ones argue with.
   files in Dropbox; the honest default is off, with the reader turning it on per source.
   no scraping questions until that is settled: etymonline has no public api and its terms
   matter, Urban Dictionary has an unofficial one that comes and goes.
+- **[ ] #72 HALOT's headwords wear a stray `V`, and about 5,700 of them are like it.**
+  reported: "hebrew and aramic lexicon has lemmas start with a mysterious V". reproduced —
+  the wordlist carries `V אָדָם`, `V אֵל`, `V בַּד`, `V בֶּלַע`, `V חמר`.
+  the `V` is **ours, not theirs**. HALOT numbers its homonyms in roman numerals inside
+  parentheses, and in DSL a parenthesised part of a headword is the *optional* part — the
+  bit a search need not type. counted in the file:
+  | in the source | how many |
+  | --- | --- |
+  | `(\*)` — HALOT's mark for an unattested form | 2,134 |
+  | `(I)` | 1,680 |
+  | `(II)` | 1,552 |
+  | `(III)` | 284 |
+  | `(IV)` / `(V)` / `(VI)` | 56 / 18 / 6 |
+  so `V אָדָם` is the fifth homonym of *ādām*, and it looks like nonsense because the reader
+  keeps the optional group's *contents* as a second headword while dropping the parentheses
+  that explained them. it indexes both forms — a clean `אָדָם` row exists too — so the effect
+  is a duplicate row wearing a numeral. about **5,700 headwords** are affected, which is a
+  fifth of HALOT.
+  what the spec asks for: an optional group is optional *for matching*, so `(I) אָדָם` should
+  be findable as both `אָדָם` and `(I) אָדָם` while being **displayed** as one word. the fix
+  is in `dict/dsl.rs`'s headword handling, and it should decide three things: which form is
+  the display word (the one without the group), whether the numeral is worth showing at all
+  (it distinguishes homonyms, so probably beside the definition rather than in the list), and
+  what to do with `(\*)`, which is not a numeral but a genuine mark meaning "unattested".
+  #33's folding is the near neighbour here: two rows for one lemma is exactly what it exists
+  to prevent, and it cannot help while the two spellings differ by a visible `V`.
 - **[ ] #71 remember the scope: autosave it, and restore it next time.**
   asked for: changes in the search-scope panel should be written to the config and be there
   again next launch. today they are not — the panel's own hint says so out loud: "Narrows
