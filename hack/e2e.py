@@ -709,6 +709,24 @@ def main():
             f"expected ['sample'], got {alone}",
         )
 
+        # roadmap #48: and the fold strip goes with the definition it describes. it sits
+        # *below* the stack rather than inside it, so switching to the opening page does
+        # not hide it on its own — it announced "1 more definition below" underneath the
+        # cover until it was told to.
+        app_proc.forward("--search", "byte")
+        wait_for(lambda: "byte" in widgets.row_words() or None, 10, "the byte row")
+        select_first_row(widgets.results)
+        wait_for(lambda: widgets.fold_line() or None, 10, "the fold strip")
+        app_proc.forward("--search", "")
+        wait_for(lambda: "Dictionarius dicitur" in widgets.cover_text() or None, 10, "the cover")
+        # an absence, so give it a beat rather than asserting on the same instant
+        time.sleep(0.3)
+        r.check(
+            "the fold strip does not outlive the definition it belonged to",
+            widgets.fold_line() == "",
+            f"strip still reads {widgets.fold_line()!r} under the opening page",
+        )
+
         # roadmap #48: with nothing searched the pane is the opening page — the incipit
         # of the book that named the idea, its gloss, and the credit its licence
         # requires. the credit is asserted too: CC BY-NC means attribution is a
@@ -736,6 +754,10 @@ def main():
         # auto-selection replaces this hint with a definition.
         app_proc.forward("--search", "")  # clear the box, and focus it
         wait_for(lambda: not [w for w in widgets.row_words() if w] or None, 10, "an empty list")
+        # and focus the *window*: gtk drops injected keys for an unfocused one, and the
+        # checks above this may have left focus elsewhere — `present()` does not take it
+        # back on a bare display with no window manager to ask.
+        app_proc.focus_window()
         app_proc.type_text("byte")
         wait_for(lambda: "byte" in widgets.row_words() or None, 10, "the typed byte row")
         # an absence, so the same rule as the debounce check above: leave it a beat in
