@@ -991,7 +991,17 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
         ui,
         #[upgrade_or]
         glib::Propagation::Proceed,
-        move |_, key, _, state| ui.redirect_typing(key, state)
+        move |_, key, _, state| match key {
+            // escape empties the box, and an empty box is the opening page again
+            // (#70). here rather than on the entry, because this controller is the
+            // one place that sees the key wherever focus sits — in the wordlist or
+            // the definition pane just as much as in the box.
+            gdk::Key::Escape => {
+                ui.search.set_text("");
+                glib::Propagation::Stop
+            }
+            _ => ui.redirect_typing(key, state),
+        }
     ));
     window.add_controller(window_keys);
 
