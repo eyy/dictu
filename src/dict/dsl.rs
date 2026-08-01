@@ -322,30 +322,53 @@ fn file_card(
     display: &mut Vec<u32>,
 ) {
     let mut keys: Vec<String> = Vec::new();
+    // the forms this card is *listed* under, as against the ones it is merely findable
+    // by: every variant stays searchable, but a wordlist wants one row per headword
+    // rather than one per spelling of it (#72).
+    let mut listed: Vec<String> = Vec::new();
     for line in hw_lines {
-        for key in index_variants(line) {
+        for (key, marked) in variants(line) {
+            // a variant that kept a leading group is halot's homonym numeral or its
+            // unattested-asterisk: findable, never listed. one that did not is the word
+            // itself — `ad lib` as much as `ad libitum` — and both belong in the list.
+            let marked = marked || without_leading_numeral(&key) != key;
+            if !marked && !listed.contains(&key) {
+                listed.push(key.clone());
+            }
             if !keys.contains(&key) {
                 keys.push(key);
             }
         }
+        let shown = display_form(line);
+        if shown.is_empty() {
+            continue;
+        }
+        if !keys.contains(&shown) {
+            keys.push(shown.clone());
+        }
+        if !listed.contains(&shown) {
+            listed.push(shown);
+        }
+    }
+    // a line that is nothing but an optional group leaves nothing to show; rather than
+    // hide the card, fall back to what it can be found by.
+    if listed.is_empty() {
+        listed.extend(keys.first().cloned());
     }
     let (start, end) = body;
     for key in keys {
-        display.push(entries.len() as u32);
+        let index = entries.len() as u32;
+        let shown = listed.contains(&key);
         entries.push((Cow::Owned(key), (start as u64, end - start)));
+        if shown {
+            display.push(index);
+        }
     }
 }
 
-/// how many optional `(…)` groups we expand, i.e. 8 variants at most. beyond
-/// that only the everything-kept form is filed, rather than 2^n of them.
-const MAX_OPTIONAL_GROUPS: u32 = 3;
-
-/// the searchable forms of one headword line. escapes are resolved, `{…}`
-/// display-only text is dropped, and `(…)` marks an optional part — so
-/// `ad lib(itum)` files under both "ad libitum" and "ad lib", and halot's 6.5k
-/// `(*)`-marked hebrew roots are findable by the bare root.
-fn index_variants(line: &str) -> Vec<String> {
-    // the line as (text, optional?) segments; parens themselves never survive.
+/// one headword line as (text, optional?) segments, and how many `(…)` groups it had.
+/// parens themselves never survive; `{…}` display-only text is dropped.
+fn segments(line: &str) -> (Vec<(String, bool)>, u32) {
     let mut segments: Vec<(String, bool)> = vec![(String::new(), false)];
     let mut groups = 0u32;
     // depth, not a flag: halot writes `((\*)II) אבד`, and a nested `(` used to fall
@@ -386,6 +409,78 @@ fn index_variants(line: &str) -> Vec<String> {
         }
     }
 
+    (segments, groups)
+}
+
+/// a headword that opens with a roman numeral standing before a word in another script
+/// — halot's `(\*)V בַּד`, where the asterisk is parenthesised but the numeral is not.
+/// the numeral distinguishes homonyms and is not part of the word, so the list drops it
+/// and the grouping puts the homonyms on one row anyway (#72).
+///
+/// deliberately narrow: it wants a space, then a word whose first letter is hebrew or
+/// greek. a latin dictionary may perfectly well have `V` or `I` as a headword, and one
+/// standing alone has nothing after it to strip.
+fn without_leading_numeral(word: &str) -> &str {
+    let Some((head, rest)) = word.split_once(' ') else {
+        return word;
+    };
+    let roman = !head.is_empty()
+        && head
+            .chars()
+            .all(|c| matches!(c, 'I' | 'V' | 'X' | 'L' | 'C' | 'D' | 'M'));
+    if !roman {
+        return word;
+    }
+    let another_script = rest.chars().find(|c| c.is_alphabetic()).is_some_and(
+        |c| matches!(u32::from(c), 0x0590..=0x05FF | 0x0370..=0x03FF | 0x1F00..=0x1FFF),
+    );
+    match another_script {
+        true => rest.trim_start(),
+        false => word,
+    }
+}
+
+/// the one form of a headword line the wordlist should *show*, as against the several
+/// it can be found by.
+///
+/// the rule is where the optional group sits. a **leading** one is a marker rather than
+/// part of the word — halot writes `(I) אָדָם`, `((\*)II) אבד`, `(\*)אֵב`, using dsl's
+/// optional syntax to keep its homonym numerals and its unattested-form asterisk out of
+/// the search index — and listing those produced rows like `V אָדָם` beside a clean
+/// `אָדָם`, which is a duplicate wearing a numeral (#72). a **trailing** group is the
+/// word continuing: `ad lib(itum)` is one entry and it should read "ad libitum".
+///
+/// so: drop optional groups until the first real text, keep the ones after it.
+fn display_form(line: &str) -> String {
+    let (segments, _) = segments(line);
+    let mut out = String::new();
+    let mut started = false;
+    for (text, optional) in &segments {
+        if *optional {
+            if started {
+                out.push_str(text);
+            }
+            continue;
+        }
+        if !text.trim().is_empty() {
+            started = true;
+        }
+        out.push_str(text);
+    }
+    let joined = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    without_leading_numeral(&joined).to_string()
+}
+
+/// how many optional `(…)` groups we expand, i.e. 8 variants at most. beyond
+/// that only the everything-kept form is filed, rather than 2^n of them.
+const MAX_OPTIONAL_GROUPS: u32 = 3;
+
+/// the searchable forms of one headword line. escapes are resolved, `{…}`
+/// display-only text is dropped, and `(…)` marks an optional part — so
+/// `ad lib(itum)` files under both "ad libitum" and "ad lib", and halot's 6.5k
+/// `(*)`-marked hebrew roots are findable by the bare root.
+fn variants(line: &str) -> Vec<(String, bool)> {
+    let (segments, groups) = segments(line);
     let combinations = if groups == 0 || groups > MAX_OPTIONAL_GROUPS {
         1u32 // one variant: every optional group kept.
     } else {
@@ -393,9 +488,21 @@ fn index_variants(line: &str) -> Vec<String> {
     };
     let keep_all = groups == 0 || groups > MAX_OPTIONAL_GROUPS;
 
-    let mut out: Vec<String> = Vec::new();
+    // which groups sit before any real text: those are markers rather than word (#72)
+    let mut leading: Vec<bool> = Vec::new();
+    let mut started = false;
+    for (text, optional) in &segments {
+        if *optional {
+            leading.push(!started);
+        } else if !text.trim().is_empty() {
+            started = true;
+        }
+    }
+
+    let mut out: Vec<(String, bool)> = Vec::new();
     for mask in 0..combinations {
         let mut variant = String::new();
+        let mut marked = false;
         let mut group = 0;
         for (text, optional) in &segments {
             if !optional {
@@ -404,16 +511,24 @@ fn index_variants(line: &str) -> Vec<String> {
             }
             if keep_all || mask & (1 << group) != 0 {
                 variant.push_str(text);
+                marked |= leading.get(group).copied().unwrap_or(false);
             }
             group += 1;
         }
         // dropping a group can leave doubled or edge whitespace behind.
         let variant = variant.split_whitespace().collect::<Vec<_>>().join(" ");
-        if !variant.is_empty() && !out.contains(&variant) {
-            out.push(variant);
+        if !variant.is_empty() && !out.iter().any(|(v, _)| *v == variant) {
+            out.push((variant, marked));
         }
     }
     out
+}
+
+/// the searchable forms alone, without saying which of them carries a marker. only the
+/// tests want that view now — `file_card` needs the marker to decide what to list.
+#[cfg(test)]
+fn index_variants(line: &str) -> Vec<String> {
+    variants(line).into_iter().map(|(v, _)| v).collect()
 }
 
 /// append one char to the segment being built, starting a new segment when the
@@ -752,6 +867,54 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// roadmap #72. halot uses dsl's optional syntax for things that are not part of the
+    /// word — homonym numerals and its unattested-form asterisk — and listing every
+    /// searchable variant put `V אָדָם` in the wordlist beside a clean `אָדָם`.
+    #[test]
+    fn a_leading_optional_group_is_a_marker_and_a_trailing_one_is_the_word() {
+        for (line, shown) in [
+            ("(I) אָדָם", "אָדָם"),
+            ("(V) אָדָם", "אָדָם"),
+            // halot nests them: `((\*)II) אבד` is one group, all of it a marker
+            ("((\\*)II) אבד", "אבד"),
+            ("(\\*)אֵב", "אֵב"),
+            // …but a group the word continues into belongs to the word
+            ("ad lib(itum)", "ad libitum"),
+            ("colo(u)r", "colour"),
+            // nothing optional at all: unchanged
+            ("אָדָם", "אָדָם"),
+        ] {
+            assert_eq!(display_form(line), shown, "{line}");
+        }
+    }
+
+    /// halot writes the numeral inside the parens sometimes and outside them others:
+    /// `((\\*)IV) בַּד` and `(\\*)V בַּד` are the same kind of thing (#72).
+    #[test]
+    fn a_roman_numeral_before_another_script_is_a_marker_too() {
+        assert_eq!(display_form("(\\*)V בַּד"), "בַּד");
+        assert_eq!(display_form("((\\*)IV) בַּד"), "בַּד");
+        assert_eq!(display_form("III λόγος"), "λόγος");
+        // but a numeral that is the whole word, or stands before latin, is a word
+        assert_eq!(display_form("V"), "V");
+        assert_eq!(display_form("V littera"), "V littera");
+        assert_eq!(display_form("I bin"), "I bin");
+    }
+
+    /// and the point of keeping the variants: what is *shown* narrows, what can be
+    /// *found* does not.
+    #[test]
+    fn a_marked_headword_is_still_findable_by_its_marker() {
+        let text = "#NAME\t\"T\"\n(I) אָדָם\n\tman\n";
+        let dict = DslDictionary::from_text(text.to_string(), "t").unwrap();
+        assert_eq!(dict.headwords(), &["אָדָם".to_string()], "one row, not two");
+        assert!(!dict.lookup("אָדָם").is_empty(), "findable bare");
+        assert!(
+            !dict.lookup("I אָדָם").is_empty(),
+            "and findable with the numeral"
+        );
     }
 
     #[test]

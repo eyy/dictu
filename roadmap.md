@@ -275,7 +275,7 @@ because their notes are what the open ones argue with.
   files in Dropbox; the honest default is off, with the reader turning it on per source.
   no scraping questions until that is settled: etymonline has no public api and its terms
   matter, Urban Dictionary has an unofficial one that comes and goes.
-- **[ ] #72 HALOT's headwords wear a stray `V`, and about 5,700 of them are like it.**
+- **[x] #72 HALOT's headwords wore a stray `V`, and 5,224 of them were like it.**
   reported: "hebrew and aramic lexicon has lemmas start with a mysterious V". reproduced —
   the wordlist carries `V אָדָם`, `V אֵל`, `V בַּד`, `V בֶּלַע`, `V חמר`.
   the `V` is **ours, not theirs**. HALOT numbers its homonyms in roman numerals inside
@@ -301,6 +301,25 @@ because their notes are what the open ones argue with.
   what to do with `(\*)`, which is not a numeral but a genuine mark meaning "unattested".
   #33's folding is the near neighbour here: two rows for one lemma is exactly what it exists
   to prevent, and it cannot help while the two spellings differ by a visible `V`.
+  **done, and the rule is about *where* the group sits.** a **leading** optional group is a
+  marker — halot uses dsl's optional syntax to keep its homonym numerals and its
+  unattested-form asterisk out of the search index — while a **trailing** one is the word
+  carrying on: `ad lib(itum)` is one entry and reads "ad libitum". so every variant stays
+  searchable and only the unmarked ones are *listed*.
+  that distinction matters more than it looks: `build_order` walks `headwords()`, the
+  **display** list, so an entry dropped from it is not merely unlisted but **unfindable by
+  typing**. the first version of this fix listed one form per line and would have made
+  `ad lib` untypeable — the existing test caught it, which is the second time this week a
+  test written for the old behaviour turned out to be protecting something real.
+  halot then needed a second rule, because it is inconsistent with itself: `((\*)IV) בַּד`
+  puts the numeral inside the parens and `(\*)V בַּד` leaves it outside, as ordinary text.
+  so a **leading roman numeral standing before a word in another script** is dropped from
+  the display too — deliberately narrow, since a latin dictionary may well have `V` or
+  `I` as a headword of its own, and one standing alone has nothing after it to strip.
+  measured: **1,941,344 → 1,936,120 listed headwords, 5,224 fewer** — and `#53`'s speed
+  check refused to compare across the change and asked for a re-record, which is exactly
+  what it is for. the cache version went 5 → 6, since a v5 index lists headwords a v6 one
+  does not.
 - **[ ] #71 remember the scope: autosave it, and restore it next time.**
   asked for: changes in the search-scope panel should be written to the config and be there
   again next launch. today they are not — the panel's own hint says so out loud: "Narrows

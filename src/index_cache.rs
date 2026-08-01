@@ -57,8 +57,11 @@ pub type Range = (u64, u32);
 /// rather than not at all. **4**: that key now also drops a trailing homograph
 /// number (#43), which reorders it again. **5**: the per-dictionary index carries
 /// one more count — how many of its display headwords are lemmas rather than
-/// `.syn` aliases (#33).
-const VERSION: u32 = 5;
+/// `.syn` aliases (#33). **6**: a dsl headword's optional `(…)` groups no longer all
+/// become listed words — a *leading* one is a marker rather than the word (#72) — so a
+/// v5 index lists headwords this one does not, which is staleness a warm cache would
+/// answer with confidently.
+const VERSION: u32 = 6;
 
 const INDEX_MAGIC: &[u8; 8] = b"DICTUIDX";
 const INDEX_HEADER: usize = 112;
