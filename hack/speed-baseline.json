@@ -1,51 +1,51 @@
 {
-  "headwords": 1941344,
+  "headwords": 1936120,
   "dictionaries": 15,
-  "open_ms": 171,
+  "open_ms": 168,
   "cold": false,
   "peak_rss_mb": 172,
   "queries": [
     {
       "query": "a",
       "rows": 500,
-      "best_ns": 163200,
-      "worst_ns": 257381
+      "best_ns": 152073,
+      "worst_ns": 246711
     },
     {
       "query": "rex",
       "rows": 27,
-      "best_ns": 7382,
-      "worst_ns": 62901
+      "best_ns": 7314,
+      "worst_ns": 42732
     },
     {
       "query": "esse",
       "rows": 473,
-      "best_ns": 121965,
-      "worst_ns": 201686
+      "best_ns": 116759,
+      "worst_ns": 149293
     },
     {
       "query": "consuetudino",
       "rows": 0,
-      "best_ns": 267,
-      "worst_ns": 23047
+      "best_ns": 237,
+      "worst_ns": 16342
     },
     {
       "query": "λόγος",
       "rows": 1,
-      "best_ns": 5192,
-      "worst_ns": 54134
+      "best_ns": 5276,
+      "worst_ns": 41532
     },
     {
       "query": "מלך",
       "rows": 17,
-      "best_ns": 57609,
-      "worst_ns": 148795
+      "best_ns": 54613,
+      "worst_ns": 102285
     },
     {
       "query": "כאב",
       "rows": 18,
-      "best_ns": 41906,
-      "worst_ns": 75621
+      "best_ns": 42090,
+      "worst_ns": 70642
     }
   ]
 }
