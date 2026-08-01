@@ -1132,7 +1132,51 @@ def main():
                 "no click in the link's line followed it",
             )
 
+            # and escape still closes the scope panel. the panel is a surface of its
+            # own, which is why the window controller that #70 put escape on does not
+            # see its keys — but that is a claim about gtk's surfaces, so it gets a
+            # check rather than a comment.
+            open_scope(node)
+            app_proc.press_focused("Escape")
+            r.check(
+                "Escape closes the scope panel rather than clearing the search box",
+                wait_for_quiet(lambda: not scope_boxes(node)),
+                "the panel stayed open",
+            )
+
+            # roadmap #70: escape empties the box, and an empty box is the opening
+            # page again — so this asserts the whole consequence, not just the text.
+            app_proc.press("Escape")
+            emptied = wait_for_quiet(
+                lambda: text_of(widgets.search) == ""
+                and not [w for w in widgets.row_words() if w]
+                and bool(widgets.cover_text())
+            )
+            r.check(
+                "Escape empties the search box and brings the opening page back",
+                emptied,
+                f"box={text_of(widgets.search)!r}, rows={widgets.row_words()}",
+            )
+
         r.check("the app is still running (no crash)", app_proc.proc.poll() is None)
+
+        # last, because it ends the app. what is under test is that the key reaches
+        # the action at all: the accelerator is set on the *application*, so it has
+        # further to travel than a window one, and the exit code says the app went
+        # down by quitting rather than by falling over on the way out.
+        if not window_is_active(node):
+            print("  skip  Ctrl+Q (could not focus the test window)")
+        else:
+            app_proc.press("ctrl+q")
+            try:
+                code = app_proc.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                code = None
+            r.check(
+                "Ctrl+Q quits the app",
+                code == 0,
+                f"expected exit 0, got {code!r} (None = still running after 10s)",
+            )
 
     print(f"\ne2e: {len(r.passed)} passed, {len(r.failed)} failed")
     return 1 if r.failed else 0

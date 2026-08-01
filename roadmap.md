@@ -336,13 +336,33 @@ because their notes are what the open ones argue with.
   and one honest thing to decide: "narrow this session" is a *useful* mode. if scope becomes
   permanent, the panel probably needs both — a persistent choice, and a way to try something
   without committing to it.
-- **[ ] #70 Ctrl+Q should close the app.**
+- **[x] #70 Ctrl+Q closes the app.**
   asked for, and it is the one shortcut every gnome application has. the window has no
   accelerators of its own at all today: `Escape`, `Ctrl+W` and `Ctrl+Q` all do nothing.
   small — an `app.quit` action with `set_accels_for_action`, which also puts it in the
   shell's own shortcut list — but worth doing as a set rather than one key at a time, and
   worth deciding whether `Escape` clears the search box (useful) or closes the window
   (surprising, given the search box is where focus usually is).
+  **done, all three.** `ctrl+q` is an *app* action, so it releases the bus name and the
+  next launch is a new instance rather than a forward to a dead one; `ctrl+w` is gtk's
+  own `window.close`, the same thing today but still right if a second window appears.
+  both go through `set_accels_for_action`, which is also how the shell and libadwaita's
+  shortcut list learn them, so they are not described anywhere twice.
+  `escape` clears the box — and the deciding was about *where the handler lives*, not
+  which meaning to pick. on the entry's own `stop-search` it fires only with the cursor
+  in the box, and the first version did exactly that: the e2e check pressed escape after
+  a link click, focus was in the definition pane, and nothing happened. so it went on the
+  **window's capture-phase controller** — the one #23 already added for type-ahead —
+  which sees the key wherever focus sits and before the entry's own binding, so there is
+  one handler rather than two.
+  that only stays safe because the two things escape already means are out of reach of
+  it: the scope panel is a surface of its own (which is why #23 needed a second
+  controller for it) and preferences is a separate toplevel. the first of those is now a
+  check of its own, since it is a claim about gtk's surfaces rather than about our code.
+  mutation-tested: with the accel line and the escape arm removed, exactly those two
+  checks fail and the panel check stays green. `ctrl+w` has no check — the suite drives
+  one instance and only one app-ending key can be pressed per run, so `ctrl+q` has that
+  slot and `ctrl+w` was verified once by hand.
 - **[ ] #64 group the dictionaries by source language.**
   the scope panel lists fifteen dictionaries in one flat alphabetical run, so the languages
   are interleaved: Bailly (Grc-Fra), then bgl-Latin_English_Inflected, then two Hebrew
