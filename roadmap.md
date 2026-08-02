@@ -239,9 +239,7 @@ because their notes are what the open ones argue with.
   something else. GNOME will let two entries claim one key and then honour neither
   predictably, and detecting that means reading every binding in every media-keys schema, not
   just the custom ones.
-- **[ ] #69 when nothing is searched, show the dictionaries.** *(the empty pane is no longer
-  empty — #48 put the incipit there — so this is now a question of what goes **beside** it,
-  or below it, rather than what fills a blank.)*
+- **[x] #69 when nothing is searched, the sidebar shows the dictionaries.**
   asked for: "when nothing is searched, i want to see a list of my dicts". the wordlist is
   empty until you type, and the pane says "Type to search all dictionaries." — which is a
   hint where there could be the collection itself: fifteen dictionaries, each with its
@@ -258,6 +256,31 @@ because their notes are what the open ones argue with.
   and it should say something true when there is nothing: no dictionaries configured is a
   different empty state from nothing typed, and #61 showed how much a control that looks
   broken costs — the same applies to a window that looks empty.
+  **the sidebar, on request** — "put it in the sidebar, but it should be visually distinct
+  from the wordlist". so it is a second page of a `gtk::Stack` where the wordlist sits,
+  not a second item type in the wordlist's model: the model stays one kind of thing, and
+  the distinction comes free from being a different widget. a `boxed-list` card with a
+  heading over it and two lines per row, against the wordlist's flat rows and language
+  tag — the same vocabulary as the scope panel, which is also a list of dictionaries.
+  **the mistake worth recording**: the first version drove the sidebar from `show_cover`
+  and `show_pane`, on the reasoning that the pane's opening page and the sidebar's shelf
+  are one state. they are not. a *typed* search selects nothing (#57), so the pane keeps
+  the opening page while the wordlist fills — and the shelf sat over live results. the
+  sidebar follows the **query**; the pane follows what has been **chosen**. the type-ahead
+  check (#23) caught it on the first run, which is the second time this week a test
+  written for something else did the catching.
+  it also broke the harness in a way worth knowing: a `gtk::Stack` page that has *never
+  been shown* is not in the a11y tree at all, so `Widgets` could no longer find the
+  wordlist at construction — the fixture indexes in milliseconds, so the shelf was up
+  before the first walk. the wordlist is now resolved on use, exactly as the definition
+  pane already was for the same reason. and reading sensitivity off at-spi wants the
+  **ENABLED** state, not SENSITIVE: an insensitive `MenuButton`'s inner toggle still
+  reports `sensitive=true`, because that is its own property rather than the effective one.
+  mutation-tested from both sides: pinned to the wordlist, exactly the three shelf checks
+  fail; pinned to the shelf, the suite cannot find a wordlist to search in and exits 1.
+  the no-dictionaries state is a one-off rather than a check — the suite drives one
+  instance against one fixture — verified by hand: "No dictionaries. Add a folder to
+  dictionary_dirs in config.toml, then start dictu again.", with the scope button dead.
 - **[ ] #68 online dictionaries — Urban Dictionary, etymonline.**
   asked for: the collection is fifteen files on disk, and some of what a reader wants next is
   only online. Urban Dictionary for what no lexicon will admit exists, and **etymonline** —

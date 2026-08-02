@@ -73,6 +73,10 @@ pub(crate) struct UiInner {
     definition: gtk::TextView,
     /// the opening page and the definition pane, one shown at a time (#48).
     pane: gtk::Stack,
+    /// the sidebar's two pages: the wordlist, and the shelf shown in its place when
+    /// nothing has been typed.
+    sidebar: gtk::Stack,
+    shelf_list: gtk::ListBox,
     status: gtk::Label,
     /// the strip under the definition naming what is still below the fold.
     fold: gtk::Label,
@@ -177,6 +181,19 @@ impl UiInner {
         self.pane.set_visible_child_name("definition");
     }
 
+    /// which page the sidebar is on: the shelf until something is typed (#69).
+    ///
+    /// deliberately not tied to the pane's switch above, which looks like the same
+    /// question and is not. a *typed* search selects nothing (#57), so the pane keeps
+    /// the opening page while the wordlist fills with results — and the first version
+    /// of this drove both from `show_cover`, which left the shelf sitting over a live
+    /// wordlist for exactly that case. the sidebar follows the query; the pane follows
+    /// what has been chosen.
+    fn show_shelf(&self, nothing_typed: bool) {
+        self.sidebar
+            .set_visible_child_name(if nothing_typed { "shelf" } else { "words" });
+    }
+
     /// plain message in the definition pane (hint / "no definition").
     fn set_message(&self, text: &str) {
         self.show_pane();
@@ -194,6 +211,7 @@ impl UiInner {
         }
 
         let query = query.trim();
+        self.show_shelf(query.is_empty());
         // searching nothing is a state, not an empty result: say so instead of
         // showing an empty list that looks broken. with nothing loaded at all the
         // honest answer names the config, not a menu that would be empty.
@@ -411,6 +429,40 @@ impl UiInner {
         // nothing to scope when nothing loaded: leave the button dead rather than
         // popping up an empty list.
         self.scope_button.set_sensitive(dicts > 0);
+    }
+
+    /// fill the shelf: one row per dictionary, with what it holds (#69). asked for —
+    /// "when nothing is searched, i want to see a list of my dicts" — and it goes in
+    /// the sidebar, in the wordlist's place, because that is where a list belongs.
+    ///
+    /// same material as `build_scope` and deliberately not the same widget: this one
+    /// has no checkboxes and no handlers, because it says what is *there* rather than
+    /// what is searched. #45/#52/#64 rewrite both, and will decide then whether one
+    /// list can be both.
+    fn build_shelf(&self) {
+        let collection = self.collection.borrow();
+        if !collection.is_ready() {
+            return;
+        }
+        for index in 0..collection.dict_count() {
+            let label = collection.dict_label(index);
+            let row = adw::ActionRow::builder()
+                // a dictionary's name is data — escape it, the row renders markup.
+                .title(glib::markup_escape_text(label))
+                .subtitle(collection::quantity(
+                    collection.dict_headwords(index),
+                    "headword",
+                    "headwords",
+                ))
+                // one line each: a folder-name title long enough to wrap makes a
+                // wrapping label's width depend on its height, which inside a list
+                // that never scrolls sideways is the contradiction gtk complains
+                // about on every launch. #52 gives these names worth reading.
+                .title_lines(1)
+                .subtitle_lines(1)
+                .build();
+            self.shelf_list.append(&row);
+        }
     }
 
     /// a checkbox changed: update the mask, then re-run whatever is in the search
@@ -644,7 +696,63 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
     let results_scroll = gtk::ScrolledWindow::new();
     results_scroll.set_child(Some(&results));
     results_scroll.set_vexpand(true);
-    sidebar.append(&results_scroll);
+
+    // the shelf: what is in the library, shown where the wordlist would be if anything
+    // had been typed (#69). a boxed list rather than more rows like the wordlist's, so
+    // that at a glance it is plainly not search results — a card with separators and a
+    // heading over it, against flat rows with a language tag.
+    let shelf_list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .build();
+    shelf_list.add_css_class("boxed-list");
+    // the heading above it is a separate widget, so without this the list is anonymous
+    // to a screen reader — and to the harness, which tells the three lists in this
+    // window apart by name.
+    shelf_list.update_property(&[gtk::accessible::Property::Label("Your dictionaries")]);
+    // the other empty state, and a different one: nothing typed is not the same as
+    // nothing to type against (#61 — a window that looks broken costs more than it
+    // saves). gtk shows this exactly while the list has no rows, and the list is only
+    // ever on screen after indexing, so it cannot be read as "still loading".
+    let nothing = label(
+        "No dictionaries.\n\nAdd a folder to dictionary_dirs in config.toml, \
+         then start dictu again.",
+    );
+    nothing.add_css_class("dim-label");
+    nothing.set_margin_top(24);
+    shelf_list.set_placeholder(Some(&nothing));
+
+    let heading = gtk::Label::builder()
+        .label("Your dictionaries")
+        .xalign(0.0)
+        .margin_bottom(2)
+        .build();
+    heading.add_css_class("heading");
+    heading.add_css_class("dim-label");
+
+    let shelf = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    shelf.set_margin_top(6);
+    shelf.set_margin_bottom(6);
+    // the boxed-list card draws its own edge, which wants a little air the flat
+    // wordlist does not.
+    shelf.set_margin_start(2);
+    shelf.set_margin_end(2);
+    shelf.append(&heading);
+    shelf.append(&shelf_list);
+    let shelf_scroll = gtk::ScrolledWindow::new();
+    shelf_scroll.set_child(Some(&shelf));
+    shelf_scroll.set_vexpand(true);
+
+    // one or the other, never both — the same arrangement the pane already has, and
+    // switched by the same two methods, so the two halves of the window cannot end up
+    // in different states.
+    let sidebar_pages = gtk::Stack::new();
+    sidebar_pages.add_named(&results_scroll, Some("words"));
+    sidebar_pages.add_named(&shelf_scroll, Some("shelf"));
+    // the wordlist first: nothing is shown until indexing finishes, and an empty
+    // wordlist under "Indexing dictionaries…" is the honest picture of that.
+    sidebar_pages.set_visible_child_name("words");
+    sidebar_pages.set_vexpand(true);
+    sidebar.append(&sidebar_pages);
     sidebar.append(&status);
 
     // definition pane: read-only TextView for rich text + real line spacing.
@@ -847,6 +955,8 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
         selection: selection.clone(),
         definition,
         pane,
+        sidebar: sidebar_pages.clone(),
+        shelf_list: shelf_list.clone(),
         status,
         fold: fold.clone(),
         sections: Rc::new(RefCell::new(Vec::new())),
@@ -1038,6 +1148,10 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
             ui.collection.borrow_mut().open(library);
             // size the scope before anything searches: the re-run below reads it.
             ui.build_scope();
+            ui.build_shelf();
+            // and put it on screen: `populate_results` below runs only if a word is
+            // already waiting, so with an empty box nothing else would.
+            ui.show_shelf(ui.search.text().trim().is_empty());
             ui.search.set_sensitive(true);
             ui.search
                 .set_placeholder_text(Some("Search all dictionaries…"));

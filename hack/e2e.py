@@ -394,12 +394,12 @@ class Widgets:
         if not entries:
             raise LookupError("no search entry in the widget tree")
         self.search = entries[0]
-        # by name, not by position: the scope panel holds a second list of the same
-        # role, and it sits earlier in the tree (the header bar comes first).
-        lists = [n for n in by_role(app, "list") if (n.get_name() or "") == "Wordlist"]
-        if not lists:
-            raise LookupError("no wordlist in the widget tree")
-        self.results = lists[0]
+        # NOT resolved here either, and for the same reason as the pane below: the
+        # wordlist shares a stack with the shelf (#69), the fixture indexes in
+        # milliseconds, and a stack page that has never been shown is not in the a11y
+        # tree at all — so at construction there is no wordlist to find. the first
+        # search shows it, and it stays findable from then on.
+        self._results = None
         # NOT resolved here: the definition pane shares a `gtk::Stack` with the opening
         # page (#48), and a stack shows only its visible child to at-spi — so with the
         # fixture, which indexes in milliseconds, the cover is already up and the text
@@ -407,6 +407,31 @@ class Widgets:
         # it is looked up on use instead of at construction.
         self._definition = None
         self._status = None  # see status_line: the label, once we have found it
+
+    @property
+    def results(self):
+        """the wordlist, resolved on first use — see `__init__`. by name, not by
+        position: this window has three lists of the same role (the scope panel's and
+        the shelf's are the others), and the wordlist is not the first of them."""
+        if self._results is not None and defunct(self._results):
+            log("the cached wordlist node is defunct — looking it up again")
+            self._results = None
+        if self._results is None:
+            lists = [n for n in by_role(self.app, "list") if (n.get_name() or "") == "Wordlist"]
+            if not lists:
+                raise LookupError("no wordlist in the widget tree — is the shelf showing?")
+            self._results = lists[0]
+        return self._results
+
+    def shelf_rows(self):
+        """each shelf row as (dictionary, size), or [] when the shelf is not up."""
+        lists = [n for n in by_role(self.app, "list") if (n.get_name() or "") == "Your dictionaries"]
+        if not lists:
+            return []
+        return [
+            tuple((n.get_name() or "").strip() for n in by_role(row, "label"))
+            for row in by_role(lists[0], "list item")
+        ]
 
     @property
     def definition(self):
@@ -742,6 +767,43 @@ def main():
             "with nothing searched the pane shows the incipit, and credits it",
             "quilibet scolaris" in cover and "CC BY-NC 4.0" in cover,
             f"pane read {cover[:110]!r}",
+        )
+
+        # roadmap #69: and the sidebar shows the collection, in the wordlist's place —
+        # asked for as "when nothing is searched, i want to see a list of my dicts".
+        # the same two dictionaries the scope panel lists, with the same sizes, since
+        # both read them off the collection.
+        shelf = widgets.shelf_rows()
+        r.check(
+            "with nothing searched the sidebar lists every dictionary with its size",
+            shelf == [("links", "6 headwords"), ("sample", "7 headwords")],
+            f"shelf rows read {shelf}",
+        )
+
+        # and it is *instead of* the wordlist, not beside it — the two share a stack, so
+        # a stale wordlist under a shelf would mean both were on screen at once.
+        r.check(
+            "the wordlist is not on screen while the shelf is",
+            not [n for n in by_role(node, "list") if (n.get_name() or "") == "Wordlist"],
+            "the wordlist is still in the tree with nothing searched",
+        )
+
+        # typing takes it away again. this is the case the first version got wrong: a
+        # typed search selects nothing (#57), so the *pane* rightly stays on the opening
+        # page — and driving the sidebar from the pane's switch left the shelf sitting
+        # over a wordlist full of results.
+        app_proc.forward("--search", "zeit")
+        wait_for(lambda: [w for w in widgets.row_words() if w] or None, 10, "the zeit row")
+        r.check(
+            "searching puts the wordlist back and takes the shelf away",
+            not widgets.shelf_rows(),
+            f"the shelf is still up: {widgets.shelf_rows()}",
+        )
+        app_proc.forward("--search", "")
+        r.check(
+            "clearing the box brings the shelf back",
+            wait_for_quiet(lambda: len(widgets.shelf_rows()) == 2, timeout=5),
+            f"shelf rows read {widgets.shelf_rows()}",
         )
 
         # roadmap #57: a search the reader *types* selects nothing. the wordlist is a
@@ -1214,6 +1276,16 @@ def another_instance_owns_the_name():
         # report it rather than this guard.
         log(f"could not ask the bus who owns {APP_ID}: {err}")
         return False
+
+
+def defunct(node):
+    """has this at-spi node outlived the widget behind it? the wordlist's does: hiding
+    a `gtk::Stack` page destroys its accessible, and showing the page again builds a
+    new one, so a reference taken before the shelf appeared answers nothing after."""
+    try:
+        return node.get_state_set().contains(Atspi.StateType.DEFUNCT)
+    except Exception:
+        return True
 
 
 def safe(fn, *args):
