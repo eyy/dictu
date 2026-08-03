@@ -149,6 +149,30 @@ impl Library {
         self.dicts.get(index).map(|d| d.path.as_path())
     }
 
+    /// the reading order (#45): dictionary indices, in the order they should be shown
+    /// and answered in. ranked dictionaries lead in the order given; the rest follow
+    /// by name, which is what an unconfigured collection has always looked like.
+    ///
+    /// a *permutation over* the library rather than the library's own numbering. that
+    /// numbering is slot space — the merged index is built on it and its cache is
+    /// keyed to it — so ordering by preference there would rebuild 1.9M keys on every
+    /// drag, and not take effect until the next launch either.
+    pub fn order_from(&self, entries: &[DictEntry]) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.dict_count()).collect();
+        order.sort_by_cached_key(|&index| {
+            let rank = self
+                .dict_path(index)
+                .and_then(|path| entries.iter().find(|entry| entry.path == path))
+                .and_then(|entry| entry.order);
+            (
+                rank.is_none(),
+                rank.unwrap_or(0),
+                self.dict_label(index).unwrap_or("").to_lowercase(),
+            )
+        });
+        order
+    }
+
     /// the opening scope, read off what the config remembered about each dictionary
     /// (#71): one flag per dictionary in library order. matched by path rather than
     /// by position, because the two lists differ by exactly the dictionaries that
@@ -969,6 +993,7 @@ mod tests {
             derived: stem.to_string(),
             short: None,
             scope: true,
+            order: None,
         }
     }
 

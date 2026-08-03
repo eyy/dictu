@@ -211,6 +211,20 @@ impl Config {
         Ok(doc.to_string())
     }
 
+    /// remember the reading order, as positions 0..n (#45). every dictionary is
+    /// written, not only the ones that moved: a drag says where *all* of them go
+    /// relative to each other, and half a list of ranks would leave the rest to fall
+    /// wherever the alphabet puts them.
+    pub fn remember_order(&mut self, paths: &[std::path::PathBuf]) -> Result<()> {
+        for (rank, path) in paths.iter().enumerate() {
+            self.dictionary
+                .entry(path.display().to_string())
+                .or_default()
+                .order = Some(rank as i64);
+        }
+        self.save()
+    }
+
     /// remember whether a dictionary is searched, and write it down (#71).
     ///
     /// one write per click, which is what the reader asked for — "changing things in
@@ -275,6 +289,9 @@ pub struct DictEntry {
     pub derived: String,
     /// whether it starts in scope, as remembered from last time (#71).
     pub scope: bool,
+    /// where the reader put it in the reading order (#45). `None` is "wherever it
+    /// falls" — ranked dictionaries lead, the rest follow by name.
+    pub order: Option<i64>,
 }
 
 /// recursively scan the configured directories for primary dictionary files.
@@ -326,6 +343,7 @@ pub fn scan(config: &Config) -> Vec<DictEntry> {
                 derived,
                 short: settings.and_then(|s| s.short.clone()),
                 scope: settings.and_then(|s| s.scope).unwrap_or(true),
+                order: settings.and_then(|s| s.order),
             })
         })
         .collect();
@@ -480,6 +498,7 @@ mod tests {
                 derived: "x".into(),
                 short: None,
                 scope: true,
+                order: None,
             },
             DictEntry {
                 path: "/d/x.dsl.dz".into(),
@@ -488,6 +507,7 @@ mod tests {
                 derived: "x".into(),
                 short: None,
                 scope: true,
+                order: None,
             },
             DictEntry {
                 path: "/d/y.dsl.dz".into(),
@@ -496,6 +516,7 @@ mod tests {
                 derived: "y".into(),
                 short: None,
                 scope: true,
+                order: None,
             },
         ];
         dedupe_dsl(&mut entries);

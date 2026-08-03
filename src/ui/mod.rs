@@ -122,6 +122,9 @@ pub(crate) struct UiInner {
     /// the scope panel's rows, filled once the dictionaries are known, and the
     /// header button that pops it up.
     scope_list: gtk::ListBox,
+    /// each scope row and the dictionary it stands for, so a row that has been
+    /// dragged somewhere else can still say which one it is (#45).
+    scope_rows: RefCell<Vec<(adw::ActionRow, usize)>>,
     scope_button: gtk::MenuButton,
 }
 
@@ -400,7 +403,7 @@ impl UiInner {
         if !ready {
             return;
         }
-        for index in 0..dicts {
+        for index in self.collection.borrow().dicts_in_order().to_vec() {
             let (label, headwords) = {
                 let collection = self.collection.borrow();
                 (
@@ -449,6 +452,49 @@ impl UiInner {
                     ui.set_dict_active(index, check.is_active());
                 }
             });
+            // drag to reorder (#45). here rather than in the shelf because this is
+            // where the other per-dictionary choices are made — the shelf shows the
+            // collection, the panel is where it is arranged.
+            let drag = gtk::DragSource::builder()
+                .actions(gdk::DragAction::MOVE)
+                .build();
+            drag.connect_prepare(glib::clone!(
+                #[weak]
+                row,
+                #[upgrade_or]
+                None,
+                move |_, _, _| Some(gdk::ContentProvider::for_value(&row.to_value()))
+            ));
+            drag.connect_drag_begin(glib::clone!(
+                #[weak]
+                row,
+                move |source, _| {
+                    // the row itself travels under the pointer, so what is moving is
+                    // never in question.
+                    source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&row))), 0, 0);
+                }
+            ));
+            row.add_controller(drag);
+
+            let drop = gtk::DropTarget::new(adw::ActionRow::static_type(), gdk::DragAction::MOVE);
+            let this = self.this.clone();
+            drop.connect_drop(glib::clone!(
+                #[weak]
+                row,
+                #[upgrade_or]
+                false,
+                move |_, value, _, _| {
+                    let (Ok(dragged), Some(ui)) = (value.get::<adw::ActionRow>(), this.upgrade())
+                    else {
+                        return false;
+                    };
+                    ui.drop_row_onto(&dragged, &row);
+                    true
+                }
+            ));
+            row.add_controller(drop);
+
+            self.scope_rows.borrow_mut().push((row.clone(), index));
             self.scope_list.append(&row);
         }
         // nothing to scope when nothing loaded: leave the button dead rather than
@@ -469,7 +515,12 @@ impl UiInner {
         if !collection.is_ready() {
             return;
         }
-        for index in 0..collection.dict_count() {
+        // emptied first: this runs again whenever the reading order changes (#45),
+        // and a list that only ever appended would show the collection twice.
+        while let Some(row) = self.shelf_list.first_child() {
+            self.shelf_list.remove(&row);
+        }
+        for &index in collection.dicts_in_order() {
             let label = collection.dict_label(index);
             let row = adw::ActionRow::builder()
                 // a dictionary's name is data — escape it, the row renders markup.
@@ -488,6 +539,60 @@ impl UiInner {
                 .build();
             self.shelf_list.append(&row);
         }
+    }
+
+    /// one scope row dropped onto another: move it there, and make everything else
+    /// follow (#45).
+    ///
+    /// dragging down lands *after* the row you dropped on and dragging up lands
+    /// before it, which falls out of removing before inserting and is what every
+    /// other reorderable list does.
+    fn drop_row_onto(&self, dragged: &adw::ActionRow, onto: &adw::ActionRow) {
+        if dragged == onto {
+            return;
+        }
+        let at = onto.index();
+        self.scope_list.remove(dragged);
+        self.scope_list.insert(dragged, at);
+
+        // read the order back off the list rather than computing it: the list is what
+        // the reader just arranged, and anything else would be a second opinion about
+        // what they did.
+        let known = self.scope_rows.borrow();
+        let mut order = Vec::with_capacity(known.len());
+        let mut child = self.scope_list.first_child();
+        while let Some(widget) = child {
+            if let Some(row) = widget.downcast_ref::<adw::ActionRow>()
+                && let Some((_, index)) = known.iter().find(|(known, _)| known == row)
+            {
+                order.push(*index);
+            }
+            child = widget.next_sibling();
+        }
+        drop(known);
+        self.set_reading_order(order);
+    }
+
+    /// the reading order changed: apply it, write it down, and re-show everything
+    /// that is ordered by it — the shelf, the definition on screen, and the wordlist,
+    /// whose rows name their dictionaries in this order too.
+    fn set_reading_order(&self, order: Vec<usize>) {
+        let paths: Vec<std::path::PathBuf> = order
+            .iter()
+            .filter_map(|&index| {
+                self.collection
+                    .borrow()
+                    .dict_path(index)
+                    .map(Path::to_owned)
+            })
+            .collect();
+        self.collection.borrow_mut().set_order(order);
+        if let Err(err) = self.config.borrow_mut().remember_order(&paths) {
+            eprintln!("dictu: could not remember the reading order: {err:#}");
+        }
+        self.build_shelf();
+        self.render_shown_again();
+        self.populate_results(&self.search.text());
     }
 
     /// a checkbox changed: update the mask, then re-run whatever is in the search
@@ -1013,6 +1118,7 @@ pub(crate) fn build(
         collection: Rc::new(RefCell::new(Collection::empty())),
         config: config.clone(),
         scope_list,
+        scope_rows: RefCell::new(Vec::new()),
         scope_button,
     });
 
@@ -1190,15 +1296,16 @@ pub(crate) fn build(
         // library arrives.
         let library = Library::open(&entries_owned);
         let scope = library.scope_from(&entries_owned);
-        let _ = tx.send_blocking((library, scope));
+        let order = library.order_from(&entries_owned);
+        let _ = tx.send_blocking((library, scope, order));
     });
     // weakly, and upgraded only after the await: indexing takes ~30s, so the
     // window can be closed while this is still pending.
     let ui_ready = Rc::downgrade(&ui);
     glib::spawn_future_local(async move {
-        if let Ok((library, scope)) = rx.recv().await {
+        if let Ok((library, scope, order)) = rx.recv().await {
             let Some(ui) = ui_ready.upgrade() else { return };
-            ui.collection.borrow_mut().open(library, scope);
+            ui.collection.borrow_mut().open(library, scope, order);
             // size the scope before anything searches: the re-run below reads it.
             ui.build_scope();
             ui.build_shelf();

@@ -21,6 +21,10 @@ pub struct Collection {
     /// state before the scope panel exists, which is also what `Library` reads an
     /// empty mask as.
     scope: Vec<bool>,
+    /// dictionary indices in the reader's order (#45): what the lists show, and the
+    /// order a word's definitions come back in. a permutation over the library, not
+    /// the library's own numbering — see `Library::order_from`.
+    order: Vec<usize>,
     fold_forms: bool,
 }
 
@@ -40,6 +44,7 @@ impl Collection {
         Self {
             library: None,
             scope: Vec::new(),
+            order: Vec::new(),
             fold_forms: false,
         }
     }
@@ -47,11 +52,43 @@ impl Collection {
     /// hand over the built index, and what the reader last chose to search (#71).
     /// a flag per dictionary in library order; anything short is padded with `true`,
     /// since a dictionary nobody has an opinion about is one nobody has excluded.
-    pub fn open(&mut self, library: Library, scope: Vec<bool>) {
+    pub fn open(&mut self, library: Library, scope: Vec<bool>, order: Vec<usize>) {
         let mut scope = scope;
         scope.resize(library.dict_count(), true);
         self.scope = scope;
+        self.set_order(order);
         self.library = Some(library);
+    }
+
+    /// the reading order, as dictionary indices. anything missing from it is appended
+    /// in library order, so an order that has gone stale — a dictionary added since
+    /// it was written — still names every dictionary exactly once.
+    pub fn set_order(&mut self, order: Vec<usize>) {
+        // sized by the largest index it was handed, not by the count: this is public
+        // and takes whatever it is given, and indexing `seen` by a number past the end
+        // of the collection would take the app down rather than ignore a bad order.
+        let top = order.iter().copied().max().map_or(0, |index| index + 1);
+        let mut seen = vec![false; self.dict_count().max(top)];
+        self.order = order
+            .into_iter()
+            .filter(|&index| !std::mem::replace(&mut seen[index], true))
+            .collect();
+        self.order
+            .extend((0..self.dict_count()).filter(|&index| !seen[index]));
+    }
+
+    /// every dictionary, in the reader's order — what the panel and the shelf list.
+    pub fn dicts_in_order(&self) -> &[usize] {
+        &self.order
+    }
+
+    /// where a dictionary comes in that order. unranked ones sort last, which only
+    /// happens between `open` and the order being worked out.
+    pub fn rank(&self, dict: usize) -> usize {
+        self.order
+            .iter()
+            .position(|&index| index == dict)
+            .unwrap_or(usize::MAX)
     }
 
     pub fn is_ready(&self) -> bool {
@@ -196,6 +233,11 @@ impl Collection {
                 }),
             }
         }
+        // and in the reader's order (#45). sorted at the end rather than by walking
+        // the order outside and the members inside: the merge above depends on equal
+        // dictionaries being adjacent, which is how `members` comes, and a stable sort
+        // keeps that while moving whole sections.
+        found.sort_by_key(|definition| self.rank(definition.dict));
         found
     }
 
@@ -271,6 +313,38 @@ pub fn quantity(n: usize, singular: &str, plural: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #45: the order names every dictionary exactly once, whatever it is handed.
+    /// it comes from a config file, so it can be stale in every direction — written
+    /// when there were three dictionaries, or five, or with a line duplicated by a
+    /// hand edit — and a list that named one twice would show it twice.
+    #[test]
+    fn a_stale_order_still_names_every_dictionary_once() {
+        let mut collection = Collection::empty();
+        // no library: dict_count is 0, so only what it is given survives.
+        collection.set_order(vec![2, 0, 2, 1]);
+        assert_eq!(collection.dicts_in_order(), [2, 0, 1], "a repeat was kept");
+        // and an index past the end of the collection is survivable, which it was
+        // not: `seen` used to be sized by the count and this indexed past it.
+        collection.set_order(vec![9, 0]);
+        assert_eq!(collection.dicts_in_order(), [9, 0]);
+
+        collection.set_order(Vec::new());
+        assert!(collection.dicts_in_order().is_empty());
+    }
+
+    /// and `rank` is the inverse of it, which is what sorts a word's definitions.
+    #[test]
+    fn rank_is_where_a_dictionary_comes_in_the_order() {
+        let mut collection = Collection::empty();
+        collection.set_order(vec![3, 1, 0]);
+        assert_eq!(collection.rank(3), 0);
+        assert_eq!(collection.rank(1), 1);
+        assert_eq!(collection.rank(0), 2);
+        // one nobody ordered sorts last rather than first, so an order that has not
+        // been worked out yet cannot silently promote a dictionary.
+        assert_eq!(collection.rank(9), usize::MAX);
+    }
 
     /// a collection with no index answers everything rather than panicking: the
     /// window is up and asking before the worker thread has finished.

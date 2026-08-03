@@ -205,7 +205,8 @@ fn opened(fold_forms: bool) -> Collection {
     // over one collection, and a count measured here is the count the window shows.
     let library = Library::open(&entries);
     let scope = library.scope_from(&entries);
-    collection.open(library, scope);
+    let order = library.order_from(&entries);
+    collection.open(library, scope, order);
     collection.set_fold_forms(fold_forms);
     collection
 }
@@ -335,8 +336,10 @@ fn scope(json: bool) -> glib::ExitCode {
     printing(|out| {
         if json {
             let answer = ScopeOut {
-                dictionaries: (0..collection.dict_count())
-                    .map(|at| DictOut {
+                dictionaries: collection
+                    .dicts_in_order()
+                    .iter()
+                    .map(|&at| DictOut {
                         label: collection.dict_label(at),
                         headwords: collection.dict_headwords(at),
                         path: collection
@@ -349,7 +352,7 @@ fn scope(json: bool) -> glib::ExitCode {
             writeln!(out, "{}", serde_json::to_string_pretty(&answer)?)?;
             return Ok(glib::ExitCode::SUCCESS);
         }
-        for at in 0..collection.dict_count() {
+        for &at in collection.dicts_in_order() {
             writeln!(
                 out,
                 "{:>9}  {}",
