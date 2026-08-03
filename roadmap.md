@@ -343,7 +343,7 @@ because their notes are what the open ones argue with.
   check refused to compare across the change and asked for a re-record, which is exactly
   what it is for. the cache version went 5 → 6, since a v5 index lists headwords a v6 one
   does not.
-- **[ ] #71 remember the scope: autosave it, and restore it next time.**
+- **[x] #71 the scope is remembered: autosaved, and restored next time.**
   asked for: changes in the search-scope panel should be written to the config and be there
   again next launch. today they are not — the panel's own hint says so out loud: "Narrows
   **this session's** searches. What gets loaded at all is config.toml's business."
@@ -359,6 +359,21 @@ because their notes are what the open ones argue with.
   and one honest thing to decide: "narrow this session" is a *useful* mode. if scope becomes
   permanent, the panel probably needs both — a persistent choice, and a way to try something
   without committing to it.
+  **done, with #52, over one table.** `[dictionary."<path>"]` in `config.toml`, keyed by the
+  path `dictu scope --json` now reports, holding `name`, `short`, `scope` — and `order` for
+  #45. keyed by path and not by label because the label is exactly what #52 changes.
+  written on the click, not debounced and not on close: the file is a few hundred bytes, a
+  click is a human action, and a save on close loses the choice whenever the app is killed
+  rather than closed. `edited` only ever adds and updates keys, so a choice about a
+  dictionary that is not plugged in survives — there is a test for exactly that.
+  the panel's hint had to change with the contract, and did: "Remembered for next time."
+  a *session-only* mode is still worth having and is not here — noted rather than done,
+  because nothing has asked for it yet, and inventing a second kind of checkbox before
+  anyone wants one is how a panel gets confusing.
+  the restart check earned its keep immediately: the scope was restored in the collection —
+  searches were narrowed correctly — while every checkbox in the panel still drew itself
+  `active(true)`, hard-coded. the panel said the whole library was searched while it was
+  not, which is a lie only a restart can catch.
 - **[x] #70 Ctrl+Q closes the app.**
   asked for, and it is the one shortcut every gnome application has. the window has no
   accelerators of its own at all today: `Escape`, `Ctrl+W` and `Ctrl+Q` all do nothing.
@@ -424,7 +439,7 @@ because their notes are what the open ones argue with.
   what must not happen is re-recording a baseline to make a red stage green: that turns the
   check into a rubber stamp. it did the honest thing here — it noticed something changed —
   it just could not say what.
-- **[ ] #52 give every dictionary a name a person would write.** the labels are folder names
+- **[x] #52 every dictionary has a name a person would write.** the labels are folder names
   and they read like it: `bgl-Latin_English_Inflected`, `Middle_Liddell_stardict`,
   `HEB-HEB a hebrew-hebrew dictionary`, `Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)`,
   `מילון_אבן_ספיר (BGL)`. they are the heading over every definition and the tag on every
@@ -455,6 +470,21 @@ because their notes are what the open ones argue with.
   with the pair dropped, that list is also what the *pane* headings read — `Gaffiot`
   `LAT → FR` rather than `Gaffiot 2016 (Lat-Fra)` `LAT → FR` — which is when #60's chip stops
   repeating anything and starts being the only place the languages are said.
+  **done, all fifteen, and that interaction is the whole story of it.** dropping the pair
+  from the name would have killed the chip: #59 and #60 read the languages *off the name*,
+  so `Gaffiot` says nothing where `Gaffiot 2016 (Lat-Fra)` said `Lat-Fra`. so a dictionary
+  now carries two names — `label`, what the reader calls it, and `derived`, what the folder
+  calls it — and every "what language is this?" reads the second. the chip is derived, as it
+  always was; it is just no longer derived from something a reader can edit.
+  that split earned more than it cost. `scan` sorts by the derived name, so a rename does
+  not renumber the library; `merged_fingerprint` uses it too, so a rename does not
+  invalidate 1.9M sorted keys. renaming all fifteen cost nothing measurable — the collection
+  opened in 1.40 s afterwards and still reads 1,936,120 words.
+  two smaller things fell out. `dictu scope --json` now reports each dictionary's **path**,
+  because the config is keyed by path and guessing at how a folder is spelled is no way to
+  write one. and `scan`'s sort needed the path as a tiebreak: Klein's lexicon and its
+  abbreviations share a folder, so the folder name alone left their order to `read_dir` —
+  and that order is the library's numbering.
 
 - **[ ] #45 let the user order the dictionaries, and sort results by that order.**
   the scope panel lists dictionaries in scan order (`config::scan` sorts by label) and the
