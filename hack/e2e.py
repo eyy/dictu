@@ -274,15 +274,30 @@ class AppUnderTest:
         # the current frame rather than the one the window first painted.
         env["GSK_RENDERER"] = "cairo"
 
+        self.env = env
+        self.start()
+        return self
+
+    def start(self):
         log(f"launching {BINARY} with XDG_CONFIG_HOME={self.tmp}")
         self.proc = subprocess.Popen(
             [BINARY],
-            env=env,
+            env=self.env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
         )
-        return self
+
+    def relaunch(self):
+        """stop and start again on the same config and cache. the only way to ask
+        whether something was *remembered* rather than merely applied (#71) — every
+        at-spi node from before is dead afterwards, so the caller re-finds the app."""
+        self.proc.terminate()
+        self.proc.wait(timeout=10)
+        self.start()
+
+    def config_path(self):
+        return os.path.join(self.tmp, "dictu", "config.toml")
 
     def __exit__(self, *_exc):
         if self.proc and self.proc.poll() is None:
@@ -1220,6 +1235,125 @@ def main():
                 f"box={text_of(widgets.search)!r}, rows={widgets.row_words()}",
             )
 
+        # roadmap #45: the reading order is the reader's, and dragging a row sets it.
+        # what has to follow is everything ordered by it — the panel, the shelf, and
+        # the definition pane's sections, which is the half of #45 with teeth.
+        app_proc.forward("--search", "byte")
+        wait_for(lambda: "byte" in widgets.row_words() or None, 10, "the byte row")
+        select_first_row(widgets.results)
+        sections = wait_for(
+            lambda: widgets.definition_text() if "links" in widgets.definition_text() else None,
+            10, "byte's two sections",
+        )
+        r.check(
+            "with no order chosen, sections come alphabetically",
+            sections.index("links") < sections.index("sample"),
+            f"pane read {sections[:80]!r}",
+        )
+
+        open_scope(node)
+        before = scope_rows(node)
+        drag_scope_row(node, 0, 1)
+        after = wait_for_quiet(lambda: scope_rows(node) != before, timeout=5)
+        r.check(
+            "dragging a scope row moves it",
+            after and [name for name, _ in scope_rows(node)] == ["sample", "links"],
+            f"panel went from {before} to {scope_rows(node)}",
+        )
+        close_scope(node)
+        reordered = wait_for_quiet(
+            lambda: widgets.definition_text().index("sample")
+            < widgets.definition_text().index("links"),
+            timeout=5,
+        )
+        r.check(
+            "and the definition on screen re-sorts its sections there and then",
+            reordered,
+            f"pane read {widgets.definition_text()[:80]!r}",
+        )
+        r.check(
+            "the order is written to config.toml",
+            "order = 0" in open(app_proc.config_path()).read(),
+            f"config.toml reads:\n{open(app_proc.config_path()).read()}",
+        )
+        # and the shelf, which is the same list seen from the other side.
+        app_proc.forward("--search", "")
+        r.check(
+            "the shelf shows the collection in the order it was put in",
+            wait_for_quiet(
+                lambda: [name for name, _ in widgets.shelf_rows()] == ["sample", "links"]
+            ),
+            f"shelf rows read {widgets.shelf_rows()}",
+        )
+
+        # roadmap #71 and #52, which is the pair of them end to end: what the reader
+        # chooses is written down, and what the file says is what the next launch
+        # shows. it goes last because it restarts the app.
+        open_scope(node)
+        toggle_scope(app_proc, node, "sample")
+        close_scope(node)
+        written = wait_for_quiet(
+            lambda: "scope = false" in open(app_proc.config_path()).read(), timeout=5
+        )
+        r.check(
+            "turning a dictionary off writes the choice to config.toml",
+            written,
+            f"config.toml reads:\n{open(app_proc.config_path()).read()}",
+        )
+
+        # and a name to go with it — hand-written, as #52's are, since the app has no
+        # ui for naming. both keys now sit in one table for one dictionary, which is
+        # the arrangement the three items were done together for.
+        sample = os.path.join(SAMPLE_DIR, "sample.index")
+        links = os.path.join(SAMPLE_DIR, "links", "links.csv")
+        # the rank goes on the *other* dictionary on purpose. "A Sample Lexicon" would
+        # lead on the alphabet alone, so ranking links first is the only arrangement
+        # that tells a remembered order apart from a sorted one.
+        with open(app_proc.config_path(), "w") as fh:
+            fh.write(
+                f'dictionary_dirs = ["{SAMPLE_DIR}"]\n\n'
+                f'[dictionary."{sample}"]\n'
+                'name = "A Sample Lexicon"\n'
+                "scope = false\n\n"
+                f'[dictionary."{links}"]\n'
+                "order = 0\n"
+            )
+        app_proc.relaunch()
+        node = wait_for(find_app, READY_TIMEOUT, "dictu after a restart")
+        widgets = wait_for(lambda: safe(Widgets, node), READY_TIMEOUT, "the widget tree again")
+        wait_for(lambda: widgets.status_line() or None, READY_TIMEOUT, "indexing again")
+
+        # all three keys of one table, read back at once: the name is shown, the rank
+        # is obeyed, and the scope is still off. the rank is the interesting one here —
+        # this name sorts *first* alphabetically and still comes second, because a rank
+        # the reader chose beats the alphabet.
+        shelf = widgets.shelf_rows()
+        r.check(
+            "a name, a rank and a scope in the config are all there after a restart",
+            shelf == [("links", "6 headwords"), ("A Sample Lexicon", "7 headwords")],
+            f"shelf rows read {shelf}",
+        )
+        # the whole library is still loaded — the remembered choice is about what gets
+        # *searched*, which is what the status line says out loud.
+        r.check(
+            "the status line says the scope is narrowed, not that the library shrank",
+            widgets.status_line() == "6 words · 1 of 2 dictionaries",
+            f"status={widgets.status_line()!r}",
+        )
+        app_proc.forward("--search", "zeitgeist")
+        r.check(
+            "a dictionary turned off last time is still off after a restart",
+            wait_for_quiet(lambda: not [w for w in widgets.row_words() if w]),
+            f"rows={widgets.row_words()} — the remembered scope was not applied",
+        )
+        boxes = open_scope(node)
+        r.check(
+            "and the panel shows it off, under its new name",
+            "A Sample Lexicon" in boxes and not is_checked(boxes["A Sample Lexicon"]),
+            f"panel boxes: {[(n, is_checked(b)) for n, b in boxes.items()]}",
+        )
+        close_scope(node)
+
         r.check("the app is still running (no crash)", app_proc.proc.poll() is None)
 
         # last, because it ends the app. what is under test is that the key reaches
@@ -1474,6 +1608,69 @@ def toggle_scope(app_proc, app, dictionary):
     was = is_checked(box)
     app_proc.press_focused("space")
     return wait_for(lambda: is_checked(box) != was or None, 3, f"{dictionary!r} to flip")
+
+
+def popover_origin():
+    """where the scope popover sits on the display.
+
+    it is an x surface of its own, so at-spi reports its widgets in coordinates
+    relative to it and gives (0, 0) for screen coordinates — which is fine for
+    everything that reads the panel, and not fine for the one thing that has to point
+    at it. the offset comes from x instead.
+    """
+    origin = None
+    found = subprocess.run(
+        ["xdotool", "search", "--name", "^dictu$"], capture_output=True, text=True
+    ).stdout.split()
+    for wid in found:
+        shell = subprocess.run(
+            ["xdotool", "getwindowgeometry", "--shell", wid], capture_output=True, text=True
+        ).stdout
+        geometry = dict(line.split("=", 1) for line in shell.strip().splitlines())
+        # gtk keeps a 1x1 helper window under the same name; the popover is the
+        # other one, and it is the last to appear.
+        if int(geometry["WIDTH"]) > 100 and int(geometry["HEIGHT"]) > 100:
+            origin = (int(geometry["X"]), int(geometry["Y"]))
+    return origin
+
+
+def drag_scope_row(node, at, onto):
+    """drag one scope row onto another (roadmap #45), by the pointer, because that is
+    the whole feature. in steps rather than one jump: gtk starts a drag on a movement
+    threshold, and a single warp reads as a click."""
+    origin = popover_origin()
+    if origin is None:
+        raise LookupError("the scope popover is not on screen")
+
+    def centre(row):
+        extents = Atspi.Component.get_extents(row, Atspi.CoordType.WINDOW)
+        return (
+            origin[0] + extents.x + extents.width // 2,
+            origin[1] + extents.y + extents.height // 2,
+        )
+
+    rows = by_role(scope_dict_list(node), "list item")
+    (x1, y1), (x2, y2) = centre(rows[at]), centre(rows[onto])
+    subprocess.run(["xdotool", "mousemove", str(x1), str(y1)], check=False, timeout=10)
+    time.sleep(0.3)
+    subprocess.run(["xdotool", "mousedown", "1"], check=False, timeout=10)
+    time.sleep(0.3)
+    for step in range(1, 9):
+        subprocess.run(
+            ["xdotool", "mousemove",
+             str(x1 + (x2 - x1) * step // 8), str(y1 + (y2 - y1) * step // 8)],
+            check=False, timeout=10,
+        )
+        time.sleep(0.08)
+    time.sleep(0.3)
+    subprocess.run(["xdotool", "mouseup", "1"], check=False, timeout=10)
+
+
+def scope_dict_list(app):
+    lists = [n for n in by_role(app, "list") if (n.get_name() or "") == "Dictionaries"]
+    if not lists:
+        raise LookupError("the scope panel is not open")
+    return lists[0]
 
 
 def select_first_row(results):

@@ -6,6 +6,7 @@
 //! a widget, and `render` beside this dresses a definition (roadmap #46).
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
@@ -41,7 +42,15 @@ const INCIPIT: &[u8] = include_bytes!("../../assets/incipit-62r.jpg");
 /// properties would be sixty lines of boilerplate bought for nothing.
 struct Listed {
     row: library::Row,
+    /// every dictionary that answers, by the name the reader gave it — the tooltip.
     names: Vec<String>,
+    /// what the row's tag says: one entry per answering dictionary, its language
+    /// where one can be named and its short name where none can (#59, #65).
+    ///
+    /// resolved here rather than in the row factory, because naming a language now
+    /// takes the dictionary's *derived* name (#52) and the factory has only what
+    /// this struct hands it. the factory dedupes and joins; deciding is this job.
+    tags: Vec<String>,
 }
 
 /// the collection, shared across signal handlers. it exists from the start and
@@ -108,9 +117,14 @@ pub(crate) struct UiInner {
     /// command line asks, which is why it lives in a module that has never heard
     /// of gtk.
     collection: SharedCollection,
+    /// the config as loaded, kept so a scope change can be written back (#71).
+    config: Rc<RefCell<config::Config>>,
     /// the scope panel's rows, filled once the dictionaries are known, and the
     /// header button that pops it up.
     scope_list: gtk::ListBox,
+    /// each scope row and the dictionary it stands for, so a row that has been
+    /// dragged somewhere else can still say which one it is (#45).
+    scope_rows: RefCell<Vec<(adw::ActionRow, usize)>>,
     scope_button: gtk::MenuButton,
 }
 
@@ -236,9 +250,19 @@ impl UiInner {
                     .iter()
                     .map(|&dict| collection.dict_label(dict).to_owned())
                     .collect();
+                let tags = row
+                    .dicts()
+                    .iter()
+                    .map(|&dict| {
+                        language::tag(&row.word, collection.dict_derived(dict))
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| collection.dict_short(dict).to_owned())
+                    })
+                    .collect();
                 glib::BoxedAnyObject::new(Listed {
                     row: row.clone(),
                     names,
+                    tags,
                 })
             })
             .collect();
@@ -379,7 +403,7 @@ impl UiInner {
         if !ready {
             return;
         }
-        for index in 0..dicts {
+        for index in self.collection.borrow().dicts_in_order().to_vec() {
             let (label, headwords) = {
                 let collection = self.collection.borrow();
                 (
@@ -389,7 +413,11 @@ impl UiInner {
             };
             let label = label.as_str();
             let check = gtk::CheckButton::builder()
-                .active(true)
+                // what the collection actually has, which after #71 is what was
+                // remembered rather than "everything". hard-coding `true` here left
+                // a panel that said every dictionary was searched while the search
+                // itself was narrowed — the e2e check for the restart caught it.
+                .active(self.collection.borrow().is_dict_active(index))
                 .valign(gtk::Align::Center)
                 .build();
             // name the checkbox after its dictionary: the row's title is a separate
@@ -424,6 +452,49 @@ impl UiInner {
                     ui.set_dict_active(index, check.is_active());
                 }
             });
+            // drag to reorder (#45). here rather than in the shelf because this is
+            // where the other per-dictionary choices are made — the shelf shows the
+            // collection, the panel is where it is arranged.
+            let drag = gtk::DragSource::builder()
+                .actions(gdk::DragAction::MOVE)
+                .build();
+            drag.connect_prepare(glib::clone!(
+                #[weak]
+                row,
+                #[upgrade_or]
+                None,
+                move |_, _, _| Some(gdk::ContentProvider::for_value(&row.to_value()))
+            ));
+            drag.connect_drag_begin(glib::clone!(
+                #[weak]
+                row,
+                move |source, _| {
+                    // the row itself travels under the pointer, so what is moving is
+                    // never in question.
+                    source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&row))), 0, 0);
+                }
+            ));
+            row.add_controller(drag);
+
+            let drop = gtk::DropTarget::new(adw::ActionRow::static_type(), gdk::DragAction::MOVE);
+            let this = self.this.clone();
+            drop.connect_drop(glib::clone!(
+                #[weak]
+                row,
+                #[upgrade_or]
+                false,
+                move |_, value, _, _| {
+                    let (Ok(dragged), Some(ui)) = (value.get::<adw::ActionRow>(), this.upgrade())
+                    else {
+                        return false;
+                    };
+                    ui.drop_row_onto(&dragged, &row);
+                    true
+                }
+            ));
+            row.add_controller(drop);
+
+            self.scope_rows.borrow_mut().push((row.clone(), index));
             self.scope_list.append(&row);
         }
         // nothing to scope when nothing loaded: leave the button dead rather than
@@ -444,7 +515,12 @@ impl UiInner {
         if !collection.is_ready() {
             return;
         }
-        for index in 0..collection.dict_count() {
+        // emptied first: this runs again whenever the reading order changes (#45),
+        // and a list that only ever appended would show the collection twice.
+        while let Some(row) = self.shelf_list.first_child() {
+            self.shelf_list.remove(&row);
+        }
+        for &index in collection.dicts_in_order() {
             let label = collection.dict_label(index);
             let row = adw::ActionRow::builder()
                 // a dictionary's name is data — escape it, the row renders markup.
@@ -465,10 +541,78 @@ impl UiInner {
         }
     }
 
+    /// one scope row dropped onto another: move it there, and make everything else
+    /// follow (#45).
+    ///
+    /// dragging down lands *after* the row you dropped on and dragging up lands
+    /// before it, which falls out of removing before inserting and is what every
+    /// other reorderable list does.
+    fn drop_row_onto(&self, dragged: &adw::ActionRow, onto: &adw::ActionRow) {
+        if dragged == onto {
+            return;
+        }
+        let at = onto.index();
+        self.scope_list.remove(dragged);
+        self.scope_list.insert(dragged, at);
+
+        // read the order back off the list rather than computing it: the list is what
+        // the reader just arranged, and anything else would be a second opinion about
+        // what they did.
+        let known = self.scope_rows.borrow();
+        let mut order = Vec::with_capacity(known.len());
+        let mut child = self.scope_list.first_child();
+        while let Some(widget) = child {
+            if let Some(row) = widget.downcast_ref::<adw::ActionRow>()
+                && let Some((_, index)) = known.iter().find(|(known, _)| known == row)
+            {
+                order.push(*index);
+            }
+            child = widget.next_sibling();
+        }
+        drop(known);
+        self.set_reading_order(order);
+    }
+
+    /// the reading order changed: apply it, write it down, and re-show everything
+    /// that is ordered by it — the shelf, the definition on screen, and the wordlist,
+    /// whose rows name their dictionaries in this order too.
+    fn set_reading_order(&self, order: Vec<usize>) {
+        let paths: Vec<std::path::PathBuf> = order
+            .iter()
+            .filter_map(|&index| {
+                self.collection
+                    .borrow()
+                    .dict_path(index)
+                    .map(Path::to_owned)
+            })
+            .collect();
+        self.collection.borrow_mut().set_order(order);
+        if let Err(err) = self.config.borrow_mut().remember_order(&paths) {
+            eprintln!("dictu: could not remember the reading order: {err:#}");
+        }
+        self.build_shelf();
+        self.render_shown_again();
+        self.populate_results(&self.search.text());
+    }
+
     /// a checkbox changed: update the mask, then re-run whatever is in the search
     /// box so the wordlist and the status line follow immediately.
     fn set_dict_active(&self, index: usize, active: bool) {
         self.collection.borrow_mut().set_dict_active(index, active);
+        // and remember it for next time (#71). the path is cloned out first so the
+        // collection is not still borrowed while the config is written.
+        let path = self
+            .collection
+            .borrow()
+            .dict_path(index)
+            .map(Path::to_owned);
+        if let Some(path) = path
+            && let Err(err) = self.config.borrow_mut().remember_scope(&path, active)
+        {
+            // a config that cannot be written is worth saying out loud, and worth
+            // nothing more than that: the scope still changed, for this session.
+            eprintln!("dictu: could not remember the search scope: {err:#}");
+        }
         self.populate_results(&self.search.text());
         self.render_shown_again();
     }
@@ -562,7 +706,9 @@ impl UiInner {
             // (#60). beside the name rather than at the pane's right edge: a text view
             // right-aligns a whole line, and pinning a run to the edge means a tab stop
             // at a pixel that stops being the edge the moment the pane is resized.
-            if let Some((from, to)) = language::pair(label) {
+            // off the file's own name, not the heading: #52 lets the reader call this
+            // "Gaffiot", and the pair is written in the folder name it came from.
+            if let Some((from, to)) = language::pair(&definition.derived) {
                 let chip = format!("   {from} → {to}");
                 buffer.insert_with_tags(&mut iter, &chip, &[&pair_tag(&buffer)]);
             }
@@ -642,7 +788,11 @@ impl UiInner {
     }
 }
 
-pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui {
+pub(crate) fn build(
+    app: &adw::Application,
+    config: &Rc<RefCell<config::Config>>,
+    entries: &[config::DictEntry],
+) -> Ui {
     // -- sidebar: search box, results list, status line ---------------------
     let search = gtk::SearchEntry::new();
     search.set_placeholder_text(Some("Indexing…"));
@@ -840,9 +990,11 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
         .build();
     scope_title.add_css_class("heading");
     let scope_hint = gtk::Label::builder()
-        .label(
-            "Narrows this session's searches. What gets loaded at all is config.toml's business.",
-        )
+        // it used to say "this session's searches", which was true and is not any
+        // more (#71): the choice is written to config.toml as it is made. what is
+        // still config.toml's business is what gets *loaded*, and saying so is what
+        // keeps this from reading like a way to remove a dictionary.
+        .label("Remembered for next time. What gets loaded at all is config.toml's business.")
         .xalign(0.0)
         .wrap(true)
         .max_width_chars(34)
@@ -964,7 +1116,9 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
         forwarded: Rc::new(RefCell::new(None)),
         search_changed: RefCell::new(None),
         collection: Rc::new(RefCell::new(Collection::empty())),
+        config: config.clone(),
         scope_list,
+        scope_rows: RefCell::new(Vec::new()),
         scope_button,
     });
 
@@ -1137,15 +1291,21 @@ pub(crate) fn build(app: &adw::Application, entries: &[config::DictEntry]) -> Ui
     let (tx, rx) = async_channel::bounded(1);
     let entries_owned: Vec<config::DictEntry> = entries.to_vec();
     std::thread::spawn(move || {
-        let _ = tx.send_blocking(Library::open(&entries_owned));
+        // the remembered scope is worked out here too, where the entries already
+        // are, rather than kept alive on the main thread for the one moment the
+        // library arrives.
+        let library = Library::open(&entries_owned);
+        let scope = library.scope_from(&entries_owned);
+        let order = library.order_from(&entries_owned);
+        let _ = tx.send_blocking((library, scope, order));
     });
     // weakly, and upgraded only after the await: indexing takes ~30s, so the
     // window can be closed while this is still pending.
     let ui_ready = Rc::downgrade(&ui);
     glib::spawn_future_local(async move {
-        if let Ok(library) = rx.recv().await {
+        if let Ok((library, scope, order)) = rx.recv().await {
             let Some(ui) = ui_ready.upgrade() else { return };
-            ui.collection.borrow_mut().open(library);
+            ui.collection.borrow_mut().open(library, scope, order);
             // size the scope before anything searches: the re-run below reads it.
             ui.build_scope();
             ui.build_shelf();
@@ -1326,13 +1486,9 @@ fn bind_row(item: &gtk::ListItem) {
     // to sit here read as a multiplier — `LAT ·2` looks like "latin twice" — and the
     // number of dictionaries is already answered by the pane and by this tooltip.
     let mut languages: Vec<&str> = Vec::new();
-    for &dict in &names {
-        // a dictionary whose title names no language falls back to the title, which is
-        // what the fixture's dictionaries and any unnamed one get; #52 gives them names
-        // worth reading.
-        let named = language::tag(&listed.row.word, dict).unwrap_or(dict);
-        if !languages.contains(&named) {
-            languages.push(named);
+    for tag in listed.tags.iter().map(String::as_str) {
+        if !languages.contains(&tag) {
+            languages.push(tag);
         }
     }
     if let Some(tag) = word.next_sibling().and_downcast::<gtk::Label>() {
@@ -1566,7 +1722,11 @@ mod tests {
         // a window, and it owning the window is what makes `destroy()` below the
         // thing that releases it.
         let _ = app.register(gio::Cancellable::NONE);
-        let ui = build(&app, &[]);
+        let config = std::rc::Rc::new(std::cell::RefCell::new(crate::config::Config {
+            dictionary_dirs: Vec::new(),
+            dictionary: std::collections::BTreeMap::new(),
+        }));
+        let ui = build(&app, &config, &[]);
         let weak_ui = Rc::downgrade(&ui);
         // watch the widgets themselves too, not just our own bookkeeping.
         let window = ui.window.clone();
