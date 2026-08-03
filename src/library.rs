@@ -24,6 +24,14 @@ use crate::keys::{self, KeyTable};
 /// one opened dictionary plus its display label.
 struct Loaded {
     label: String,
+    /// what the file calls it, whatever the reader calls it — see `DictEntry`.
+    derived: String,
+    /// a short form for where the name does not fit (#52).
+    short: Option<String>,
+    /// where it was loaded from — the one name for a dictionary that does not
+    /// change when the reader renames it (#52), which is what the config keys its
+    /// preferences by and what a remembered scope is written against (#71).
+    path: PathBuf,
     dict: Box<dyn Dictionary>,
 }
 
@@ -81,6 +89,9 @@ impl Library {
                 Ok(dict) => {
                     dicts.push(Loaded {
                         label: entry.label.clone(),
+                        derived: entry.derived.clone(),
+                        short: entry.short.clone(),
+                        path: entry.path.clone(),
                         dict,
                     });
                     sources.push(entry.path.clone());
@@ -117,6 +128,40 @@ impl Library {
 
     pub fn dict_label(&self, index: usize) -> Option<&str> {
         self.dicts.get(index).map(|d| d.label.as_str())
+    }
+
+    /// the name to read a language off, which is the file's own rather than the
+    /// reader's (#52). every caller asking "what language is this?" wants this one;
+    /// every caller showing a name to a person wants `dict_label`.
+    pub fn dict_derived(&self, index: usize) -> Option<&str> {
+        self.dicts.get(index).map(|d| d.derived.as_str())
+    }
+
+    /// the shortest name a dictionary has: its short form where it has one, its
+    /// name where it does not.
+    pub fn dict_short(&self, index: usize) -> Option<&str> {
+        self.dicts
+            .get(index)
+            .map(|d| d.short.as_deref().unwrap_or(&d.label))
+    }
+
+    pub fn dict_path(&self, index: usize) -> Option<&Path> {
+        self.dicts.get(index).map(|d| d.path.as_path())
+    }
+
+    /// the opening scope, read off what the config remembered about each dictionary
+    /// (#71): one flag per dictionary in library order. matched by path rather than
+    /// by position, because the two lists differ by exactly the dictionaries that
+    /// failed to open — and a positional match would then hand a remembered
+    /// exclusion to the wrong dictionary.
+    pub fn scope_from(&self, entries: &[DictEntry]) -> Vec<bool> {
+        (0..self.dict_count())
+            .map(|index| {
+                self.dict_path(index)
+                    .and_then(|path| entries.iter().find(|entry| entry.path == path))
+                    .is_none_or(|entry| entry.scope)
+            })
+            .collect()
     }
 
     /// how many headwords one dictionary holds — shown per row in the scope panel,
@@ -563,7 +608,10 @@ fn merged_fingerprint(dicts: &[Loaded], sources: &[PathBuf]) -> String {
         .map(|(loaded, path)| {
             format!(
                 "{}\u{1f}{}\u{1f}{}",
-                loaded.label,
+                // the name on disk, not the reader's: renaming a dictionary changes
+                // nothing about the order this fingerprint guards, and charging a
+                // rebuild of 1.9M keys for it would make #52 expensive to use.
+                loaded.derived,
                 loaded.dict.headwords().len(),
                 index_cache::fingerprint(&dict::source_files(path)),
             )
@@ -621,6 +669,9 @@ mod tests {
             vec![
                 Loaded {
                     label: "A".into(),
+                    derived: "A".into(),
+                    short: None,
+                    path: format!("/mock/{}", "A").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         aliases_from: usize::MAX,
@@ -630,6 +681,9 @@ mod tests {
                 },
                 Loaded {
                     label: "B".into(),
+                    derived: "B".into(),
+                    short: None,
+                    path: format!("/mock/{}", "B").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         aliases_from: usize::MAX,
@@ -646,6 +700,9 @@ mod tests {
     fn labelled(label: &str, internal: &str, words: &[&str]) -> Loaded {
         Loaded {
             label: label.into(),
+            derived: label.into(),
+            short: None,
+            path: format!("/mock/{}", label).into(),
             dict: Box::new(Mock {
                 internal: internal.into(),
                 words: words.iter().map(|w| (*w).to_string()).collect(),
@@ -717,6 +774,9 @@ mod tests {
         Library::from_loaded(
             vec![Loaded {
                 label: "A".into(),
+                derived: "A".into(),
+                short: None,
+                path: format!("/mock/{}", "A").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     aliases_from: usize::MAX,
@@ -757,6 +817,9 @@ mod tests {
         let library = Library::from_loaded(
             vec![Loaded {
                 label: "A".into(),
+                derived: "A".into(),
+                short: None,
+                path: format!("/mock/{}", "A").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     aliases_from: usize::MAX,
@@ -783,6 +846,9 @@ mod tests {
             vec![
                 Loaded {
                     label: "A".into(),
+                    derived: "A".into(),
+                    short: None,
+                    path: format!("/mock/{}", "A").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         aliases_from: usize::MAX,
@@ -792,6 +858,9 @@ mod tests {
                 },
                 Loaded {
                     label: "B".into(),
+                    derived: "B".into(),
+                    short: None,
+                    path: format!("/mock/{}", "B").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         aliases_from: usize::MAX,
@@ -897,6 +966,9 @@ mod tests {
             path: ifo,
             format: crate::dict::Format::StarDict,
             label: stem.to_string(),
+            derived: stem.to_string(),
+            short: None,
+            scope: true,
         }
     }
 
@@ -1043,6 +1115,9 @@ mod tests {
         let one = Library::from_loaded(
             vec![Loaded {
                 label: "A".into(),
+                derived: "A".into(),
+                short: None,
+                path: format!("/mock/{}", "A").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     aliases_from: usize::MAX,
@@ -1086,6 +1161,9 @@ mod tests {
             vec![
                 Loaded {
                     label: "Gaffiot".into(),
+                    derived: "Gaffiot".into(),
+                    short: None,
+                    path: format!("/mock/{}", "Gaffiot").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         aliases_from: usize::MAX,
@@ -1095,6 +1173,9 @@ mod tests {
                 },
                 Loaded {
                     label: "L&S".into(),
+                    derived: "L&S".into(),
+                    short: None,
+                    path: format!("/mock/{}", "L&S").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         aliases_from: usize::MAX,
@@ -1128,6 +1209,9 @@ mod tests {
         let greek = Library::from_loaded(
             vec![Loaded {
                 label: "Bailly".into(),
+                derived: "Bailly".into(),
+                short: None,
+                path: format!("/mock/{}", "Bailly").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     aliases_from: usize::MAX,
@@ -1152,6 +1236,9 @@ mod tests {
         let french = Library::from_loaded(
             vec![Loaded {
                 label: "Larousse".into(),
+                derived: "Larousse".into(),
+                short: None,
+                path: format!("/mock/{}", "Larousse").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     aliases_from: usize::MAX,
@@ -1177,6 +1264,9 @@ mod tests {
         let greek = Library::from_loaded(
             vec![Loaded {
                 label: "LSJ".into(),
+                derived: "LSJ".into(),
+                short: None,
+                path: format!("/mock/{}", "LSJ").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     aliases_from: usize::MAX,
@@ -1222,6 +1312,9 @@ mod tests {
         let latin = Library::from_loaded(
             vec![Loaded {
                 label: "Whitaker".into(),
+                derived: "Whitaker".into(),
+                short: None,
+                path: format!("/mock/{}", "Whitaker").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     words: vec![
@@ -1274,6 +1367,9 @@ mod tests {
             vec![
                 Loaded {
                     label: "Forms".into(),
+                    derived: "Forms".into(),
+                    short: None,
+                    path: format!("/mock/{}", "Forms").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         words: vec!["rego".into(), "rex".into()],
@@ -1283,6 +1379,9 @@ mod tests {
                 },
                 Loaded {
                     label: "L&S".into(),
+                    derived: "L&S".into(),
+                    short: None,
+                    path: format!("/mock/{}", "L&S").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
                         words: vec!["rex".into()], // and here it is the headword
@@ -1312,6 +1411,9 @@ mod tests {
         let hebrew = Library::from_loaded(
             vec![Loaded {
                 label: "a hebrew-hebrew dictionary".into(),
+                derived: "a hebrew-hebrew dictionary".into(),
+                short: None,
+                path: format!("/mock/{}", "a hebrew-hebrew dictionary").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
                     words: vec![

@@ -155,6 +155,10 @@ struct ScopeOut<'a> {
 struct DictOut<'a> {
     label: &'a str,
     headwords: usize,
+    /// where it was loaded from — which is how the config names it, so anyone
+    /// writing `[dictionary."…"]` by hand (#45/#52/#71) can read the key off here
+    /// rather than guessing at how a folder is spelled.
+    path: &'a str,
 }
 
 #[derive(Serialize)]
@@ -195,9 +199,13 @@ struct IndexOut {
 /// open the collection the config points at.
 fn opened(fold_forms: bool) -> Collection {
     let config = config::Config::load_or_create().unwrap_or_default();
-    let entries = config::scan(&config.dictionary_dirs);
+    let entries = config::scan(&config);
     let mut collection = Collection::empty();
-    collection.open(Library::open(&entries));
+    // the same remembered scope the window opens with (#71): the two front ends are
+    // over one collection, and a count measured here is the count the window shows.
+    let library = Library::open(&entries);
+    let scope = library.scope_from(&entries);
+    collection.open(library, scope);
     collection.set_fold_forms(fold_forms);
     collection
 }
@@ -331,6 +339,10 @@ fn scope(json: bool) -> glib::ExitCode {
                     .map(|at| DictOut {
                         label: collection.dict_label(at),
                         headwords: collection.dict_headwords(at),
+                        path: collection
+                            .dict_path(at)
+                            .and_then(Path::to_str)
+                            .unwrap_or(""),
                     })
                     .collect(),
             };

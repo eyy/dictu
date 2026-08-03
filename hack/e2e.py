@@ -274,15 +274,30 @@ class AppUnderTest:
         # the current frame rather than the one the window first painted.
         env["GSK_RENDERER"] = "cairo"
 
+        self.env = env
+        self.start()
+        return self
+
+    def start(self):
         log(f"launching {BINARY} with XDG_CONFIG_HOME={self.tmp}")
         self.proc = subprocess.Popen(
             [BINARY],
-            env=env,
+            env=self.env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
         )
-        return self
+
+    def relaunch(self):
+        """stop and start again on the same config and cache. the only way to ask
+        whether something was *remembered* rather than merely applied (#71) — every
+        at-spi node from before is dead afterwards, so the caller re-finds the app."""
+        self.proc.terminate()
+        self.proc.wait(timeout=10)
+        self.start()
+
+    def config_path(self):
+        return os.path.join(self.tmp, "dictu", "config.toml")
 
     def __exit__(self, *_exc):
         if self.proc and self.proc.poll() is None:
@@ -1219,6 +1234,68 @@ def main():
                 emptied,
                 f"box={text_of(widgets.search)!r}, rows={widgets.row_words()}",
             )
+
+        # roadmap #71 and #52, which is the pair of them end to end: what the reader
+        # chooses is written down, and what the file says is what the next launch
+        # shows. it goes last because it restarts the app.
+        open_scope(node)
+        toggle_scope(app_proc, node, "sample")
+        close_scope(node)
+        written = wait_for_quiet(
+            lambda: "scope = false" in open(app_proc.config_path()).read(), timeout=5
+        )
+        r.check(
+            "turning a dictionary off writes the choice to config.toml",
+            written,
+            f"config.toml reads:\n{open(app_proc.config_path()).read()}",
+        )
+
+        # and a name to go with it — hand-written, as #52's are, since the app has no
+        # ui for naming. both keys now sit in one table for one dictionary, which is
+        # the arrangement the three items were done together for.
+        sample = os.path.join(SAMPLE_DIR, "sample.index")
+        with open(app_proc.config_path(), "w") as fh:
+            fh.write(
+                f'dictionary_dirs = ["{SAMPLE_DIR}"]\n\n'
+                f'[dictionary."{sample}"]\n'
+                'name = "A Sample Lexicon"\n'
+                "scope = false\n"
+            )
+        app_proc.relaunch()
+        node = wait_for(find_app, READY_TIMEOUT, "dictu after a restart")
+        widgets = wait_for(lambda: safe(Widgets, node), READY_TIMEOUT, "the widget tree again")
+        wait_for(lambda: widgets.status_line() or None, READY_TIMEOUT, "indexing again")
+
+        # the name is shown, and the list has *not* reordered around it: this name
+        # sorts first alphabetically and still comes second, because the order is the
+        # library's and the library is numbered by what is on disk. that is what lets
+        # a rename cost nothing — no renumbering, so no rebuilding the merged index.
+        shelf = widgets.shelf_rows()
+        r.check(
+            "a name in the config is the name the window shows, and does not reorder it",
+            shelf == [("links", "6 headwords"), ("A Sample Lexicon", "7 headwords")],
+            f"shelf rows read {shelf}",
+        )
+        # the whole library is still loaded — the remembered choice is about what gets
+        # *searched*, which is what the status line says out loud.
+        r.check(
+            "the status line says the scope is narrowed, not that the library shrank",
+            widgets.status_line() == "6 words · 1 of 2 dictionaries",
+            f"status={widgets.status_line()!r}",
+        )
+        app_proc.forward("--search", "zeitgeist")
+        r.check(
+            "a dictionary turned off last time is still off after a restart",
+            wait_for_quiet(lambda: not [w for w in widgets.row_words() if w]),
+            f"rows={widgets.row_words()} — the remembered scope was not applied",
+        )
+        boxes = open_scope(node)
+        r.check(
+            "and the panel shows it off, under its new name",
+            "A Sample Lexicon" in boxes and not is_checked(boxes["A Sample Lexicon"]),
+            f"panel boxes: {[(n, is_checked(b)) for n, b in boxes.items()]}",
+        )
+        close_scope(node)
 
         r.check("the app is still running (no crash)", app_proc.proc.poll() is None)
 

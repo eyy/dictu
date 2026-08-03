@@ -36,8 +36,12 @@ fn main() -> glib::ExitCode {
     }
 
     // scan the configured directories for dictionaries once, up front.
-    let config = config::Config::load_or_create().unwrap_or_default();
-    let entries = Rc::new(config::scan(&config.dictionary_dirs));
+    // kept, not just read: the window writes the search scope back to it as the
+    // reader changes it (#71).
+    let config = Rc::new(RefCell::new(
+        config::Config::load_or_create().unwrap_or_default(),
+    ));
+    let entries = Rc::new(config::scan(&config.borrow()));
 
     // HANDLES_COMMAND_LINE makes the app single-instance: a second
     // `dictu --search foo` (e.g. from the global hotkey) forwards its argv to
@@ -79,7 +83,7 @@ fn main() -> glib::ExitCode {
 
         let ui = ui_cell
             .borrow_mut()
-            .get_or_insert_with(|| ui::build(app, &entries))
+            .get_or_insert_with(|| ui::build(app, &config, &entries))
             .clone();
 
         // the hotkey passes the selected word here. what filling the box and landing

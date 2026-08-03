@@ -4,9 +4,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use toml_edit::{Array, DocumentMut, Item, Value};
+use toml_edit::{Array, DocumentMut, Item, Table, Value};
 
 use crate::dict::{self, Format};
 
@@ -26,6 +28,35 @@ pub struct Config {
     /// same way (no mixing a symlink with its target).
     #[serde(default)]
     pub dictionary_dirs: Vec<String>,
+    /// what the reader has decided about individual dictionaries, keyed by the
+    /// path `scan` found them at: a name worth reading (#52), where they come in
+    /// the order (#45), and whether they are in scope (#71).
+    ///
+    /// a *table* rather than three more lists of paths, because all three are the
+    /// same kind of thing — a preference about one dictionary — and a list of paths
+    /// has nowhere to hang one. keyed by path and not by label, since the label is
+    /// exactly what #52 changes.
+    ///
+    /// an entry for a path that is not there is **kept, not dropped**: unplugging a
+    /// drive must not quietly forget what was chosen about what is on it.
+    #[serde(default)]
+    pub dictionary: BTreeMap<String, DictSettings>,
+}
+
+/// one dictionary's preferences. every field is optional and absent means "as it
+/// comes": the folder's own name, scan order, in scope.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DictSettings {
+    /// what to call it, in place of the folder name.
+    pub name: Option<String>,
+    /// a short form for where there is no room for the name — the wordlist tag,
+    /// which ellipsizes at about twelve characters.
+    pub short: Option<String>,
+    /// where it comes in the order. ranked dictionaries lead, in ascending order;
+    /// unranked ones follow in the order the scan found them.
+    pub order: Option<i64>,
+    /// whether it is searched. absent means yes.
+    pub scope: Option<bool>,
 }
 
 impl Default for Config {
@@ -41,7 +72,10 @@ impl Default for Config {
                 ]
             })
             .unwrap_or_default();
-        Self { dictionary_dirs }
+        Self {
+            dictionary_dirs,
+            dictionary: BTreeMap::new(),
+        }
     }
 }
 
@@ -141,7 +175,55 @@ impl Config {
                 }
             }
         }
+        // the per-dictionary table (#45/#52/#71). key by key rather than table by
+        // table: a name typed by hand keeps the comment above it when the app writes
+        // a scope flag beside it, and a key this config has no opinion on (because
+        // the file is where it came from) is left exactly as it was.
+        for (path, settings) in &self.dictionary {
+            let entry = doc
+                .entry("dictionary")
+                .or_insert_with(|| {
+                    let mut table = Table::new();
+                    // implicit, so it renders as `[dictionary."…"]` rather than an
+                    // empty `[dictionary]` header with subtables under it.
+                    table.set_implicit(true);
+                    Item::Table(table)
+                })
+                .as_table_mut()
+                .context("dictionary is in the config but is not a table")?
+                .entry(path)
+                .or_insert_with(|| Item::Table(Table::new()))
+                .as_table_mut()
+                .with_context(|| format!("the config's entry for {path} is not a table"))?;
+            if let Some(name) = &settings.name {
+                entry["name"] = toml_edit::value(name.as_str());
+            }
+            if let Some(short) = &settings.short {
+                entry["short"] = toml_edit::value(short.as_str());
+            }
+            if let Some(order) = settings.order {
+                entry["order"] = toml_edit::value(order);
+            }
+            if let Some(scope) = settings.scope {
+                entry["scope"] = toml_edit::value(scope);
+            }
+        }
         Ok(doc.to_string())
+    }
+
+    /// remember whether a dictionary is searched, and write it down (#71).
+    ///
+    /// one write per click, which is what the reader asked for — "changing things in
+    /// the scope should be autosaved" — and cheap enough to mean it: the file is a
+    /// few hundred bytes and a click is a human action, so there is nothing here to
+    /// debounce. it is also the only honest moment to write, since a save on close
+    /// loses the choice whenever the app is killed rather than closed.
+    pub fn remember_scope(&mut self, path: &Path, in_scope: bool) -> Result<()> {
+        self.dictionary
+            .entry(path.display().to_string())
+            .or_default()
+            .scope = Some(in_scope);
+        self.save()
     }
 
     /// exclude a path (gitignore-style `!` prefix) and persist — a permanent
@@ -178,19 +260,36 @@ pub fn cache_dir() -> PathBuf {
 pub struct DictEntry {
     pub path: PathBuf,
     pub format: Format,
-    /// display label — the containing folder's name (the collection is
-    /// organized one dictionary per folder), else the file stem.
+    /// what to call it: the config's name for this path (#52), else the containing
+    /// folder's name — the collection is organized one dictionary per folder — else
+    /// the file stem.
     pub label: String,
+    /// a short form for the wordlist tag, where the name does not fit (#52).
+    pub short: Option<String>,
+    /// the name the *file* gives it — the folder's, always, whatever the reader has
+    /// renamed it to. this is what the language tags are read off (#59, #60), and it
+    /// is why renaming is safe: the folder names carry the pairs (`Gaffiot 2016
+    /// (Lat-Fra)`, `Grc-Eng`) and a name a person would write does not, which is the
+    /// whole point of #52. a display name that had to keep saying `(Lat-Fra)` so the
+    /// chip beside it could say `LAT → FR` would be saying it twice.
+    pub derived: String,
+    /// whether it starts in scope, as remembered from last time (#71).
+    pub scope: bool,
 }
 
-/// recursively scan the configured `entries` for primary dictionary files.
+/// recursively scan the configured directories for primary dictionary files.
 /// gitignore-style: plain entries are include-dirs; `!`-prefixed entries exclude
-/// anything beneath them. deduplicates DSL `.dsl`/`.dsl.dz` pairs and sorts by
-/// label.
-pub fn scan(entries: &[String]) -> Vec<DictEntry> {
+/// anything beneath them. deduplicates DSL `.dsl`/`.dsl.dz` pairs, then applies
+/// what the config says about each one — its name, its scope, its rank.
+///
+/// the whole config rather than just the directory list, because the *order* this
+/// returns is the order everything downstream uses: `Library` numbers dictionaries
+/// by their position here, and a definition's sections come out in that numbering.
+/// so #45 is this sort, and nothing further down has to know about it.
+pub fn scan(config: &Config) -> Vec<DictEntry> {
     let mut includes = Vec::new();
     let mut excludes = Vec::new();
-    for entry in entries {
+    for entry in &config.dictionary_dirs {
         match entry.strip_prefix('!') {
             Some(path) => excludes.push(PathBuf::from(path)),
             None => includes.push(PathBuf::from(entry)),
@@ -215,17 +314,37 @@ pub fn scan(entries: &[String]) -> Vec<DictEntry> {
             if !format.is_supported() {
                 return None;
             }
-            let label = label_for(&path);
+            let settings = config.dictionary.get(&path.display().to_string());
+            let derived = label_for(&path);
+            let label = settings
+                .and_then(|s| s.name.clone())
+                .unwrap_or_else(|| derived.clone());
             Some(DictEntry {
                 path,
                 format,
                 label,
+                derived,
+                short: settings.and_then(|s| s.short.clone()),
+                scope: settings.and_then(|s| s.scope).unwrap_or(true),
             })
         })
         .collect();
 
     dedupe_dsl(&mut entries);
-    entries.sort_by_key(|e| e.label.to_lowercase());
+    // by name, as it always has been — and deliberately **not** by the reader's order
+    // (#45), which is applied for display instead. this order is the library's
+    // numbering: dictionaries are given slots in it, the merged index is built over
+    // those slots, and its cache is keyed to them. so sorting here would mean a
+    // rebuild of 1.9M keys every time someone dragged a row, and the drag would not
+    // take effect until the next launch. what a reader reorders is what they are
+    // shown; what is on disk decides this.
+    // by the name on *disk*, not the reader's name for it: renaming a dictionary
+    // must not renumber the library either, for the same reason reordering does not.
+    // the path breaks ties, and something has to: two dictionaries can share a
+    // folder — Klein's lexicon and its abbreviations do — so the folder name alone
+    // leaves their order to whatever `read_dir` happened to hand back, and that
+    // order is the library's numbering.
+    entries.sort_by_cached_key(|e| (e.derived.to_lowercase(), e.path.clone()));
     entries
 }
 
@@ -344,6 +463,13 @@ fn indent_of(array: &Array) -> String {
 mod tests {
     use super::*;
 
+    fn config(dirs: &[&str]) -> Config {
+        Config {
+            dictionary_dirs: dirs.iter().map(|d| (*d).to_owned()).collect(),
+            dictionary: BTreeMap::new(),
+        }
+    }
+
     #[test]
     fn dedupes_dsl_pairs_keeping_plain() {
         let mut entries = vec![
@@ -351,16 +477,25 @@ mod tests {
                 path: "/d/x.dsl".into(),
                 format: Format::Dsl,
                 label: "x".into(),
+                derived: "x".into(),
+                short: None,
+                scope: true,
             },
             DictEntry {
                 path: "/d/x.dsl.dz".into(),
                 format: Format::Dsl,
                 label: "x".into(),
+                derived: "x".into(),
+                short: None,
+                scope: true,
             },
             DictEntry {
                 path: "/d/y.dsl.dz".into(),
                 format: Format::Dsl,
                 label: "y".into(),
+                derived: "y".into(),
+                short: None,
+                scope: true,
             },
         ];
         dedupe_dsl(&mut entries);
@@ -393,11 +528,11 @@ mod tests {
         fs::write(b.join("b.ifo"), "").unwrap();
 
         let root_s = root.to_string_lossy().into_owned();
-        let all = scan(std::slice::from_ref(&root_s));
+        let all = scan(&config(&[&root_s]));
         assert_eq!(all.len(), 2, "both dicts found without excludes");
 
         let excl = format!("!{}", b.display());
-        let filtered = scan(&[root_s, excl]);
+        let filtered = scan(&config(&[&root_s, &excl]));
         assert_eq!(filtered.len(), 1);
         assert!(filtered[0].path.starts_with(&a));
 
@@ -465,19 +600,12 @@ theme = "dark"
     #[test]
     fn a_value_we_cannot_read_is_left_alone() {
         let text = "dictionary_dirs = [\"/a\", 42]\n";
-        let config = Config {
-            dictionary_dirs: vec!["/a".into()],
-        };
+        let config = config(&["/a"]);
         let out = config.edited(Some(text)).unwrap();
         assert!(
             out.contains("42"),
             "dropped a value it could not read:\n{out}"
         );
-    }
-    fn config(dirs: &[&str]) -> Config {
-        Config {
-            dictionary_dirs: dirs.iter().map(|d| (*d).to_owned()).collect(),
-        }
     }
 
     /// the whole contract, over the shapes a hand-written file comes in: appending
@@ -522,6 +650,7 @@ theme = "dark"
             dirs.push("/new".to_owned());
             let config = Config {
                 dictionary_dirs: dirs.clone(),
+                dictionary: BTreeMap::new(),
             };
             let out = config
                 .edited(Some(&text))
@@ -564,6 +693,114 @@ theme = "dark"
             "a save rewrote the file it was meant to leave alone"
         );
     }
+    /// #52: the name in the config is the name everything downstream reads, and it
+    /// replaces the folder name rather than decorating it.
+    #[test]
+    fn a_name_in_the_config_replaces_the_folder_name() {
+        let root = std::env::temp_dir().join(format!("dictu-name-{}", std::process::id()));
+        let dir = root.join("bgl-Latin_English_Inflected");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("d.ifo"), "").unwrap();
+
+        let mut config = config(&[&root.to_string_lossy()]);
+        assert_eq!(scan(&config)[0].label, "bgl-Latin_English_Inflected");
+
+        config.dictionary.insert(
+            dir.join("d.ifo").display().to_string(),
+            DictSettings {
+                name: Some("Whitaker's Words".into()),
+                short: Some("Whitaker".into()),
+                ..DictSettings::default()
+            },
+        );
+        let entries = scan(&config);
+        assert_eq!(entries[0].label, "Whitaker's Words");
+        assert_eq!(entries[0].short.as_deref(), Some("Whitaker"));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// #71: what the reader chose is written down, and writing it does not cost them
+    /// a word of what they wrote themselves.
+    #[test]
+    fn remembering_a_scope_writes_one_key_and_keeps_the_prose() {
+        let text = concat!(
+            "# my dictionaries.\n",
+            "dictionary_dirs = [\n    \"/d\",\n]\n\n",
+            "# the good latin one.\n",
+            "[dictionary.\"/d/gaffiot\"]\n",
+            "name = \"Gaffiot\"\n",
+        );
+        let mut config: Config = toml::from_str(text).unwrap();
+        config
+            .dictionary
+            .entry("/d/gaffiot".into())
+            .or_default()
+            .scope = Some(false);
+        let out = config.edited(Some(text)).unwrap();
+
+        assert!(
+            out.contains("# the good latin one."),
+            "lost a comment:\n{out}"
+        );
+        assert!(out.contains("name = \"Gaffiot\""), "lost the name:\n{out}");
+        assert!(
+            out.contains("scope = false"),
+            "did not write the scope:\n{out}"
+        );
+        let back: Config = toml::from_str(&out).unwrap();
+        assert_eq!(back.dictionary["/d/gaffiot"].scope, Some(false));
+        assert_eq!(
+            back.dictionary["/d/gaffiot"].name.as_deref(),
+            Some("Gaffiot")
+        );
+        assert_eq!(
+            config.edited(Some(&out)).unwrap(),
+            out,
+            "not idempotent:\n{out}"
+        );
+    }
+
+    /// and #71's other half: a choice about a dictionary that is not there any more
+    /// — an unplugged drive, a folder renamed — is kept. dropping it would mean
+    /// plugging the drive back in and finding the choice quietly forgotten.
+    #[test]
+    fn a_choice_about_a_dictionary_that_is_gone_is_kept() {
+        let text = concat!(
+            "dictionary_dirs = [\"/d\"]\n\n",
+            "[dictionary.\"/mnt/usb/klein\"]\n",
+            "scope = false\n",
+        );
+        let config: Config = toml::from_str(text).unwrap();
+        // scan finds nothing at that path, and the entry survives the save anyway.
+        assert!(scan(&config).is_empty());
+        let out = config.edited(Some(text)).unwrap();
+        assert!(
+            out.contains("[dictionary.\"/mnt/usb/klein\"]") && out.contains("scope = false"),
+            "forgot a choice about a dictionary that was not plugged in:\n{out}"
+        );
+    }
+
+    /// a path is not a bare toml key — it has slashes, and it can have a dot or a
+    /// space. the app writes these keys itself, so it has to quote them itself.
+    #[test]
+    fn a_path_written_as_a_key_is_quoted() {
+        let mut config = config(&["/d"]);
+        config.dictionary.insert(
+            "/d/Even Sapir (BGL)/x.dsl".into(),
+            DictSettings {
+                scope: Some(true),
+                ..DictSettings::default()
+            },
+        );
+        let out = config.edited(None).unwrap();
+        let back: Config = toml::from_str(&out).unwrap_or_else(|e| panic!("{e}\n{out}"));
+        assert_eq!(
+            back.dictionary["/d/Even Sapir (BGL)/x.dsl"].scope,
+            Some(true)
+        );
+    }
+
     /// the `!` rule matches whole path components, which is easy to get wrong when
     /// excluding one file out of a folder — `Foo` does not exclude `Foo.dsl.dz`.
     #[test]
@@ -577,13 +814,13 @@ theme = "dark"
         let root_s = root.to_string_lossy().into_owned();
         let partial = format!("!{}", dir.join("greek_or_2").display());
         assert_eq!(
-            scan(&[root_s.clone(), partial]).len(),
+            scan(&config(&[&root_s, &partial])).len(),
             2,
             "a partial file name excluded something"
         );
         let exact = format!("!{}", dir.join("greek_or_2.ifo").display());
         assert_eq!(
-            scan(&[root_s, exact]).len(),
+            scan(&config(&[&root_s, &exact])).len(),
             1,
             "the exact file name did not"
         );

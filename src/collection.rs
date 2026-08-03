@@ -24,10 +24,14 @@ pub struct Collection {
     fold_forms: bool,
 }
 
-/// one dictionary's answer for a word: its label, and every entry it files.
+/// one dictionary's answer for a word: what to call it, and every entry it files.
 pub struct Definition {
     pub dict: usize,
+    /// what to show as the heading — the reader's name for it (#52).
     pub label: String,
+    /// what to read its languages off — the file's own name, which is where the
+    /// pairs are written (#60).
+    pub derived: String,
     pub entries: Vec<String>,
 }
 
@@ -40,10 +44,13 @@ impl Collection {
         }
     }
 
-    /// hand over the built index. the scope opens fully: a dictionary the reader
-    /// has never seen is one they have not excluded.
-    pub fn open(&mut self, library: Library) {
-        self.scope = vec![true; library.dict_count()];
+    /// hand over the built index, and what the reader last chose to search (#71).
+    /// a flag per dictionary in library order; anything short is padded with `true`,
+    /// since a dictionary nobody has an opinion about is one nobody has excluded.
+    pub fn open(&mut self, library: Library, scope: Vec<bool>) {
+        let mut scope = scope;
+        scope.resize(library.dict_count(), true);
+        self.scope = scope;
         self.library = Some(library);
     }
 
@@ -62,6 +69,28 @@ impl Collection {
     pub fn dict_label(&self, index: usize) -> &str {
         self.library()
             .and_then(|library| library.dict_label(index))
+            .unwrap_or("")
+    }
+
+    /// where a dictionary was loaded from — its identity in the config, which is
+    /// what a remembered scope is written against.
+    pub fn dict_path(&self, index: usize) -> Option<&std::path::Path> {
+        self.library().and_then(|library| library.dict_path(index))
+    }
+
+    /// the file's own name for a dictionary, which is where a language is read from
+    /// rather than the name the reader gave it (#52).
+    pub fn dict_derived(&self, index: usize) -> &str {
+        self.library()
+            .and_then(|library| library.dict_derived(index))
+            .unwrap_or("")
+    }
+
+    /// the shortest name a dictionary has — what the wordlist tag falls back to when
+    /// no language can be named for a row.
+    pub fn dict_short(&self, index: usize) -> &str {
+        self.library()
+            .and_then(|library| library.dict_short(index))
             .unwrap_or("")
     }
 
@@ -162,6 +191,7 @@ impl Collection {
                 _ => found.push(Definition {
                     dict: *dict,
                     label: self.dict_label(*dict).to_owned(),
+                    derived: self.dict_derived(*dict).to_owned(),
                     entries,
                 }),
             }
