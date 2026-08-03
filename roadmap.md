@@ -486,7 +486,7 @@ because their notes are what the open ones argue with.
   abbreviations share a folder, so the folder name alone left their order to `read_dir` —
   and that order is the library's numbering.
 
-- **[ ] #45 let the user order the dictionaries, and sort results by that order.**
+- **[x] #45 the reader orders the dictionaries, and results follow that order.**
   the scope panel lists dictionaries in scan order (`config::scan` sorts by label) and the
   wordlist inherits whatever the merged index hands back, so which dictionary answers first
   is an accident. it should be a preference: drag the list into the order you trust, and
@@ -496,6 +496,35 @@ because their notes are what the open ones argue with.
   without breaking #12's attribution or the row limit. the order persists in **its own key**,
   written by the app — not by reordering `dictionary_dirs`, which is hand-written and
   commented, and which #38 deliberately only ever appends to.
+  **done, and the part with teeth turned out to be *where the order lives*.** the obvious
+  implementation is to sort `config::scan`, since everything downstream is numbered by it —
+  and that numbering is slot space. the merged index is built over those slots and its cache
+  is keyed to them, so ordering there would rebuild 1.9M sorted keys on every drag *and* not
+  take effect until the next launch. so the order is a **permutation over** the library
+  rather than the library's own numbering: `Library::order_from` reads the ranks, the
+  collection holds the permutation, and `definitions` sorts by it. dragging is free, and it
+  is immediate.
+  the panel is where the dragging happens — the shelf shows the collection, the panel is
+  where it is arranged, and the other per-dictionary choices are already made there. the
+  order is read back off the list afterwards rather than computed, because the list is what
+  the reader just arranged and anything else would be a second opinion about what they did.
+  every dictionary gets a rank written, not only the ones that moved: half a list of ranks
+  would leave the rest to the alphabet. unranked ones sort by **display** name, so an
+  unconfigured collection reads sensibly and a rename moves a dictionary to where its new
+  name belongs.
+  what follows a drop, and all of it immediately: the panel, the shelf, the definition on
+  screen, and the wordlist's per-row dictionary tags. `render_shown_again` already existed
+  for exactly this shape of change.
+  driving it needed one fact about gtk: a popover is an x surface of its own, so at-spi
+  gives its widgets coordinates relative to *it* and (0, 0) for screen coordinates — the
+  drag in the suite gets its offset from `xdotool` and adds the two.
+  mutation-tested from both ends: with `definitions` left unsorted exactly the pane check
+  fails; with the drop wired to nothing, the pane, the shelf and the config checks fail
+  while "dragging a scope row moves it" still passes — correctly, since the row does move
+  and only the consequences are gone.
+  and a bug of its own, found by a unit test rather than a screen: `set_order` sized its
+  seen-list by the collection's count while indexing it by the values it was handed, so an
+  index past the end took the app down instead of being ignored.
 
 - **[ ] #49 back and forward.** there is real navigation now and no way to retrace it: a
   definition can be reached by typing, by picking a row, by the global hotkey, and — since
