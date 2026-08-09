@@ -131,6 +131,16 @@ impl Collection {
             .unwrap_or("")
     }
 
+    /// which group a dictionary belongs to in the scope panel (#64) — the language it
+    /// is a dictionary of, as a tag.
+    pub fn dict_group(&self, index: usize) -> &'static str {
+        crate::language::source(
+            self.dict_derived(index),
+            self.library()
+                .and_then(|library| library.dict_language(index)),
+        )
+    }
+
     pub fn dict_headwords(&self, index: usize) -> usize {
         self.library()
             .map_or(0, |library| library.dict_headwords(index))

@@ -13,6 +13,36 @@ pub fn tag(word: &str, dict_name: &str) -> Option<&'static str> {
     script_tag(word).or_else(|| named_language(dict_name))
 }
 
+/// where a dictionary is grouped in the scope panel (#64): the language it is a
+/// dictionary **of**, as a tag.
+///
+/// three sources, in the order they are trusted. `configured` is the config's
+/// `language` key and wins outright, because it is the one a person wrote. then the
+/// source half of a pair the title names, which settles most of a collection —
+/// including a dictionary of its own language, since `HEB-HEB` reads as (HEB, HEB)
+/// and lands under HEB, which is where a reader would look for it. then any language
+/// the title names at all, which is what carries the titles that name a *work* rather
+/// than a pair: "liddell", "lsj" and "pindar" are all greek without saying so.
+///
+/// `OTHER` when nothing answers. deliberately a group rather than a hidden row: a
+/// dictionary the panel cannot place is still one the reader owns.
+pub fn source(derived: &str, configured: Option<&str>) -> &'static str {
+    configured
+        .and_then(named_language)
+        .or_else(|| pair(derived).map(|(from, _)| from))
+        .or_else(|| named_language(derived))
+        .unwrap_or(OTHER)
+}
+
+/// the group for a dictionary whose language nothing names.
+pub const OTHER: &str = "OTHER";
+
+/// groups in the order the panel shows them: alphabetical, with `OTHER` last, because
+/// a group that means "we do not know" is not one to open with.
+pub fn group_before(left: &str, right: &str) -> std::cmp::Ordering {
+    (left == OTHER, left).cmp(&(right == OTHER, right))
+}
+
 /// the language pair a dictionary's title names, when it names one: `(source, target)`.
 ///
 /// only where the two sit **directly** either side of a `-` or `_`, which is how these
@@ -135,6 +165,53 @@ fn named_language(dict_name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #64: every dictionary in the real collection lands in a group, and lands in the
+    /// right one. the titles here are the *folder* names, which is what the language is
+    /// read from (#52) — a reader's own name for a dictionary says nothing about it.
+    #[test]
+    fn every_dictionary_in_the_collection_finds_a_group() {
+        for (title, expected) in [
+            ("Bailly 2020 (Grc-Fra)", "GRC"),
+            ("bgl-Latin_English_Inflected", "LAT"),
+            ("Gaffiot 2016 (Lat-Fra)", "LAT"),
+            ("Lewis and Short 1879 (Lat-Eng)", "LAT"),
+            ("Greek-English Lexicon - Liddell & Scott", "GRC"),
+            (
+                "Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)",
+                "GRC",
+            ),
+            ("Lexicon to Pindar (Grc-Eng)", "GRC"),
+            ("Larousse Chambers français-anglais", "FR"),
+            // a work named rather than a pair: no `Src-Tgt` anywhere in these.
+            ("Middle_Liddell_stardict", "GRC"),
+            ("LSJ sources", "GRC"),
+            // a dictionary of its own language reads as a pair of one.
+            ("HEB-HEB a hebrew-hebrew dictionary", "HEB"),
+            // and the one the pair rule deliberately refuses (three words apart), which
+            // the weaker rule still names.
+            ("Hebrew and Aramaic Lexicon of the Old Testament", "HEB"),
+            (
+                "Comprehensive Etymological Dictionary of the Hebrew Language by Ernest Klein (Heb-Eng)",
+                "HEB",
+            ),
+        ] {
+            assert_eq!(source(title, None), expected, "{title}");
+        }
+        // the one nothing names, and what the config key does about it.
+        assert_eq!(source("מילון_אבן_ספיר (BGL)", None), OTHER);
+        assert_eq!(source("מילון_אבן_ספיר (BGL)", Some("hebrew")), "HEB");
+        // the key wins over a title that says otherwise, since a person wrote it.
+        assert_eq!(source("Gaffiot 2016 (Lat-Fra)", Some("greek")), "GRC");
+    }
+
+    /// OTHER sorts last however the alphabet feels about it.
+    #[test]
+    fn the_unknown_group_comes_last() {
+        let mut groups = vec![OTHER, "LAT", "FR", "GRC"];
+        groups.sort_by(|a, b| group_before(a, b));
+        assert_eq!(groups, ["FR", "GRC", "LAT", OTHER]);
+    }
 
     #[test]
     fn script_settles_hebrew_and_greek_whatever_the_dictionary_is_called() {

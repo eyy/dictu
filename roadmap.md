@@ -29,8 +29,7 @@ nothing open right now.
 
 **this section is in the order it makes sense to do it in, not the order it arrived.**
 the tools that lie to you, then the features. the reasoning per item is in the item; what
-the order encodes now is: #64 is unblocked and small (#59 named the languages it needed);
-#63 makes the speed check trustworthy, and it stopped the gate twice in one afternoon by
+the order encodes now is: #63 makes the speed check trustworthy, and it stopped the gate twice in one afternoon by
 measuring a busy machine; #68 is the largest thing here and the first that would put dictu
 on the network, so it is worth doing awake rather than at the end of a session.
 
@@ -51,28 +50,6 @@ on the network, so it is worth doing awake rather than at the end of a session.
   files in Dropbox; the honest default is off, with the reader turning it on per source.
   no scraping questions until that is settled: etymonline has no public api and its terms
   matter, Urban Dictionary has an unofficial one that comes and goes.
-
-- **[ ] #64 group the dictionaries by source language.**
-  the scope panel lists fifteen dictionaries in one flat alphabetical run, so the languages
-  are interleaved: Bailly (Grc-Fra), then bgl-Latin_English_Inflected, then two Hebrew
-  etymological ones, then Gaffiot (Lat-Fra), then two Greek lexica, then a hebrew-hebrew dictionary. a
-  reader narrowing a search thinks "the Greek ones" or "just Klein", never "the ones starting
-  with B", and the list is now long enough that finding one costs a scroll and a scan.
-  wants **#59 first**: grouping by source language means knowing it, and today the tagger
-  cannot even name Gaffiot's. once it can, `build_scope` fills `scope_list` in one pass and
-  can just as easily fill a group per language — `gtk::ListBox` takes a header function, or
-  the panel becomes one `adw::PreferencesGroup` per language with its own title (GRC, LAT,
-  HEB, FR), which is the shape libadwaita is built for and reads better in a popover.
-  two things to decide rather than assume. **what a group is called** for a dictionary whose
-  source is its own target — a hebrew-hebrew dictionary is HEB-HEB, a Hebrew dictionary of Hebrew — and for
-  the ones whose titles say nothing at all (`Middle_Liddell_stardict`, `LSJ sources`), which
-  is #52's config table again. and **how this meets #45**: if the reader can order the
-  dictionaries by hand, does their order sort the groups, sort within a group, or replace the
-  grouping? cheapest coherent answer is that grouping is the panel's layout and #45's rank
-  orders *within* a group, but that is a decision, not an obvious truth.
-  note this is about the *panel*. the order dictionaries answer in — which section comes first
-  in the definition pane — is #45, and the two should not be conflated: one is where a control
-  sits, the other is what the reader reads first.
 
 - **[ ] #63 the speed check compares against a baseline it cannot know the clock of.**
   it failed during #61 on a change that was a popover's width — and `dictu bench` builds no

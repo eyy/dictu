@@ -28,6 +28,8 @@ struct Loaded {
     derived: String,
     /// a short form for where the name does not fit (#52).
     short: Option<String>,
+    /// the language the config says it is of, where its title does not (#64).
+    language: Option<String>,
     /// where it was loaded from — the one name for a dictionary that does not
     /// change when the reader renames it (#52), which is what the config keys its
     /// preferences by and what a remembered scope is written against (#71).
@@ -91,6 +93,7 @@ impl Library {
                         label: entry.label.clone(),
                         derived: entry.derived.clone(),
                         short: entry.short.clone(),
+                        language: entry.language.clone(),
                         path: entry.path.clone(),
                         dict,
                     });
@@ -143,6 +146,11 @@ impl Library {
         self.dicts
             .get(index)
             .map(|d| d.short.as_deref().unwrap_or(&d.label))
+    }
+
+    /// what the config says this dictionary's language is, where it says.
+    pub fn dict_language(&self, index: usize) -> Option<&str> {
+        self.dicts.get(index).and_then(|d| d.language.as_deref())
     }
 
     pub fn dict_path(&self, index: usize) -> Option<&Path> {
@@ -695,6 +703,7 @@ mod tests {
                     label: "A".into(),
                     derived: "A".into(),
                     short: None,
+                    language: None,
                     path: format!("/mock/{}", "A").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
@@ -707,6 +716,7 @@ mod tests {
                     label: "B".into(),
                     derived: "B".into(),
                     short: None,
+                    language: None,
                     path: format!("/mock/{}", "B").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
@@ -726,6 +736,7 @@ mod tests {
             label: label.into(),
             derived: label.into(),
             short: None,
+            language: None,
             path: format!("/mock/{}", label).into(),
             dict: Box::new(Mock {
                 internal: internal.into(),
@@ -800,6 +811,7 @@ mod tests {
                 label: "A".into(),
                 derived: "A".into(),
                 short: None,
+                language: None,
                 path: format!("/mock/{}", "A").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
@@ -843,6 +855,7 @@ mod tests {
                 label: "A".into(),
                 derived: "A".into(),
                 short: None,
+                language: None,
                 path: format!("/mock/{}", "A").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
@@ -872,6 +885,7 @@ mod tests {
                     label: "A".into(),
                     derived: "A".into(),
                     short: None,
+                    language: None,
                     path: format!("/mock/{}", "A").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
@@ -884,6 +898,7 @@ mod tests {
                     label: "B".into(),
                     derived: "B".into(),
                     short: None,
+                    language: None,
                     path: format!("/mock/{}", "B").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
@@ -993,6 +1008,7 @@ mod tests {
             derived: stem.to_string(),
             short: None,
             scope: true,
+            language: None,
             order: None,
         }
     }
@@ -1142,6 +1158,7 @@ mod tests {
                 label: "A".into(),
                 derived: "A".into(),
                 short: None,
+                language: None,
                 path: format!("/mock/{}", "A").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
@@ -1188,6 +1205,7 @@ mod tests {
                     label: "Gaffiot".into(),
                     derived: "Gaffiot".into(),
                     short: None,
+                    language: None,
                     path: format!("/mock/{}", "Gaffiot").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
@@ -1200,6 +1218,7 @@ mod tests {
                     label: "L&S".into(),
                     derived: "L&S".into(),
                     short: None,
+                    language: None,
                     path: format!("/mock/{}", "L&S").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
@@ -1236,6 +1255,7 @@ mod tests {
                 label: "Bailly".into(),
                 derived: "Bailly".into(),
                 short: None,
+                language: None,
                 path: format!("/mock/{}", "Bailly").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
@@ -1263,6 +1283,7 @@ mod tests {
                 label: "Larousse".into(),
                 derived: "Larousse".into(),
                 short: None,
+                language: None,
                 path: format!("/mock/{}", "Larousse").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
@@ -1291,6 +1312,7 @@ mod tests {
                 label: "LSJ".into(),
                 derived: "LSJ".into(),
                 short: None,
+                language: None,
                 path: format!("/mock/{}", "LSJ").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
@@ -1339,6 +1361,7 @@ mod tests {
                 label: "Whitaker".into(),
                 derived: "Whitaker".into(),
                 short: None,
+                language: None,
                 path: format!("/mock/{}", "Whitaker").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),
@@ -1394,6 +1417,7 @@ mod tests {
                     label: "Forms".into(),
                     derived: "Forms".into(),
                     short: None,
+                    language: None,
                     path: format!("/mock/{}", "Forms").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
@@ -1406,6 +1430,7 @@ mod tests {
                     label: "L&S".into(),
                     derived: "L&S".into(),
                     short: None,
+                    language: None,
                     path: format!("/mock/{}", "L&S").into(),
                     dict: Box::new(Mock {
                         internal: "mock".into(),
@@ -1438,6 +1463,7 @@ mod tests {
                 label: "a hebrew-hebrew dictionary".into(),
                 derived: "a hebrew-hebrew dictionary".into(),
                 short: None,
+                language: None,
                 path: format!("/mock/{}", "a hebrew-hebrew dictionary").into(),
                 dict: Box::new(Mock {
                     internal: "mock".into(),

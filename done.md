@@ -1346,3 +1346,7 @@ landed. the fuller version of any of them is the commit that closed it (`git log
 
 - **[x] #29 rustfmt.** the tree was never formatted; `cargo fmt` applied across all 8
   source files and `hack/check.sh` now keeps it that way.
+
+- **[x] #64 the scope panel groups the dictionaries by source language.** headers in one
+  `ListBox`, groups alphabetical with `OTHER` last, the reader's rank ordering *within* a
+  group; grouping is the panel's layout and leaves the reading order (#45) alone.

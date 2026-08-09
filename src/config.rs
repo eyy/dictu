@@ -57,6 +57,10 @@ pub struct DictSettings {
     pub order: Option<i64>,
     /// whether it is searched. absent means yes.
     pub scope: Option<bool>,
+    /// the language it is a dictionary **of**, where its own title does not say (#64)
+    /// — "hebrew", "grc", whatever names one. only needed for a title that names
+    /// neither a pair nor a language, which in this collection is one of fifteen.
+    pub language: Option<String>,
 }
 
 impl Default for Config {
@@ -289,6 +293,8 @@ pub struct DictEntry {
     pub derived: String,
     /// whether it starts in scope, as remembered from last time (#71).
     pub scope: bool,
+    /// the language the config says it is of, if it says (#64).
+    pub language: Option<String>,
     /// where the reader put it in the reading order (#45). `None` is "wherever it
     /// falls" — ranked dictionaries lead, the rest follow by name.
     pub order: Option<i64>,
@@ -343,6 +349,7 @@ pub fn scan(config: &Config) -> Vec<DictEntry> {
                 derived,
                 short: settings.and_then(|s| s.short.clone()),
                 scope: settings.and_then(|s| s.scope).unwrap_or(true),
+                language: settings.and_then(|s| s.language.clone()),
                 order: settings.and_then(|s| s.order),
             })
         })
@@ -498,6 +505,7 @@ mod tests {
                 derived: "x".into(),
                 short: None,
                 scope: true,
+                language: None,
                 order: None,
             },
             DictEntry {
@@ -507,6 +515,7 @@ mod tests {
                 derived: "x".into(),
                 short: None,
                 scope: true,
+                language: None,
                 order: None,
             },
             DictEntry {
@@ -516,6 +525,7 @@ mod tests {
                 derived: "y".into(),
                 short: None,
                 scope: true,
+                language: None,
                 order: None,
             },
         ];
