@@ -403,7 +403,14 @@ impl UiInner {
         if !ready {
             return;
         }
-        for index in self.collection.borrow().dicts_in_order().to_vec() {
+        // grouped by the language each dictionary is *of* (#64), because that is how a
+        // reader narrowing a search thinks — "the greek ones", "just Klein" — and never
+        // "the ones starting with B". within a group the order is the reader's (#45);
+        // the groups themselves are alphabetical, with OTHER last.
+        //
+        // this is the panel's layout and nothing else: which dictionary answers first
+        // is #45's business, and grouping deliberately does not touch it.
+        for index in self.grouped_dicts() {
             let (label, headwords) = {
                 let collection = self.collection.borrow();
                 (
@@ -488,6 +495,12 @@ impl UiInner {
                     else {
                         return false;
                     };
+                    // refused rather than quietly undone: a row dragged into another
+                    // language would have to *become* that language to stay there,
+                    // and the group is read off the dictionary, not chosen (#64).
+                    if ui.group_of_row(&dragged) != ui.group_of_row(&row) {
+                        return false;
+                    }
                     ui.drop_row_onto(&dragged, &row);
                     true
                 }
@@ -541,6 +554,55 @@ impl UiInner {
         }
     }
 
+    /// every dictionary, grouped by language and in the reader's order within each
+    /// group — the order the panel lists them in.
+    fn grouped_dicts(&self) -> Vec<usize> {
+        let collection = self.collection.borrow();
+        let ordered = collection.dicts_in_order().to_vec();
+        let mut groups: Vec<&'static str> = Vec::new();
+        for &index in &ordered {
+            let group = collection.dict_group(index);
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
+        groups.sort_by(|left, right| language::group_before(left, right));
+        // one pass per group over a list of fifteen, which is cheaper to read than a
+        // sort with a comparator that has to look a group up twice per comparison.
+        groups
+            .into_iter()
+            .flat_map(|group| {
+                ordered
+                    .iter()
+                    .copied()
+                    .filter(|&index| collection.dict_group(index) == group)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// does the panel hold more than one language? headers only earn their space when
+    /// they separate something.
+    fn panel_has_groups(&self) -> bool {
+        let collection = self.collection.borrow();
+        let mut seen: Option<&'static str> = None;
+        self.scope_rows.borrow().iter().any(|(_, index)| {
+            let group = collection.dict_group(*index);
+            seen.replace(group).is_some_and(|first| first != group)
+        })
+    }
+
+    /// which group a scope row belongs to, by way of the dictionary it stands for.
+    fn group_of_row(&self, row: &adw::ActionRow) -> Option<&'static str> {
+        let index = self
+            .scope_rows
+            .borrow()
+            .iter()
+            .find(|(known, _)| known == row)
+            .map(|(_, index)| *index)?;
+        Some(self.collection.borrow().dict_group(index))
+    }
+
     /// one scope row dropped onto another: move it there, and make everything else
     /// follow (#45).
     ///
@@ -555,21 +617,43 @@ impl UiInner {
         self.scope_list.remove(dragged);
         self.scope_list.insert(dragged, at);
 
-        // read the order back off the list rather than computing it: the list is what
-        // the reader just arranged, and anything else would be a second opinion about
-        // what they did.
+        // read the arrangement back off the list rather than computing it: the list is
+        // what the reader just arranged, and anything else would be a second opinion
+        // about what they did.
         let known = self.scope_rows.borrow();
-        let mut order = Vec::with_capacity(known.len());
+        let mut shown = Vec::with_capacity(known.len());
         let mut child = self.scope_list.first_child();
         while let Some(widget) = child {
             if let Some(row) = widget.downcast_ref::<adw::ActionRow>()
                 && let Some((_, index)) = known.iter().find(|(known, _)| known == row)
             {
-                order.push(*index);
+                shown.push(*index);
             }
             child = widget.next_sibling();
         }
         drop(known);
+
+        // and turn it into a reading order, which is *not* the same list (#64). the
+        // panel is grouped, so reading it top to bottom would make the reading order
+        // the grouping — and grouping is where a control sits, not what is read first.
+        // a drag stays inside one group, so what it changes is the order of that
+        // group's dictionaries among the places they already held.
+        let collection = self.collection.borrow();
+        let group = collection.dict_group(shown.first().copied().unwrap_or(0));
+        let moved: Vec<usize> = shown
+            .into_iter()
+            .filter(|&index| collection.dict_group(index) == group)
+            .collect();
+        let mut order = collection.dicts_in_order().to_vec();
+        let mut slots: Vec<usize> = moved
+            .iter()
+            .filter_map(|dict| order.iter().position(|held| held == dict))
+            .collect();
+        slots.sort_unstable();
+        drop(collection);
+        for (dict, slot) in moved.iter().zip(&slots) {
+            order[*slot] = *dict;
+        }
         self.set_reading_order(order);
     }
 
@@ -1209,6 +1293,43 @@ pub(crate) fn build(
         }
     ));
     ui.definition.add_controller(motion);
+
+    // the group headings (#64). one list with headers rather than a group of lists:
+    // the reader sees the same thing either way, and this keeps the panel a single
+    // arrangeable sequence — the drag reads its result off one list, and the reading
+    // order is worked out from that. a list per language would make "where is this row
+    // now" a question about which list as well as which position.
+    //
+    // installed here rather than where the list is built, because it needs the ui —
+    // and weakly, like every other handler (#8): the ui owns this list.
+    let this = Rc::downgrade(&ui);
+    ui.scope_list.set_header_func(move |row, before| {
+        let (Some(ui), Some(row)) = (this.upgrade(), row.downcast_ref::<adw::ActionRow>()) else {
+            return;
+        };
+        let group = ui.group_of_row(row);
+        let above = before
+            .and_then(|before| before.downcast_ref::<adw::ActionRow>())
+            .and_then(|before| ui.group_of_row(before));
+        // a header only where the language changes, and none at all when there is only
+        // one language to be in: a lone heading over the whole panel names nothing the
+        // reader has to tell apart, which is what a heading is for.
+        if group.is_none() || group == above || !ui.panel_has_groups() {
+            row.set_header(None::<&gtk::Widget>);
+            return;
+        }
+        let header = gtk::Label::builder()
+            .label(group.unwrap_or(""))
+            .xalign(0.0)
+            .margin_top(if before.is_some() { 10 } else { 2 })
+            .margin_bottom(2)
+            .margin_start(4)
+            .build();
+        header.add_css_class("heading");
+        header.add_css_class("dim-label");
+        header.add_css_class("caption");
+        row.set_header(Some(&header));
+    });
 
     // Down from the search box steps into the wordlist (roadmap #16).
     let entry_keys = gtk::EventControllerKey::new();

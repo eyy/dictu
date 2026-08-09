@@ -1309,14 +1309,20 @@ def main():
         # the rank goes on the *other* dictionary on purpose. "A Sample Lexicon" would
         # lead on the alphabet alone, so ranking links first is the only arrangement
         # that tells a remembered order apart from a sorted one.
+        # the languages are for #64: neither fixture title names one, so the config key
+        # is the only way to put them in different groups — and different groups is
+        # what makes the panel's order and the reading order disagree, which is the
+        # thing #64 must not conflate.
         with open(app_proc.config_path(), "w") as fh:
             fh.write(
                 f'dictionary_dirs = ["{SAMPLE_DIR}"]\n\n'
                 f'[dictionary."{sample}"]\n'
                 'name = "A Sample Lexicon"\n'
-                "scope = false\n\n"
+                "scope = false\n"
+                'language = "greek"\n\n'
                 f'[dictionary."{links}"]\n'
                 "order = 0\n"
+                'language = "latin"\n'
             )
         app_proc.relaunch()
         node = wait_for(find_app, READY_TIMEOUT, "dictu after a restart")
@@ -1352,7 +1358,43 @@ def main():
             "A Sample Lexicon" in boxes and not is_checked(boxes["A Sample Lexicon"]),
             f"panel boxes: {[(n, is_checked(b)) for n, b in boxes.items()]}",
         )
+
+        # roadmap #64: the panel groups by the language each dictionary is *of*, so it
+        # lists GRC before LAT — while the shelf, which follows the reading order, still
+        # puts links first because that is the rank it was given. the two disagreeing is
+        # the point: grouping is where a control sits, ranking is what is read first.
+        panel = [name for name, _ in scope_rows(node)]
+        r.check(
+            "the panel groups the dictionaries by language",
+            panel == ["A Sample Lexicon", "links"],
+            f"panel rows read {panel}",
+        )
+        # exactly the second group's, and that is not a typo: a `GtkListBox` header on
+        # the *first* row is not exposed over at-spi, while every later one is. measured
+        # on two collections — the real fifteen show GRC, HEB, LAT and never the FR
+        # above the first row. so this asserts what can be seen, and the heading that
+        # cannot be is covered by the row order above it, which is the same claim.
+        headers = [
+            (n.get_name() or "").strip()
+            for n in by_role(scope_dict_list(node), "label")
+            if (n.get_name() or "").strip() in ("GRC", "LAT")
+        ]
+        r.check(
+            "with a heading naming the language of each group after the first",
+            headers == ["LAT"],
+            f"headings read {headers}",
+        )
         close_scope(node)
+
+        app_proc.forward("--search", "")  # the shelf, not the wordlist
+        r.check(
+            "and the reading order is left alone by the grouping",
+            wait_for_quiet(
+                lambda: [name for name, _ in widgets.shelf_rows()]
+                == ["links", "A Sample Lexicon"]
+            ),
+            f"shelf rows read {widgets.shelf_rows()}",
+        )
 
         r.check("the app is still running (no crash)", app_proc.proc.poll() is None)
 
