@@ -341,9 +341,9 @@ needs to see; without it you get the plain text.
 collection with a warm cache, ~7s with a cold one. `time` it when testing load performance,
 and `rm -rf ~/.cache/dictu` first if the cold path is what you mean to measure.
 
-real test data: `~/Dictionaries` — 14 loadable dicts, 1,941,292 headwords
-(the count in `roadmap.md`'s collection table; the old 4M figure predates the excluded
-duplicate Latin dictionaries).
+real test data: `~/Dictionaries` — 15 loadable dicts, 1,936,120 headwords.
+run `dictu scope` for the current list rather than trusting a number written down
+somewhere: this one has been wrong twice, and the command cannot be.
 `sample/` is a hand-built dictd fixture (6 definitions, gzipped `.dict.dz`, dictd-base64
 offsets) and is what the smoke tests and e2e use; no unit test reads it.
 
@@ -498,3 +498,8 @@ the bugs.
   tracker. never amend, never push — pushing is a human step.
 - comments: lowercase, terse, single-line by default; explain *why*, not what.
 - keep `roadmap.md` current in the same commit as the work it describes.
+- **a closed item leaves `roadmap.md` for `done.md`**, carrying a note of at most three
+  lines: what changed, what it cost, and the one thing that was surprising. the reasoning
+  in full goes in the **commit body**, not in both — writing it twice is how the task list
+  grew to 85% archive, and the commit is the copy that sits next to the diff proving it.
+  an open item may still argue with a closed one by number; `done.md` is where to look.
