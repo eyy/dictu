@@ -1350,3 +1350,9 @@ landed. the fuller version of any of them is the commit that closed it (`git log
 - **[x] #64 the scope panel groups the dictionaries by source language.** headers in one
   `ListBox`, groups alphabetical with `OTHER` last, the reader's rank ordering *within* a
   group; grouping is the panel's layout and leaves the reading order (#45) alone.
+
+## asked for while working
+
+- **[x] #73 backspace anywhere edits the query.** it was left to whatever had focus, so
+  after `Down` into the wordlist there was no way back to the box; now it focuses *and*
+  deletes, by character rather than by byte so a greek query survives it.
