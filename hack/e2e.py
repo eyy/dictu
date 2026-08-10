@@ -1173,6 +1173,36 @@ def main():
                 f"entry read {entry_text!r}, focused={is_focused(widgets.search)}",
             )
 
+            # roadmap #73: and backspace the same way — from the wordlist it takes the
+            # keyboard back to the box *and* deletes, which is what makes it the way
+            # back to editing a query rather than a key that focuses and swallows.
+            app_proc.press("Down")
+            wait_for_quiet(lambda: not is_focused(widgets.search))
+            app_proc.press("BackSpace")
+            wait_for_quiet(lambda: text_of(widgets.search) == "aardvark")
+            entry_text = text_of(widgets.search)
+            r.check(
+                "backspace while the wordlist has focus edits the search box",
+                entry_text == "aardvark" and is_focused(widgets.search),
+                f"entry read {entry_text!r}, focused={is_focused(widgets.search)}",
+            )
+
+            # and it counts characters rather than bytes, which only a non-ascii query
+            # can tell you: λόγος is two bytes per letter, so a byte-wise delete leaves
+            # half a codepoint and the greek search stops matching.
+            app_proc.forward("--search", "λόγος")
+            wait_for(lambda: text_of(widgets.search) == "λόγος" or None, 10, "the greek query")
+            app_proc.press("Down")
+            wait_for_quiet(lambda: not is_focused(widgets.search))
+            app_proc.press("BackSpace")
+            wait_for_quiet(lambda: text_of(widgets.search) == "λόγο")
+            entry_text = text_of(widgets.search)
+            r.check(
+                "backspace deletes one greek letter, not one byte",
+                entry_text == "λόγο",
+                f"entry read {entry_text!r}",
+            )
+
             # roadmap #20: links. first that the link tag covers exactly the link's
             # own characters, then that clicking one follows it — across
             # dictionaries, since "cf" lives in links.csv and "byte" in the dictd

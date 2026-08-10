@@ -320,17 +320,39 @@ impl UiInner {
         if key == gdk::Key::space && self.focus_is_on_a_button() {
             return glib::Propagation::Proceed;
         }
-        // control characters (escape, backspace, tab, the arrows) are navigation,
-        // not text — leave them to the widget that has focus.
+        // backspace edits the query wherever it is pressed (#73), for the same reason
+        // typing does: after stepping into the wordlist with Down, the way back to the
+        // box should not be a hunt for it. and it *deletes* as well as focusing —
+        // focusing and swallowing the key would mean the first backspace did nothing
+        // you asked for, and you would learn to press it twice.
+        if key == gdk::Key::BackSpace {
+            // by character, not by byte: `delete_text` counts the way `Editable` does,
+            // which is the only reason backspacing a greek or hebrew query does not
+            // leave half a codepoint behind.
+            let length = self.search.text().chars().count() as i32;
+            self.focus_search();
+            if length > 0 {
+                self.search.delete_text(length - 1, length);
+            }
+            return glib::Propagation::Stop;
+        }
+        // the other control characters (escape, tab, the arrows) are navigation, not
+        // text — leave them to the widget that has focus.
         let Some(ch) = key.to_unicode().filter(|c| !c.is_control()) else {
             return glib::Propagation::Proceed;
         };
-        // if the scope panel had the keyboard, typing means you're done with it.
-        self.scope_button.popdown();
-        self.search.grab_focus();
+        self.focus_search();
         self.search.set_text(&format!("{}{ch}", self.search.text()));
         self.search.set_position(-1);
         glib::Propagation::Stop
+    }
+
+    /// hand the keyboard to the search box, from wherever it was. if the scope panel
+    /// had it, reaching for the query means you are done with the panel.
+    fn focus_search(&self) {
+        self.scope_button.popdown();
+        self.search.grab_focus();
+        self.search.set_position(-1);
     }
 
     /// whether focus sits on something that treats Space as activation rather than
