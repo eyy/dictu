@@ -165,45 +165,12 @@ these are blocked on a decision or an action only you can take. nothing else wai
 
 ## later
 
-- **[ ] #74 smarter search: typo tolerance, and a query in latin letters that finds a
-  greek or hebrew word.** *(asked for. **not to be started without a written plan and
-  explicit approval** — recorded here as a request, not as a decision.)*
-  asked for as "levinstein distance, typos fixes, script convertor (helios should find
-  ηλιος)". three things, and they are not equally new.
-  **the first two are #42's phase C**, which is planned and measured already: a bounded
-  edit-distance scan over the merged keys, 2.4 ms at three characters and 57–67 ms worst
-  realistic case, fast enough that it need not even be a fallback. that work does not need
-  designing again; it needs doing, and #42 is where it is written down.
-  **the third is genuinely new, and is not a distance problem at all.** `helios` and `ηλιος`
-  are not two spellings a distance apart — they share no character. and it cannot happen by
-  accident today: `keys::fold` and `keys::bare` both return early for ascii, so an ascii
-  query and a greek headword have no key in common by construction. this is a
-  *transliteration*, and transliteration is a table, a direction, and a pile of choices:
-  1. **which romanisation.** greek alone has several in use — `helios` (h for the rough
-     breathing, e for eta), `hlios` (beta code, h *is* eta), ISO 843 — and they disagree on
-     the letters a reader is most likely to type. hebrew is worse, because the vowels are
-     not written: `adam` must reach `אָדָם`, `shalom` must reach `שָׁלוֹם`, and `sh` is one
-     letter. a table that serves a classicist and one that serves someone typing what they
-     heard are not the same table.
-  2. **which direction.** romanise the *query* into the script (no reindexing, but one query
-     becomes many candidates, since `e` could be eta or epsilon) — or store a romanised key
-     per headword beside the folded one (search stays a single lookup, at the cost of a
-     bigger key table and a cache rebuild). the second fits the merged-index design; the
-     first is cheaper to try.
-  3. **how it composes with fuzzy.** if a romanised query is *also* typo-tolerant then two
-     error models multiply, and `helois` has to survive both. that may be the right answer
-     and it is certainly the expensive one.
-  4. **how a reader knows why a row is there.** `ηλιος` appearing for `helios` is delightful
-     when it is what you meant and baffling when it is not. exact, normalized, romanised and
-     fuzzy are four different reasons a row matched, and the wordlist currently says nothing
-     about which — #12's attribution and #59's language tag are the precedents for saying it.
-  5. **what it may cost.** #42's numbers are the bar to beat, and they were measured, not
-     guessed. a romanised key per headword is another 1.9M keys.
-  so: a plan first, in `docs/`, in the shape #42's was — with the premises checked against
-  the real files rather than assumed, since that review overturned three of them last time.
-
-- **[ ] #42 fuzzy search, typable greek and hebrew, lemmas-only — see
-  `docs/search-index-plan.md`.** the plan of record for #33, #39, #12 and fuzzy. no fst, no
+- **[ ] #42 smarter search: typo tolerance, and a query in latin letters that finds a greek
+  or hebrew word — see `docs/search-index-plan.md`.** *(**#74 was folded in here** on
+  request: it asked for "levinstein distance, typos fixes, script convertor (helios should
+  find ηλιος)", which is this item's remaining phase plus one thing beyond it. that number
+  is not reused. **not to be started without a written plan and explicit approval.**)*
+  the plan of record for #33, #39, #12 and fuzzy. no fst, no
   database: a bounded scan measures **2.4 ms at 3 characters, 24 ms at 6, 57–67 ms worst
   realistic case** over the real headwords in a release build, which is fast enough that
   fuzzy needn't even be a fallback. independently reviewed, and the review overturned three
@@ -213,12 +180,39 @@ these are blocked on a decision or an action only you can take. nothing else wai
   cheap-looking length filter passes 60% of the corpus at the modal query length. the signal
   that does work — an inflection's entry opens with its lemma in bold — costs 333 ms and
   turns `rex` from 27 rows into 1.
-  **#74 asks for the rest of this and one thing beyond it** — a query in latin letters that
-  finds a greek word, which is transliteration rather than distance and needs its own plan.
   **phases A (normalized keys, #39), B (attribution, #12) and D (#33) have landed** — D for
   none of the reasons planned here: #44 replaced the dictionary whose inflections needed
   detecting, and what shipped folds rows that repeat a definition rather than identifying
-  lemmas at all. **only C, the fuzzy scan, remains.**
+  lemmas at all. **only C, the fuzzy scan, remains** — and that is the whole of the typo
+  half of the ask. it is planned and measured; it needs doing rather than designing again.
+
+  **the script converter is new, and is not a distance problem at all.** `helios` and
+  `ηλιος` are not two spellings a distance apart — they share no character. nor can it
+  happen by accident today: `keys::fold` and `keys::bare` both return early for ascii, so an
+  ascii query and a greek headword have no key in common by construction. this is
+  *transliteration*, and transliteration is a table, a direction, and a pile of choices:
+  1. **which romanisation.** greek alone has several in use — `helios` (h for the rough
+     breathing, e for eta), `hlios` (beta code, where h *is* eta), ISO 843 — and they
+     disagree on the letters a reader is most likely to type. hebrew is worse, because the
+     vowels are not written: `adam` must reach `אָדָם`, `shalom` must reach `שָׁלוֹם`, and
+     `sh` is one letter. a table that serves a classicist and one that serves someone typing
+     what they heard are not the same table.
+  2. **which direction.** romanise the *query* into the script (nothing to reindex, but one
+     query becomes many candidates, since `e` could be eta or epsilon) — or store a
+     romanised key per headword beside the folded one (search stays a single lookup, at the
+     cost of a bigger key table and a cache rebuild). the second fits the merged-index
+     design; the first is cheaper to try.
+  3. **how it composes with fuzzy.** if a romanised query is *also* typo-tolerant then two
+     error models multiply, and `helois` has to survive both. that may be the right answer
+     and it is certainly the expensive one.
+  4. **how a reader knows why a row is there.** `ηλιος` appearing for `helios` is delightful
+     when it is what you meant and baffling when it is not. exact, normalized, romanised and
+     fuzzy are four different reasons a row matched, and the wordlist says nothing about
+     which — #12's attribution and #59's language tag are the precedents for saying it.
+  5. **what it may cost.** the numbers above are the bar, and they were measured rather than
+     guessed. a romanised key per headword is another 1.9M keys.
+  a plan first, in `docs/`, in the shape that one took — with its premises checked against
+  the real files rather than assumed, since that review overturned three of them last time.
 
 - **[ ] #41 a headword whose only entry renders empty stays in the wordlist.** `lookup`
   drops entries that convert to nothing, but the headword was already filed — so a card that
