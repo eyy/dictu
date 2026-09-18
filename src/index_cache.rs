@@ -183,7 +183,7 @@ pub struct Built<'a> {
     pub payload: &'a [u8],
     /// where a format's *aliases* begin in `entries` — StarDict appends its
     /// `.syn` records after the `.idx` ones, and those records are where a
-    /// dictionary files its inflected forms (Whitaker: 1.18M latin forms; 
+    /// dictionary files its inflected forms (Whitaker: 1.18M latin forms;
     /// a hebrew-hebrew dictionary: hebrew plurals and construct forms). `None` means every entry is a
     /// headword in its own right, which is true of every other format here.
     pub aliases_from: Option<usize>,

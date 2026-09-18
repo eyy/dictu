@@ -720,7 +720,7 @@ mod tests {
         assert!(!map.contains_key("StarDict's dict ifo file"));
     }
     /// roadmap #33: a `.syn` record is a pointer at another entry. what kind of
-    /// pointer is the dictionary's business — Whitaker's are inflected forms, 
+    /// pointer is the dictionary's business — Whitaker's are inflected forms,
     /// a hebrew-hebrew dictionary's mix those with plene spellings and abbreviations — so the reader
     /// only reports *that* it is one.
     #[test]
