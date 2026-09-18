@@ -212,7 +212,7 @@ impl Collection {
 
     /// what to show for a row: each in-scope dictionary that has it, asked for the
     /// spelling *it* files, in library order. a dictionary filing two spellings of
-    /// one row against the same entry answers once — a hebrew-hebrew dictionary does that 28,494
+    /// one row against the same entry answers once — the hebrew-hebrew dictionary does that 28,494
     /// times, and printing it twice would claim two senses.
     pub fn definitions(&self, row: &Row) -> Vec<Definition> {
         let Some(library) = self.library() else {
