@@ -377,7 +377,7 @@ landed. the fuller version of any of them is the commit that closed it (`git log
 
 - **[x] #52 every dictionary has a name a person would write.** the labels are folder names
   and they read like it: `bgl-Latin_English_Inflected`, `Middle_Liddell_stardict`,
-  `HEB-HEB a hebrew-hebrew dictionary`, `Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)`,
+  `HEB-HEB-Dictionary`, `Greek-English Lexicon by John Jeffrey Dodson (Grc-Eng)`,
   `מילון_אבן_ספיר (BGL)`. they are the heading over every definition and the tag on every
   row, so they are read more often than anything else in the app.
   **this wants the same config structure #45 does.** a name is a per-dictionary preference,
@@ -864,7 +864,7 @@ landed. the fuller version of any of them is the commit that closed it (`git log
   `כאב` **18 → 13**, and the words above all still return their rows. `מלך` is **17 → 17**,
   though not for the reason first written here: it survives because two other dictionaries
   file it themselves, not because the rule spares aliases. the case that wording was meant
-  to cover — an ambiguous unpointed spelling *only* a hebrew-hebrew dictionary holds — is the one a third
+  to cover — an ambiguous unpointed spelling *only* the hebrew-hebrew dictionary holds — is the one a third
   review found broken (below).
   greek is untouched: LSJ, Bailly, Dodson, Pindar and the Middle Liddell ship no `.syn`
   between them.
@@ -872,7 +872,7 @@ landed. the fuller version of any of them is the commit that closed it (`git log
   it the check could not see. "every definition stays reachable" was true and insufficient:
   folding was deleting rows whose *spelling* was the only one a reader would type. `טוניקה`
   vanished, leaving `טוּנִיקָה` (a tunic) and `טוֹנִיקָה` (a tonic) and no way to say which
-  you meant — 2,508 a hebrew-hebrew dictionary aliases have that shape. the cause was a contradiction
+  you meant — 2,508 aliases in the hebrew-hebrew dictionary have that shape. the cause was a contradiction
   between the two halves of the search: `group` keeps an ambiguous unpointed spelling as its
   own row *because* it cannot be attributed to one lemma, and then folding deleted it, which
   files it under a guess by omission. a class `group` declined to absorb is now one folding

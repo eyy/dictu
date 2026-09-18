@@ -1398,7 +1398,7 @@ mod tests {
 
         // and a form searched on its own is the only row reaching that entry, so it
         // survives. this is the case hiding aliases got wrong, and it is why
-        // `עגבנייה` — a word a hebrew-hebrew dictionary only files as a `.syn` spelling — stays.
+        // `עגבנייה` — a word the hebrew-hebrew dictionary only files as a `.syn` spelling — stays.
         let alone: Vec<String> = latin
             .search_where("rexit", 10, &[], true)
             .into_iter()

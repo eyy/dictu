@@ -140,7 +140,7 @@ pub trait Dictionary: Send {
     /// dictionary points at one of its own entries, rather than a word it files in
     /// its own right. StarDict `.syn` records are the only such thing here, and
     /// three of the loaded dictionaries ship one: Whitaker's latin (1.18M forms of
-    /// 37,777 words), a hebrew-hebrew dictionary (2.9 MB of hebrew plurals, construct forms and
+    /// 37,777 words), the hebrew-hebrew one (2.9 MB of hebrew plurals, construct forms and
     /// unpointed spellings — `כאבים` resolves to `כאב`'s entry, marked `מן כאב`),
     /// and Even Sapir (a single record). formats without that notion answer
     /// `false`, which is the honest default — a spelling variant on a dsl card is

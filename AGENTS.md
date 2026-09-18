@@ -328,9 +328,9 @@ both subcommands short-circuit `main` before any gtk setup, so they work with no
 
 ```bash
 ./target/debug/dictu dump sample/sample.index        # name, headword count, first 5 entries
-./target/debug/dictu dump "$D/HEB-HEB a hebrew-hebrew dictionary/hebrew-hebrew.ifo"
+./target/debug/dictu dump "$D/some-stardict-dictionary/dict.ifo"
 ./target/debug/dictu lookup sample/sample.index rust # one entry, as plain text
-./target/debug/dictu lookup "$D/fulllatininflected[1]/latin infl+lewis.ifo" virtus --html
+./target/debug/dictu lookup "$D/some-stardict-dictionary/dict.ifo" virtus --html
 ./target/debug/dictu search abbrevi                  # whole collection, top 20 hits
 ```
 
@@ -341,7 +341,8 @@ needs to see; without it you get the plain text.
 collection with a warm cache, ~7s with a cold one. `time` it when testing load performance,
 and `rm -rf ~/.cache/dictu` first if the cold path is what you mean to measure.
 
-real test data: `~/Dictionaries` — 15 loadable dicts, 1,936,120 headwords.
+real test data: whatever `dictionary_dirs` points at — here, 15 dictionaries and 1,936,120
+headwords, which is the collection every measurement in this file was taken against.
 run `dictu scope` for the current list rather than trusting a number written down
 somewhere: this one has been wrong twice, and the command cannot be.
 `sample/` is a hand-built dictd fixture (6 definitions, gzipped `.dict.dz`, dictd-base64
