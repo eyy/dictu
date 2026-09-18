@@ -1,8 +1,12 @@
 # dictu
 
-a gnome dictionary app for large offline dictionary collections. it scans directories of
-dictionary files, builds one merged index across all of them, and answers a single search
-box with every definition a word has, from every dictionary that has it.
+An offline dictionary gnome app; vibe-coded with claude
+
+![the dictu window: a wordlist of latin forms, and Gaffiot's entry for "rex"](assets/screenshot.png)
+
+it scans directories of dictionary files, builds one merged index across all of them, and
+answers a single search box with every definition a word has, from every dictionary that
+has it.
 
 built for classical-language work — inflected Latin, Greek, Hebrew lexica of a few million
 headwords — where the usual answer is a heavyweight app or a browser tab. dictu is a
