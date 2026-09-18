@@ -142,5 +142,19 @@ that drives the real widget tree over the accessibility bus:
 hack/check.sh
 ```
 
+## licence
+
+the code is **GPL-3.0-or-later** — see [`LICENSE`](LICENSE).
+
+the two pictures in `assets/` are not mine to license that way. they are details of one
+manuscript page, photographed by the Bodleian Libraries and released under **CC BY-NC
+4.0** — attribution, non-commercial. [`assets/ATTRIBUTION.md`](assets/ATTRIBUTION.md) has
+the credit in full and the IIIF coordinates to re-cut them. if you fork this for anything
+commercial, the code is yours to use and the pictures are not: replace them.
+
+no dictionaries are included, and none ever were. dictu reads the files you already have.
+
+## the working process
+
 [`AGENTS.md`](AGENTS.md) documents the whole working process: the loop, how to screenshot
 the app unattended, the at-spi harness, and the gotchas worth not rediscovering.

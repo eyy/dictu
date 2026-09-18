@@ -2,6 +2,12 @@
 name = "dictu"
 version = "0.1.0"
 edition = "2024"
+description = "an offline dictionary for large collections, for classical-language work"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eyy/dictu"
+readme = "README.md"
+keywords = ["dictionary", "stardict", "gtk4", "latin", "greek"]
+categories = ["command-line-utilities", "gui"]
 
 # the `package = "..."` bits rename the crate: on crates.io it's `gtk4`, but
 # everyone imports it as `gtk` (and `libadwaita` as `adw`). this is the standard
