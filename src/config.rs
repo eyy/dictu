@@ -65,16 +65,13 @@ pub struct DictSettings {
 
 impl Default for Config {
     fn default() -> Self {
-        // default: the user's sys/dict collection. built from $HOME so it isn't
-        // hard-coded to one machine's absolute path.
+        // a place to put dictionaries rather than a place they are: nobody else has
+        // the collection this was written against, and a default pointing at one
+        // person's folders is a first run that silently finds nothing. an empty
+        // `~/Dictionaries` finds nothing too — but the window then says what to do
+        // about it, and this names the folder to create.
         let dictionary_dirs = home_dir()
-            .map(|home| {
-                vec![
-                    home.join("Dictionaries")
-                        .to_string_lossy()
-                        .into_owned(),
-                ]
-            })
+            .map(|home| vec![home.join("Dictionaries").to_string_lossy().into_owned()])
             .unwrap_or_default();
         Self {
             dictionary_dirs,
